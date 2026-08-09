@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb } from './helpers/pg.js'
 import { migrate } from '../src/schema/migrate.js'
-import { upsertRows, deleteRows, relinkRows, dedupeByKey, keyValues } from '../src/db/upsert.js'
+import { upsertRows, deleteRows, relinkRows, dedupeByKey, keyValues, redactRaw } from '../src/db/upsert.js'
 import { streamByName, STREAMS } from '../src/catalog.js'
 import type { SqlClient } from '../src/db/client.js'
 
@@ -41,6 +41,105 @@ describe('key extraction', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]!.data['email']).toBe('new@example.com')
     expect(dropped).toBe(1)
+  })
+})
+
+describe('credential redaction', () => {
+  const invitations = streamByName('invitations')!
+
+  const invitePayload = (over: Record<string, unknown> = {}) => ({
+    object: 'invitation',
+    id: 'invitation_1',
+    email: 'ada@example.com',
+    state: 'pending',
+    organization_id: 'org_1',
+    role: { slug: 'member' },
+    expires_at: '2026-02-01T00:00:00.000Z',
+    token: 'Z1uX3H0uPl3aseD0ntM1rr0rMe',
+    accept_invitation_url: 'https://auth.example.com/invite?invitation_token=Z1uX3H0uPl3aseD0ntM1rr0rMe',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    ...over,
+  })
+
+  it('strips the invitation acceptance credential while keeping the rest of the object', () => {
+    // The REST invitation object carries a live org-join credential. Mirroring
+    // it verbatim hands anyone who can read the customer's database the ability
+    // to accept the invite as the invitee.
+    const redacted = redactRaw(invitations, invitePayload())
+    expect(redacted['token']).toBeUndefined()
+    expect(redacted['accept_invitation_url']).toBeUndefined()
+    expect(redacted).toMatchObject({
+      id: 'invitation_1',
+      email: 'ada@example.com',
+      state: 'pending',
+      organization_id: 'org_1',
+      role: { slug: 'member' },
+    })
+  })
+
+  it('leaves the caller payload untouched', () => {
+    const payload = invitePayload()
+    redactRaw(invitations, payload)
+    expect(payload['token']).toBe('Z1uX3H0uPl3aseD0ntM1rr0rMe')
+  })
+
+  it('passes through streams that declare nothing sensitive', () => {
+    const payload = userPayload()
+    expect(redactRaw(users, payload)).toBe(payload)
+  })
+
+  it('strips the webhook endpoint signing secret', () => {
+    const endpoints = streamByName('webhook_endpoints')!
+    const redacted = redactRaw(endpoints, {
+      id: 'we_1',
+      endpoint_url: 'https://example.com/hook',
+      secret: 'wh_secret_value',
+    })
+    expect(redacted['secret']).toBeUndefined()
+    expect(redacted['endpoint_url']).toBe('https://example.com/hook')
+  })
+
+  describe('against the database', () => {
+    let db: SqlClient
+
+    beforeEach(async () => {
+      db = await createTestDb()
+      await migrate(db, STREAMS, 'workos')
+    })
+    afterEach(async () => {
+      await db.close()
+    })
+
+    const readInvite = async () => {
+      const r = await db.query<Record<string, unknown>>(
+        `select * from workos.invitations where "_env" = 'prod' and id = 'invitation_1'`,
+      )
+      return r.rows[0]!
+    }
+
+    it('never persists the token to _raw, on backfill or on a later event merge', async () => {
+      await upsertRows(db, opts, invitations, 'prod', [
+        { data: invitePayload(), updatedAt: '2026-01-01T00:00:00.000Z' },
+      ], 'replace')
+
+      const backfilled = await readInvite()
+      const raw = backfilled['_raw']
+      expect(raw).toMatchObject({ id: 'invitation_1', state: 'pending' })
+      expect(JSON.stringify(raw)).not.toContain('Z1uX3H0uPl3aseD0ntM1rr0rMe')
+      // The projected columns the mirror is actually for keep working.
+      expect(backfilled['email']).toBe('ada@example.com')
+      expect(backfilled['role_slug']).toBe('member')
+
+      // merge mode must not let a token sneak back in either.
+      await upsertRows(db, opts, invitations, 'prod', [
+        { data: invitePayload({ state: 'accepted' }), updatedAt: '2026-01-02T00:00:00.000Z' },
+      ], 'merge')
+
+      const merged = await readInvite()
+      expect(merged['state']).toBe('accepted')
+      expect(JSON.stringify(merged['_raw'])).not.toContain('Z1uX3H0uPl3aseD0ntM1rr0rMe')
+    })
   })
 })
 

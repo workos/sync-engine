@@ -84,6 +84,14 @@ export interface StreamDef {
    * Tier for docs/config grouping.
    */
   tier: 1 | 2 | 3 | 4
+  /**
+   * Sensitive fields to strip from the REST/event payload before it is written
+   * to `_raw`. Each entry is a JSON path (a top-level key, or a nested path as
+   * a string array) whose value is a live credential the mirror must not
+   * persist — e.g. an invitation acceptance `token`. No generated column may
+   * read from a redacted path.
+   */
+  redact?: (string | string[])[]
 }
 
 export interface WorkOSEvent {
