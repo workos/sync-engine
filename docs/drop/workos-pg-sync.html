@@ -101,6 +101,11 @@ h1{
 }
 .meta span{border:1px solid var(--line); border-radius:100px; padding:4px 11px; background:var(--raised)}
 .meta .live{color:var(--good); border-color:color-mix(in srgb,var(--good) 34%,transparent)}
+/* The repo chip is the one actionable item in the row, so it carries the accent
+   and its own hover — the rest are static status labels. */
+.meta .repo{border-color:color-mix(in srgb,var(--accent) 34%,transparent)}
+.meta .repo a{color:var(--accent-ink); text-decoration:none; font-family:var(--mono); font-size:11.5px}
+.meta .repo a:hover{text-decoration:underline}
 .rule{height:1px; background:var(--line); margin:56px 0 0; border:0}
 
 /* ---------- sections ---------- */
@@ -247,6 +252,7 @@ html{scroll-behavior:smooth}
     <span>92 tests passing</span>
     <span class="live">Verified against live API</span>
     <span>MIT · TypeScript</span>
+    <span class="repo"><a href="https://github.com/workos/workos-pg-sync">github.com/workos/workos-pg-sync</a></span>
   </div>
   <hr class="rule">
 </header>
@@ -601,7 +607,7 @@ order=desc  → event_01KZCAQTRM…  20:02:53Z   (identical)
 </section>
 
 <footer>
-  <p>Working prototype · library, CLI and container · 92 tests against real Postgres via PGlite · verified against the live WorkOS API on a disposable environment, with all test data removed afterwards. Findings in section 06 are independently actionable.</p>
+  <p>Working prototype · library, CLI and container · 92 tests against real Postgres via PGlite · verified against the live WorkOS API on a disposable environment, with all test data removed afterwards. Findings in section 06 are independently actionable. Source: <a href="https://github.com/workos/workos-pg-sync">github.com/workos/workos-pg-sync</a></p>
 </footer>
 
 </main>
