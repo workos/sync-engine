@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Postgres Sync — proposal</title>
+<style>
+:root{
+  --paper:#F7F8FA; --raised:#FFFFFF; --sunk:#EEF0F4;
+  --ink:#12161F; --ink-2:#39414F; --muted:#6B7381; --line:#DFE3EA;
+  --accent:#2F6FEB; --accent-soft:#E8EFFD; --accent-ink:#1D4FB0;
+  --warn:#A9631A; --warn-soft:#FBF1E3; --good:#1F7A5C; --good-soft:#E6F3ED;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --measure:68ch;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --paper:#0E1116; --raised:#161A21; --sunk:#11141A;
+    --ink:#E7EAF0; --ink-2:#B6BDCA; --muted:#8A93A3; --line:#252B35;
+    --accent:#6E9BFF; --accent-soft:#16203A; --accent-ink:#9DBBFF;
+    --warn:#D79B4E; --warn-soft:#2A2015; --good:#5FBF9A; --good-soft:#12261F;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0E1116; --raised:#161A21; --sunk:#11141A;
+  --ink:#E7EAF0; --ink-2:#B6BDCA; --muted:#8A93A3; --line:#252B35;
+  --accent:#6E9BFF; --accent-soft:#16203A; --accent-ink:#9DBBFF;
+  --warn:#D79B4E; --warn-soft:#2A2015; --good:#5FBF9A; --good-soft:#12261F;
+}
+:root[data-theme="light"]{
+  --paper:#F7F8FA; --raised:#FFFFFF; --sunk:#EEF0F4;
+  --ink:#12161F; --ink-2:#39414F; --muted:#6B7381; --line:#DFE3EA;
+  --accent:#2F6FEB; --accent-soft:#E8EFFD; --accent-ink:#1D4FB0;
+  --warn:#A9631A; --warn-soft:#FBF1E3; --good:#1F7A5C; --good-soft:#E6F3ED;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--sans); font-size:16.5px; line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--accent-soft); color:var(--accent-ink)}
+a{color:var(--accent-ink); text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:3px}
+
+/* ---------- shell ---------- */
+.shell{max-width:1180px; margin:0 auto; padding:0 28px; display:grid; grid-template-columns:minmax(0,1fr); gap:0}
+.rail{display:none}
+@media (min-width:1060px){
+  .shell{grid-template-columns:200px minmax(0,1fr); gap:56px; align-items:start}
+  .rail{display:block; position:sticky; top:0; height:100vh; padding:96px 0 40px; overflow-y:auto}
+}
+.rail-label{
+  font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; font-weight:650;
+  color:var(--muted); margin:0 0 10px; padding-left:16px;
+}
+.rail nav{display:flex; flex-direction:column; border-left:1px solid var(--line)}
+.rail a{
+  display:grid; grid-template-columns:24px 1fr; align-items:baseline;
+  font-size:13.5px; line-height:1.4; letter-spacing:-.003em; text-decoration:none;
+  color:var(--muted); padding:7px 0 7px 15px; margin-left:-1px;
+  border-left:2px solid transparent;
+  transition:color .14s ease, border-color .14s ease;
+}
+/* Numerals are the one thing in the rail that is genuinely tabular data —
+   they mirror the section numbers in the body and want to align in a column. */
+.rail a .n{
+  font-size:11px; font-variant-numeric:tabular-nums; font-weight:600;
+  /* Subordinate to the label but still legible — var(--line) was too faint to read. */
+  color:color-mix(in srgb,var(--muted) 62%,transparent);
+}
+.rail a:hover{color:var(--ink)}
+.rail a:hover .n{color:var(--muted)}
+/* Active state shifts colour and the rule, never weight — a weight change
+   reflows the label and makes the rail twitch as you scroll. */
+.rail a.on{color:var(--accent-ink); border-left-color:var(--accent)}
+.rail a.on .n{color:var(--accent)}
+main{min-width:0; padding-bottom:140px}
+
+/* ---------- masthead ---------- */
+.mast{padding:88px 0 0}
+.kicker{
+  font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:650;
+  color:var(--accent-ink); display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+}
+.kicker .dot{width:5px;height:5px;border-radius:50%;background:var(--accent);display:inline-block}
+h1{
+  font-size:clamp(38px,6.2vw,60px); line-height:1.03; letter-spacing:-.025em; font-weight:760;
+  margin:20px 0 0; text-wrap:balance; max-width:16ch;
+}
+.thesis{
+  font-size:clamp(18px,2.2vw,21px); line-height:1.5; color:var(--ink-2); margin:22px 0 0;
+  max-width:56ch; text-wrap:pretty;
+}
+.meta{
+  display:flex; gap:8px; flex-wrap:wrap; margin:32px 0 0;
+  font-size:12.5px; color:var(--muted);
+}
+.meta span{border:1px solid var(--line); border-radius:100px; padding:4px 11px; background:var(--raised)}
+.meta .live{color:var(--good); border-color:color-mix(in srgb,var(--good) 34%,transparent)}
+.rule{height:1px; background:var(--line); margin:56px 0 0; border:0}
+
+/* ---------- sections ---------- */
+section{padding:60px 0 0; scroll-margin-top:24px}
+h2{
+  font-size:clamp(23px,3vw,30px); line-height:1.18; letter-spacing:-.018em; font-weight:720;
+  margin:0 0 8px; text-wrap:balance;
+}
+h2 .num{
+  font-size:11.5px; font-variant-numeric:tabular-nums; color:var(--muted); font-weight:650;
+  letter-spacing:.1em; display:block; margin-bottom:12px;
+}
+h3{font-size:17.5px; line-height:1.35; font-weight:680; margin:38px 0 6px; letter-spacing:-.008em}
+h4{font-size:11.5px; letter-spacing:.11em; text-transform:uppercase;
+   color:var(--muted); font-weight:650; margin:30px 0 10px}
+p{margin:14px 0; max-width:var(--measure); text-wrap:pretty}
+.lede{font-size:17.5px; color:var(--ink-2); max-width:60ch}
+ul,ol{max-width:var(--measure); padding-left:20px; margin:14px 0}
+li{margin:7px 0}
+li::marker{color:var(--muted)}
+strong{font-weight:660}
+code{
+  font-family:var(--mono); font-size:.875em; background:var(--sunk); color:var(--ink);
+  padding:.14em .38em; border-radius:4px; border:1px solid var(--line);
+}
+/* Inside headings the boxes stack up and fight the type; keep the face, drop the chrome. */
+h1 code,h2 code,h3 code{background:none; border:0; padding:0; font-size:.92em; color:inherit}
+.q{color:var(--muted)}
+
+/* ---------- evidence blocks (break the measure) ---------- */
+figure{margin:26px 0; max-width:none}
+pre{
+  margin:0; background:var(--raised); border:1px solid var(--line); border-radius:10px;
+  padding:18px 20px; overflow-x:auto; font-family:var(--mono); font-size:13px; line-height:1.65;
+  color:var(--ink-2);
+}
+pre code{background:none; border:0; padding:0; font-size:inherit; color:inherit}
+figcaption{
+  font-size:12.5px; color:var(--muted); margin-top:9px; max-width:var(--measure);
+}
+.tok-k{color:var(--accent-ink); font-weight:600}
+.tok-c{color:var(--muted); font-style:italic}
+.tok-s{color:var(--good)}
+.tok-n{color:var(--warn)}
+
+.tablewrap{overflow-x:auto; margin:26px 0; border:1px solid var(--line); border-radius:10px; background:var(--raised)}
+table{border-collapse:collapse; width:100%; font-size:14.5px; min-width:520px}
+th,td{text-align:left; padding:12px 16px; border-bottom:1px solid var(--line); vertical-align:top}
+th{
+  font-size:11px; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--muted); font-weight:650; background:var(--sunk);
+}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums; white-space:nowrap}
+td code{font-size:12.5px}
+
+/* ---------- finding cards ---------- */
+.finding{
+  border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:10px;
+  background:var(--raised); padding:22px 24px; margin:22px 0;
+}
+.finding .tag{
+  font-size:11px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--warn); font-weight:650;
+}
+.finding h3{margin:9px 0 0; font-size:18px}
+.finding p{margin:11px 0; max-width:62ch}
+.finding pre{background:var(--sunk); font-size:12.5px}
+.finding .impact{
+  margin-top:16px; padding-top:14px; border-top:1px solid var(--line);
+  font-size:14.5px; color:var(--ink-2);
+}
+.finding .impact b{font-size:11px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--muted); display:block; margin-bottom:6px; font-weight:650}
+
+/* ---------- misc components ---------- */
+.grid{display:grid; gap:14px; margin:26px 0}
+@media (min-width:720px){.grid.three{grid-template-columns:repeat(3,1fr)}}
+.card{border:1px solid var(--line); border-radius:10px; background:var(--raised); padding:18px 20px}
+.card h4{margin:0 0 8px; color:var(--accent-ink)}
+.card p{font-size:14.5px; margin:0; color:var(--ink-2)}
+
+.stats{display:grid; gap:1px; background:var(--line); border:1px solid var(--line);
+  border-radius:10px; overflow:hidden; margin:26px 0}
+@media (min-width:640px){.stats{grid-template-columns:repeat(4,1fr)}}
+.stat{background:var(--raised); padding:18px 20px}
+.stat b{display:block; font-size:26px; font-weight:700; letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums; line-height:1.1}
+.stat span{font-size:11px; color:var(--muted); letter-spacing:.11em; text-transform:uppercase;
+  font-weight:650; display:block; margin-top:7px}
+
+.callout{
+  border:1px solid color-mix(in srgb,var(--accent) 26%,var(--line));
+  background:var(--accent-soft); border-radius:10px; padding:18px 22px; margin:26px 0;
+}
+.callout p{margin:0; max-width:62ch; color:var(--ink)}
+.callout p+p{margin-top:10px}
+
+.ask{border:1px solid var(--line); border-radius:10px; background:var(--raised); overflow:hidden; margin:26px 0}
+.ask > div{padding:18px 22px; border-bottom:1px solid var(--line)}
+.ask > div:last-child{border-bottom:0}
+.ask h4{margin:0 0 7px; color:var(--ink); text-transform:none; letter-spacing:0;
+  font-family:var(--sans); font-size:16px; font-weight:660}
+.ask p{margin:0; font-size:14.5px; color:var(--ink-2); max-width:62ch}
+
+.diagram{margin:30px 0; padding:26px 20px; border:1px solid var(--line);
+  border-radius:10px; background:var(--raised); overflow-x:auto}
+.diagram svg{display:block; margin:0 auto; max-width:100%; height:auto}
+
+footer{border-top:1px solid var(--line); margin-top:80px; padding-top:26px;
+  font-size:13px; color:var(--muted)}
+footer p{max-width:var(--measure)}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important; scroll-behavior:auto!important}}
+html{scroll-behavior:smooth}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<aside class="rail" aria-label="Contents">
+  <p class="rail-label">Contents</p>
+  <nav id="toc">
+    <a href="#why"><span class="n">01</span><span>Why</span></a>
+    <a href="#what"><span class="n">02</span><span>What it is</span></a>
+    <a href="#api"><span class="n">03</span><span>The API</span></a>
+    <a href="#schema"><span class="n">04</span><span>The schema</span></a>
+    <a href="#hard"><span class="n">05</span><span>The hard parts</span></a>
+    <a href="#findings"><span class="n">06</span><span>API findings</span></a>
+    <a href="#proof"><span class="n">07</span><span>Evidence</span></a>
+    <a href="#criticism"><span class="n">08</span><span>Push back here</span></a>
+    <a href="#bet"><span class="n">09</span><span>The bet</span></a>
+  </nav>
+</aside>
+
+<main>
+
+<header class="mast">
+  <div class="kicker"><span class="dot"></span> Proposal · seeking criticism</div>
+  <h1>Postgres Sync</h1>
+  <p class="thesis">A sync engine that mirrors WorkOS data into a customer's own Postgres, so identity data can be joined to their application data in SQL. Working prototype, tested against our production API.</p>
+  <div class="meta">
+    <span>Working prototype</span>
+    <span>92 tests passing</span>
+    <span class="live">Verified against live API</span>
+    <span>MIT · TypeScript</span>
+  </div>
+  <hr class="rule">
+</header>
+
+<section id="why">
+  <h2><span class="num">01</span>The question customers can't answer</h2>
+  <p class="lede">Every application built on WorkOS eventually needs to ask something that spans two systems.</p>
+  <ul>
+    <li>Which enterprise seats have we provisioned that nobody uses?</li>
+    <li>Which organizations verified a domain and then never finished setting up SCIM?</li>
+    <li>Which accounts saw a spike in failed sign-ins last night?</li>
+  </ul>
+  <p>None of these have an endpoint. Each is a join between data in WorkOS and data in the customer's database, and answering it through an API means paginating one list, holding it in memory, paginating another, and reconciling the two in application code.</p>
+  <p>Customers do build this. It starts as a webhook handler that writes a <code>users</code> table, then grows a backfill script, then a nightly repair job, then a second table — and at no point does anyone feel confident it is correct. We know the shape of that code because <a href="https://workos.com/docs/events/data-syncing">our own docs describe it</a>, and then leave the implementation as an exercise.</p>
+
+  <div class="callout">
+    <p><strong>The gap is specific.</strong> We publish the argument for the Events API over webhooks, the conditional-upsert pattern, and a data-reconciliation guide that says drift detection “requires performing diffs to identify deletions… making it essential to carefully design and test the reconciliation process.”</p>
+    <p>Then we stop. Every customer writes that reconciler themselves, and most of them skip it.</p>
+  </div>
+
+  <h3>What already tells us this is real</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Signal</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>Stripe precedent</td><td>The community Stripe sync engine reached ~125k npm downloads/month and was transferred to Stripe. Two weeks later Stripe previewed <strong>Stripe Database</strong> — hosted read-only Postgres of your Stripe data.</td></tr>
+      <tr><td>Direct ask</td><td>PostHog issue #53156 requests a managed WorkOS source: “no easy way to correlate their identity and auth data with product usage data.” Dismisses ETL as costly and webhooks as unable to backfill.</td></tr>
+      <tr><td>Ecosystem</td><td><code>@convex-dev/workos-authkit</code> exists to “sync user data from WorkOS to your Convex database.” Users only, one ecosystem.</td></tr>
+      <tr><td>Whitespace</td><td>No Fivetran connector, no Airbyte connector, nothing commercial doing WorkOS → Postgres.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="what">
+  <h2><span class="num">02</span>What it is</h2>
+  <p class="lede">An open-source library plus a CLI. It creates a <code>workos</code> schema in the customer's database, loads what already exists, then follows the Events API to stay current.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 720 200" role="img" aria-label="Three subsystems — backfill, tail and reconcile — writing into the workos schema in Postgres">
+      <defs>
+        <marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0 0 L8 4 L0 8 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g font-size="11.5" fill="currentColor" color="currentColor">
+        <g opacity=".55" font-size="9.5" letter-spacing="1.2" font-weight="650">
+          <text x="16" y="20">WORKOS API</text>
+          <text x="516" y="20">YOUR POSTGRES</text>
+        </g>
+        <g stroke="currentColor" fill="none" stroke-width="1">
+          <rect x="16" y="34" width="176" height="34" rx="7" opacity=".9"/>
+          <rect x="16" y="82" width="176" height="34" rx="7" opacity=".9"/>
+          <rect x="16" y="130" width="176" height="34" rx="7" opacity=".9"/>
+          <rect x="516" y="58" width="188" height="82" rx="8" opacity=".9"/>
+        </g>
+        <text font-family="ui-monospace,Menlo,monospace" x="30" y="55">list endpoints</text>
+        <text font-family="ui-monospace,Menlo,monospace" x="30" y="103">/events</text>
+        <text font-family="ui-monospace,Menlo,monospace" x="30" y="151">list endpoints</text>
+        <g opacity=".62" font-size="9.5" letter-spacing=".8" font-weight="650">
+          <text x="212" y="52">BACKFILL</text><text x="212" y="65">history</text>
+          <text x="212" y="100">TAIL</text><text x="212" y="113">live changes</text>
+          <text x="212" y="148">RECONCILE</text><text x="212" y="161">drift + deletes</text>
+        </g>
+        <g stroke="currentColor" fill="none" stroke-width="1.2" marker-end="url(#ar)" opacity=".75">
+          <path d="M330 51 C 420 51, 430 92, 508 92"/>
+          <path d="M330 99 L 508 99"/>
+          <path d="M330 147 C 420 147, 430 106, 508 106"/>
+        </g>
+        <text x="534" y="84" font-size="12" font-family="ui-monospace,Menlo,monospace">workos.users</text>
+        <text x="534" y="103" font-size="12" font-family="ui-monospace,Menlo,monospace">workos.organizations</text>
+        <text x="534" y="122" font-size="12" font-family="ui-monospace,Menlo,monospace">workos.…</text>
+      </g>
+    </svg>
+  </div>
+
+  <p>Three subsystems, and all three are required. This is the part that makes the hand-rolled version harder than it looks.</p>
+  <div class="grid three">
+    <div class="card"><h4>Backfill</h4><p>Pages the REST list endpoints. Events are retained 90 days — everything older exists only here. This is what a webhook-only integration structurally cannot do.</p></div>
+    <div class="card"><h4>Tail</h4><p>Polls the Events API from a durable cursor. Ordered, replayable, paced by the consumer. No public endpoint to expose.</p></div>
+    <div class="card"><h4>Reconcile</h4><p>Diffs the mirror against the API. The only thing that finds a missed delete — a deleted object is absent from every list endpoint, so re-listing can never reveal it.</p></div>
+  </div>
+
+  <p>It mirrors users, organizations, memberships, domains, invitations and sessions; directories, directory users and groups; SSO connections; roles, permissions and feature flags. Every event is archived alongside them.</p>
+
+  <div class="callout">
+    <p><strong>One stream is worth calling out.</strong> The fifteen <code>authentication.*</code> event types have no REST endpoint anywhere in our API. There is no way to list sign-ins. If a customer does not capture them as they happen, that history is gone after 90 days. Mirroring turns it into an ordinary table — “which accounts had five failed sign-ins in the last hour” becomes a <code>GROUP BY</code>.</p>
+  </div>
+</section>
+
+<section id="api">
+  <h2><span class="num">03</span>The API</h2>
+  <p class="lede">Same engine in three packagings: a library, a CLI, and a container. The library form is the one that matters — for the Stripe engine it out-installed the modular alternative five to one.</p>
+
+  <h4>Command line</h4>
+  <figure>
+<pre><code><span class="tok-c"># two environment variables, then three commands</span>
+<span class="tok-k">export</span> DATABASE_URL=<span class="tok-s">postgres://localhost/app</span>
+<span class="tok-k">export</span> WORKOS_API_KEY=<span class="tok-s">sk_live_…</span>
+
+npx workos-sync init       <span class="tok-c"># create the schema</span>
+npx workos-sync backfill   <span class="tok-c"># load what already exists</span>
+npx workos-sync listen     <span class="tok-c"># tail the Events API</span></code></pre>
+  </figure>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Command</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td><code>init</code></td><td>Creates the schema. Fingerprinted, so re-running is a no-op.</td></tr>
+      <tr><td><code>backfill [--resume]</code></td><td>Pages every list endpoint. Checkpoints per page.</td></tr>
+      <tr><td><code>listen</code></td><td>Polls the Events API forever. Handles SIGTERM mid-batch.</td></tr>
+      <tr><td><code>reconcile [--repair]</code></td><td>ID-set diff against the API. Exits 2 on drift, so it works as a scheduled check.</td></tr>
+      <tr><td><code>refresh</code></td><td>Re-lists to repopulate fields event payloads omit.</td></tr>
+      <tr><td><code>status</code></td><td>Cursor age, per-stream freshness and lag.</td></tr>
+      <tr><td><code>redact --user &lt;id&gt;</code></td><td>Hard-deletes one subject from the mirror and the event archive.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h4>Library</h4>
+  <figure>
+<pre><code><span class="tok-k">import</span> { SyncEngine } <span class="tok-k">from</span> <span class="tok-s">'@workos-inc/sync-engine'</span>
+
+<span class="tok-k">const</span> engine = <span class="tok-k">new</span> SyncEngine({
+  databaseUrl: process.env.DATABASE_URL,
+  environments: [{ name: <span class="tok-s">'production'</span>, apiKey: process.env.WORKOS_API_KEY }],
+
+  <span class="tok-c">// re-fetch an object when its create event arrives, so a new user is</span>
+  <span class="tok-c">// complete immediately rather than at the next reconcile</span>
+  hydrate: { users: <span class="tok-s">'on_create'</span> },
+})
+
+<span class="tok-k">await</span> engine.backfill()
+<span class="tok-k">await</span> engine.listen()   <span class="tok-c">// resolves when you call engine.stop()</span></code></pre>
+  <figcaption>Most deployments embed it — no extra process, and it uses the connection pool that already exists.</figcaption>
+  </figure>
+
+  <p>Webhooks are supported, but as a <em>trigger</em> rather than a source of truth: a verified delivery wakes the poller early, and state still flows through the ordered stream, so you keep ordering and replay.</p>
+  <figure>
+<pre><code>app.post(<span class="tok-s">'/workos/webhook'</span>, <span class="tok-k">async</span> (req, res) => {
+  verifyWebhook({ payload: req.rawBody, signature: req.header(<span class="tok-s">'WorkOS-Signature'</span>), secret })
+  res.sendStatus(<span class="tok-n">200</span>)          <span class="tok-c">// respond first</span>
+  <span class="tok-k">await</span> engine.processWebhook()  <span class="tok-c">// then poll</span>
+})</code></pre>
+  </figure>
+
+  <h4>Mirroring several environments</h4>
+  <p>One API key is one environment is one cursor. A workspace can hold dozens, and environment names repeat across projects, so the customer supplies a stable label that is written to every row as <code>_env</code> and forms part of every primary key.</p>
+  <figure>
+<pre><code><span class="tok-k">export</span> WORKOS_ENVIRONMENTS=<span class="tok-s">'production=sk_live_…,staging=sk_test_…'</span></code></pre>
+  </figure>
+</section>
+
+<section id="schema">
+  <h2><span class="num">04</span>The schema</h2>
+  <p class="lede"><code>_raw</code> is the only column the engine ever writes. Every typed column is generated from it — including the primary key.</p>
+
+  <figure>
+<pre><code><span class="tok-k">create table</span> workos.users (
+  _env        <span class="tok-k">text</span> <span class="tok-k">not null</span>,
+  _raw        <span class="tok-k">jsonb</span> <span class="tok-k">not null</span>,        <span class="tok-c">-- the object as WorkOS returned it</span>
+  _updated_at <span class="tok-k">timestamptz</span> <span class="tok-k">not null</span>,  <span class="tok-c">-- source time; the staleness gate compares this</span>
+  _synced_at  <span class="tok-k">timestamptz</span> <span class="tok-k">not null</span>,  <span class="tok-c">-- write time; lag is the difference</span>
+  _deleted_at <span class="tok-k">timestamptz</span>,           <span class="tok-c">-- tombstone</span>
+
+  id          <span class="tok-k">text</span>  <span class="tok-k">generated always as</span> ((_raw-&gt;&gt;<span class="tok-s">'id'</span>)) <span class="tok-k">stored</span>,
+  email       <span class="tok-k">text</span>  <span class="tok-k">generated always as</span> ((_raw-&gt;&gt;<span class="tok-s">'email'</span>)) <span class="tok-k">stored</span>,
+  external_id <span class="tok-k">text</span>  <span class="tok-k">generated always as</span> ((_raw-&gt;&gt;<span class="tok-s">'external_id'</span>)) <span class="tok-k">stored</span>,
+  metadata    <span class="tok-k">jsonb</span> <span class="tok-k">generated always as</span> ((_raw-&gt;<span class="tok-s">'metadata'</span>)) <span class="tok-k">stored</span>,
+
+  <span class="tok-k">primary key</span> (_env, id)
+);</code></pre>
+  <figcaption>129 generated columns across 14 tables, all derived from the stream catalog rather than hand-written.</figcaption>
+  </figure>
+
+  <p>A field added to our API can never break ingest. It is queryable as <code>_raw-&gt;&gt;'field'</code> the moment it appears, and promoting it to a typed column is pure DDL — <code>STORED</code> computes it from rows already present, so there is no backfill and no downtime.</p>
+
+  <p><strong>No foreign keys.</strong> Events routinely arrive with children before parents — a <code>group.user_added</code> can land before the <code>user.created</code> it references. An FK converts that ordering artifact into a hard write failure and a stuck stream. The original Stripe engine shipped FKs, collected bug reports for years, and eventually dropped all of them in one migration.</p>
+
+  <h3>One Postgres constraint worth knowing</h3>
+  <p>Postgres rejects <code>(_raw-&gt;&gt;'created_at')::timestamptz</code> in a generated column: casting text to <code>timestamptz</code> depends on the session's <code>DateStyle</code> and <code>TimeZone</code>, so it is not immutable. Stripe's engine never hits this because Stripe serializes times as Unix integers. We use ISO-8601 strings, so it hits us immediately.</p>
+  <p>The engine installs a parser built only from immutable primitives — <code>regexp_match</code>, <code>make_timestamp</code>, <code>timezone('UTC', …)</code>, <code>make_interval</code>. It handles fractional seconds, bare <code>Z</code>, and numeric offsets, and returns <code>NULL</code> rather than raising on anything it cannot parse, because a generated column that throws rejects the whole row and poisons the batch.</p>
+</section>
+
+<section id="hard">
+  <h2><span class="num">05</span>The hard parts</h2>
+  <p class="lede">Each of these is a documented failure in a comparable engine. They are the reason this is worth productizing rather than leaving to a cron script.</p>
+
+  <h3>Out-of-order delivery</h3>
+  <p>Every write is gated on a source-derived timestamp:</p>
+  <figure>
+<pre><code><span class="tok-k">on conflict</span> (_env, id) <span class="tok-k">do update set</span>
+  _raw = t._raw || <span class="tok-k">excluded</span>._raw,
+  _updated_at = <span class="tok-k">excluded</span>._updated_at,
+  _synced_at  = now()
+<span class="tok-k">where</span> <span class="tok-k">excluded</span>._updated_at &gt;= t._updated_at</code></pre>
+  </figure>
+  <p>It is <code>&gt;=</code> rather than <code>&gt;</code> deliberately. Two events can carry the same timestamp, and with a strict comparison the second is dropped permanently — which is exactly how the Stripe engine kept showing subscriptions as “trialing” after they converted. Ties resolve last-writer-wins, and reconciliation is the backstop rather than the comparison.</p>
+  <p>The timestamp is synthesized in the ingest layer and never by the database. A trigger stamping <code>now()</code> records when <em>you</em> wrote, which is not comparable across delivery paths — and worse, a redelivered event would always look newer than the row it replaces, defeating the gate entirely.</p>
+
+  <h3>Our event payloads are subsets of our objects</h3>
+  <p>This is the most consequential WorkOS-specific behaviour, and it is the one I would most like a second opinion on.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Event</th><th>Fields the REST object has and the event does not</th></tr></thead>
+    <tbody>
+      <tr><td><code>user.*</code></td><td><code>external_id</code>, <code>metadata</code>, <code>last_sign_in_at</code>, <code>locale</code></td></tr>
+      <tr><td><code>organization.*</code></td><td><code>metadata</code>, <code>stripe_customer_id</code>, <code>allow_profiles_outside_organization</code></td></tr>
+      <tr><td><code>organization_membership.*</code></td><td><code>organization_name</code>, <code>directory_managed</code>, embedded <code>user</code></td></tr>
+      <tr><td><code>role.*</code></td><td><code>id</code>, <code>name</code>, <code>description</code>, <code>resource_type_slug</code></td></tr>
+      <tr><td><code>dsync.user.*</code></td><td><code>groups</code> (explicitly omitted for performance)</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>A naive implementation replaces the row on every event and silently nulls out <code>external_id</code> — the exact column customers join on. So event writes shallow-merge into <code>_raw</code>, REST writes replace it, and hydration can re-fetch on create. Three mechanisms to work around one payload shape.</p>
+  <p class="q">Worth asking as a platform question rather than a sync-engine question: should <code>user.updated</code> just carry the full object?</p>
+
+  <h3>Deletes</h3>
+  <p>Tombstoned, not removed — <code>_deleted_at</code> is set and the last known payload is kept, because it is the only remaining record of what was deleted. Deletes are not staleness-gated, and <code>_deleted_at</code> is never cleared: a late <code>updated</code> event refreshes the payload but must not resurrect the row. Our IDs are ULIDs and never reused, so that is safe. Memberships are the exception, since a re-add is a genuine event.</p>
+
+  <h3>Reconciliation</h3>
+  <p>Three tiers on three cadences: continuous freshness, daily counts, weekly ID-set diff. The diff reports two numbers per stream, and they mean different things — rows present locally but not upstream are missed deletes, rows upstream but not local are missed creates.</p>
+  <p>Streams that cannot be reconciled say so explicitly rather than reporting a misleading zero:</p>
+  <figure>
+<pre><code>organization_domains  — no list endpoint upstream: drift cannot be detected for this stream
+events                — append-only stream: nothing to reconcile</code></pre>
+  </figure>
+</section>
+
+<section id="findings">
+  <h2><span class="num">06</span>What building this found in our own API</h2>
+  <p class="lede">The prototype passed 89 tests against a fake before it ever touched production. First contact with the real API broke it three times. All three are documentation or design issues on our side, and I think they are the most useful part of this document.</p>
+
+  <div class="finding">
+    <div class="tag">Finding 01 · spec is wrong</div>
+    <h3><code>events</code> is required, not optional</h3>
+    <p>The published OpenAPI spec marks the <code>events</code> filter <code>required: false</code>. The live endpoint disagrees:</p>
+<pre><code>GET /events?limit=100
+400 {"message":"One or more event names (e.g. dsync.user.created) must be
+     provided using the events parameter.","code":"invalid_events_request"}</code></pre>
+    <p>The Node SDK types the field as required, which reads like a generator artifact until you test it — the SDK is right and the spec is wrong. I validated all 63 catalog event names individually; unknown names are rejected the same way.</p>
+    <div class="impact"><b>Why it matters beyond a typo</b>
+      A consumer cannot subscribe to “everything.” It must enumerate event types, which means a newly shipped WorkOS event type does not reach any customer's sync until they update and redeploy. That is a real coupling between our release cadence and theirs, and it is currently undocumented.</div>
+  </div>
+
+  <div class="finding">
+    <div class="tag">Finding 02 · silent correctness trap</div>
+    <h3><code>order</code> has no effect, and <code>order=desc&amp;limit=1</code> returns the oldest event</h3>
+    <p><code>order=asc</code>, <code>order=desc</code>, and omitting the parameter return byte-identical pages, always oldest-first. The documented default of <code>desc</code> is not observable.</p>
+<pre><code>order=asc   → event_01KZCAQTRM…  20:02:53Z   (oldest)
+order=desc  → event_01KZCAQTRM…  20:02:53Z   (identical)
+(omitted)   → event_01KZCAQTRM…  20:02:53Z   (identical)</code></pre>
+    <p>The natural way to record “start from now” before a backfill is to ask for the newest event id with <code>order=desc&amp;limit=1</code>. That returns the <em>oldest</em> event instead, so the cursor lands at the beginning of the retention window and the tail replays 90 days on every fresh start.</p>
+    <div class="impact"><b>Why it matters</b>
+      Nothing errors. Writes are idempotent, so the mirror still converges — it just does a full replay while looking healthy. Our own docs describe cursors in terms of “the ID of the latest processed event,” which is the assumption that breaks. The fix is to record a timestamp and bootstrap with <code>range_start</code>, then switch to <code>after</code>.</div>
+  </div>
+
+  <div class="finding">
+    <div class="tag">Finding 03 · confirmed by testing</div>
+    <h3>Event payloads really are subsets, in production</h3>
+    <p>Verified end to end: a live <code>user.updated</code> for a user with <code>external_id</code> and <code>metadata</code> set carries neither. A whole-row upsert nulls both. This is documented, but the consequence — that the field customers use as their join key disappears on every update — is not.</p>
+    <div class="impact"><b>Also confirmed</b>
+      <code>range_start</code> and <code>after</code> are mutually exclusive and enforced (<code>400 "Only one of range_start and after may be provided."</code>), and <code>range_start=&lt;now&gt;</code> correctly returns zero events.</div>
+  </div>
+
+  <p>Independent of whether we ship a sync engine, these are worth fixing: correct the spec, document the ordering behaviour, and decide whether enumerated subscriptions are the contract we want.</p>
+</section>
+
+<section id="proof">
+  <h2><span class="num">07</span>Evidence</h2>
+  <p class="lede">Two live runs against production, plus a test suite that runs against real Postgres rather than mocks.</p>
+
+  <div class="stats">
+    <div class="stat"><b>92</b><span>TESTS PASSING</span></div>
+    <div class="stat"><b>48</b><span>ROWS IN 2.4s</span></div>
+    <div class="stat"><b>42</b><span>LIVE EVENTS TAILED</span></div>
+    <div class="stat"><b>3</b><span>API BUGS FOUND</span></div>
+  </div>
+
+  <h3>Read-only, against an environment with real data</h3>
+  <p>Backfilled 11 users, 3 organizations, 5 memberships, 4 domains, 6 directory users through a live SCIM directory, a <code>GenericSAML</code> connection, 2 roles and 9 permissions. Every real ISO-8601 timestamp parsed through the generated column, none null. Reconcile reported zero drift on all 11 streams, and a second backfill created nothing.</p>
+
+  <h3>Full cycle, against a disposable environment</h3>
+  <figure>
+<pre><code>✓ external_id survived backfill: ext_ada_mshzo32s
+✓ metadata survived backfill: {"plan":"enterprise","seat":"admin"}
+✓ processed 42 events from the Events API
+✓ update applied: last_name = Hopper-Murray
+✓ external_id NOT nulled by the update event: ext_grace_mshzo32s
+✓ hydration filled external_id on create: ext_kat_mshzo32s
+✓ deleted user is tombstoned, not dropped
+✓ re-running the tail changed nothing (8 = 8 users)
+✓ reconcile found the missed user: 1 remote-only
+✓ mirror is clean after repair</code></pre>
+  </figure>
+
+  <div class="callout">
+    <p><strong>The most convincing result was one I did not stage.</strong> Reconcile flagged a <code>connections</code> row the API did not have. It came from a real <code>connection.activated</code> event in that environment's history, for a connection that no longer exists. Backfill found zero connections; the event replay created one; no future event would ever correct it.</p>
+    <p>That is the missed-delete case occurring naturally in production data — the one failure mode only a set difference can catch. My test asserted zero drift there. The assertion was wrong; the engine was right.</p>
+  </div>
+
+  <p>Tests run against PGlite — real Postgres compiled to WebAssembly — so they exercise actual generated columns, <code>xmax</code>, jsonb operators and immutability rules, with no Docker and no setup. The fake API reproduces the behaviours that make syncing hard: subset payloads, out-of-order and duplicate delivery, rate limiting, and deletes that vanish from list endpoints.</p>
+</section>
+
+<section id="criticism">
+  <h2><span class="num">08</span>Where I want you to push back</h2>
+  <p class="lede">These are the decisions I am least sure about. Arguments welcome, especially on the first three.</p>
+
+  <div class="ask">
+    <div>
+      <h4>Should this be first-party at all?</h4>
+      <p>The Stripe path was community-first, then adoption. Starting first-party skips a step but commits us to API surface we might want to change. The counter-argument: shipping it ourselves is what makes the Events API's guarantees real rather than aspirational.</p>
+    </div>
+    <div>
+      <h4>Does this cannibalize anything?</h4>
+      <p>A customer with a local mirror makes fewer API calls, and their read path no longer depends on us being up. I think that is a feature and a trust argument — a continuously synced mirror is also an exit hatch, which defuses the lock-in objection that drives migrations away. But it is worth someone arguing the other side.</p>
+    </div>
+    <div>
+      <h4>Is a read model enough, or will people demand write-back?</h4>
+      <p>The sync is one-directional and I want to keep it that way. Sequin — the team who tried hardest at this — ended up writing a Postgres wire-protocol proxy to make synchronous write-through work, then de-prioritized the feature. Saying no is easy now and hard later.</p>
+    </div>
+    <div>
+      <h4>Should we fix the payload asymmetry instead of working around it?</h4>
+      <p>Three mechanisms exist in this engine solely because <code>user.updated</code> omits <code>external_id</code> and <code>metadata</code>. Making event payloads match the objects would delete all three. That is a platform change with its own costs, but it would improve every hand-rolled integration too, not just this one.</p>
+    </div>
+    <div>
+      <h4>Coverage: where should the line be?</h4>
+      <p>Currently 14 tables across identity, directory, SSO and RBAC. Audit logs are deliberately excluded — they have their own export and streaming products. FGA is poll-only because it emits no events at all. Both are defensible and both are arguable.</p>
+    </div>
+    <div>
+      <h4>Distribution</h4>
+      <p>The Stripe engine sat at ~400 downloads/month for six months as “a library plus a blog post,” then jumped to 56.8k the month a one-click dashboard integration shipped. Neither its launch nor its transfer to Stripe produced any HN discussion. If that pattern holds, the lever here is a setup path in the dashboard, not a launch post.</p>
+    </div>
+  </div>
+
+  <h4>Known limitations, stated plainly</h4>
+  <ul>
+    <li>Sessions are only listable per user and only while active, so backfill is partial by construction.</li>
+    <li>There is no <code>dsync.updated</code> event, so a directory going <code>linked → invalid_credentials</code> emits nothing. Only reconcile sees it.</li>
+    <li>SSO profiles cannot be mirrored at all — no list, no get, no events.</li>
+    <li>The mirror is eventually consistent. It is a read model, not a system of record: authorization decisions belong on the session token, and a just-created user should be read from the API response you already have.</li>
+  </ul>
+</section>
+
+<section id="bet">
+  <h2><span class="num">09</span>The bet</h2>
+  <p class="lede">Sequin's published wishlist for a “syncable API” — an ordered, replayable, cursor-paginated change feed with historical backfill — is a description of the Events API we already shipped.</p>
+  <p>Stripe's ecosystem had to reverse-engineer that around a 30-day event window and an endpoint that silently skipped events. We offer 90 days and documented ordering guarantees. The primitive is in place and, as far as I can tell, unexploited: nobody is building on it, and the customers who need it are hand-rolling a worse version.</p>
+  <p>The narrow read of this proposal is a library that saves customers a week of work. The wider read is that Stripe went OSS engine → one-click integration → <strong>Stripe Database</strong>, a managed hosted Postgres of your data, in about eighteen months. If that ladder is the right shape, this is the first rung, and the last rung is a product.</p>
+  <p>What I would like from this document is disagreement about which rung is worth standing on.</p>
+</section>
+
+<footer>
+  <p>Working prototype · library, CLI and container · 92 tests against real Postgres via PGlite · verified against the live WorkOS API on a disposable environment, with all test data removed afterwards. Findings in section 06 are independently actionable.</p>
+</footer>
+
+</main>
+</div>
+
+<script>
+(function(){
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  var map = {};
+  links.forEach(function(a){
+    var el = document.querySelector(a.getAttribute('href'));
+    if (el) map[el.id] = a;
+  });
+  var obs = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (!e.isIntersecting) return;
+      links.forEach(function(l){ l.classList.remove('on'); });
+      if (map[e.target.id]) map[e.target.id].classList.add('on');
+    });
+  }, { rootMargin: '-10% 0px -75% 0px', threshold: 0 });
+  Object.keys(map).forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) obs.observe(el);
+  });
+})();
+</script>
+</body>
+</html>
