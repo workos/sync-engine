@@ -17,7 +17,7 @@ You need:
 ## Install
 
 ```bash
-npm install @workos-inc/pg-sync
+npm install @workos/pg-sync
 ```
 
 The package ships both a library and a `workos-pg-sync` command.
@@ -98,7 +98,7 @@ The same engine runs as a library, which is how most people deploy it — no
 extra service, and it uses the database connection you already have.
 
 ```ts
-import { SyncEngine } from '@workos-inc/pg-sync'
+import { SyncEngine } from '@workos/pg-sync'
 
 const engine = new SyncEngine({
   databaseUrl: process.env.DATABASE_URL,

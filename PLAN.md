@@ -98,7 +98,7 @@ The newest and possibly strongest driver:
 
 ### 4.1 What it is
 
-- An **open-source TypeScript library** (`@workos-inc/pg-sync` shape) + **CLI** + **single-container service** — same code, three packagings. The library form won for the billing precedent (125k downloads/mo vs. 486/mo for the decomposed connector packages); keep the public surface coarse.
+- An **open-source TypeScript library** (`@workos/pg-sync` shape) + **CLI** + **single-container service** — same code, three packagings. The library form won for the billing precedent (125k downloads/mo vs. 486/mo for the decomposed connector packages); keep the public surface coarse.
 - **Read-only mirror.** One direction: WorkOS → Postgres. No write-back, ever.
 - **Postgres-first.** One destination done deeply (RLS examples, logical-replication fan-out, hosted-Postgres recipes). No connector framework until a second destination proves necessary.
 
@@ -316,7 +316,7 @@ Docs site with the query cookbook (the billing precedent's published SQL example
 7. Whether Tier 1 ships with a minimal Postgres NOTIFY/outbox example or leaves fan-out entirely to CDC.
 
 **Strategic:**
-8. First-party (WorkOS-owned repo, `@workos-inc/` scope) vs. community-first then adopt (the billing precedent's path). Given that precedent ended in first-party adoption anyway, starting first-party skips a step — but community-first derisks API commitments.
+8. First-party (WorkOS-owned repo, `@workos/` scope) vs. community-first then adopt (the billing precedent's path). Given that precedent ended in first-party adoption anyway, starting first-party skips a step — but community-first derisks API commitments.
 9. Relationship to a future hosted/managed offering. The billing precedent's trajectory names the ladder explicitly: OSS engine → one-click platform integration → **a managed hosted read-only Postgres**, previewed two weeks after the vendor took the engine over. The WorkOS equivalent ("WorkOS Database": a Postgres connection string to a managed mirror of your environment) is the plausible endgame; the OSS engine is both the on-ramp and the self-hosted tier. The managed tier needs the health-check surface built in Phase 2, and the one-click integration's issue tracker (cron misconfiguration, stale secrets, reinstall breakage) is the checklist of what a managed control plane must own.
 10. Mirror semantics education: the mirror faithfully reflects *vendor* state, which is not the same as *business* truth (the billing example: a subscription reads `active` while payments fail during a grace period). The query cookbook should encode the correct interpretations, not just raw joins.
 

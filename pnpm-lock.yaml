@@ -14,7 +14,7 @@ importers:
 
   examples/basic:
     dependencies:
-      '@workos-inc/pg-sync':
+      '@workos/pg-sync':
         specifier: workspace:*
         version: link:../../packages/pg-sync
     devDependencies:
