@@ -60,7 +60,7 @@ Or embed it — most deployments would, since it then uses the connection pool
 that already exists:
 
 ```ts
-import { SyncEngine } from '@workos-inc/pg-sync'
+import { SyncEngine } from '@workos/pg-sync'
 
 const engine = new SyncEngine({
   databaseUrl: process.env.DATABASE_URL,

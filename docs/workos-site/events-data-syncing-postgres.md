@@ -48,15 +48,15 @@ To get the most out of this guide, you'll need:
 :::code-group{title="Install the sync engine"}
 
 ```bash language="js" title="npm" tab="js-1"
-npm install @workos-inc/pg-sync
+npm install @workos/pg-sync
 ```
 
 ```bash language="js" title="Yarn" tab="js-2"
-yarn add @workos-inc/pg-sync
+yarn add @workos/pg-sync
 ```
 
 ```bash language="js" title="pnpm" tab="js-3"
-pnpm add @workos-inc/pg-sync
+pnpm add @workos/pg-sync
 ```
 
 :::
@@ -152,7 +152,7 @@ long-lived service.
 To embed it in an existing service instead of running a separate process:
 
 ```js title="Embedding the sync engine"
-import { SyncEngine } from '@workos-inc/pg-sync'
+import { SyncEngine } from '@workos/pg-sync'
 
 const engine = new SyncEngine({
   databaseUrl: process.env.DATABASE_URL,
@@ -315,7 +315,7 @@ verified delivery to prompt an immediate poll. State still flows through the
 ordered events API, so you keep the ordering and replay guarantees.
 
 ```js title="Webhook as a trigger"
-import { verifyWebhook } from '@workos-inc/pg-sync'
+import { verifyWebhook } from '@workos/pg-sync'
 
 app.post('/workos/webhook', async (req, res) => {
   verifyWebhook({

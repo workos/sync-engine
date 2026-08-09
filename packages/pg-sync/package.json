@@ -1,5 +1,5 @@
 {
-  "name": "@workos-inc/pg-sync",
+  "name": "@workos/pg-sync",
   "version": "0.1.0",
   "description": "Mirror your WorkOS data into Postgres. Backfill, tail the Events API, and reconcile drift.",
   "type": "module",

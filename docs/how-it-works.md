@@ -70,7 +70,7 @@ The engine derives its subscription from the streams you sync, so the two stay
 in step:
 
 ```ts
-import { subscribedEventTypes } from '@workos-inc/pg-sync'
+import { subscribedEventTypes } from '@workos/pg-sync'
 subscribedEventTypes()  // every event type the catalog knows about
 ```
 
@@ -82,7 +82,7 @@ hand, but it cannot conjure an event you never asked for. To widen the
 subscription without waiting for a release, pass `eventTypes` explicitly:
 
 ```ts
-import { subscribedEventTypes, ARCHIVE_ONLY_EVENT_TYPES } from '@workos-inc/pg-sync'
+import { subscribedEventTypes, ARCHIVE_ONLY_EVENT_TYPES } from '@workos/pg-sync'
 
 new SyncEngine({
   // ...
@@ -95,7 +95,7 @@ delivery wakes the poller immediately rather than waiting for the next
 interval — but the state still flows through the ordered stream.
 
 ```ts
-import { verifyWebhook } from '@workos-inc/pg-sync'
+import { verifyWebhook } from '@workos/pg-sync'
 
 app.post('/workos/webhook', async (req, res) => {
   verifyWebhook({

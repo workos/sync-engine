@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@workos-inc/pg-sync": "workspace:*"
+    "@workos/pg-sync": "workspace:*"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",

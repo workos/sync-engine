@@ -232,7 +232,7 @@ engine.listen().catch((err) => { logger.error(err); process.exit(1) })
 
 ```dockerfile
 FROM node:22-slim
-RUN npm install -g @workos-inc/pg-sync
+RUN npm install -g @workos/pg-sync
 CMD ["workos-pg-sync", "listen"]
 ```
 

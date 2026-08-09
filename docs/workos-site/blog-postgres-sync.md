@@ -100,4 +100,4 @@ replaces a set of per-endpoint tools, and the grant is easy to reason about.
 ## Available now
 
 Postgres Sync is available today under an MIT license. Install it with
-`npm install @workos-inc/pg-sync`. Check out the docs for more information.
+`npm install @workos/pg-sync`. Check out the docs for more information.
