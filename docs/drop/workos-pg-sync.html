@@ -347,9 +347,9 @@ html{scroll-behavior:smooth}
 <span class="tok-k">export</span> DATABASE_URL=<span class="tok-s">postgres://localhost/app</span>
 <span class="tok-k">export</span> WORKOS_API_KEY=<span class="tok-s">sk_live_…</span>
 
-npx workos-sync init       <span class="tok-c"># create the schema</span>
-npx workos-sync backfill   <span class="tok-c"># load what already exists</span>
-npx workos-sync listen     <span class="tok-c"># tail the Events API</span></code></pre>
+npx workos-pg-sync init       <span class="tok-c"># create the schema</span>
+npx workos-pg-sync backfill   <span class="tok-c"># load what already exists</span>
+npx workos-pg-sync listen     <span class="tok-c"># tail the Events API</span></code></pre>
   </figure>
 
   <div class="tablewrap">
@@ -369,7 +369,7 @@ npx workos-sync listen     <span class="tok-c"># tail the Events API</span></cod
 
   <h4>Library</h4>
   <figure>
-<pre><code><span class="tok-k">import</span> { SyncEngine } <span class="tok-k">from</span> <span class="tok-s">'@workos-inc/sync-engine'</span>
+<pre><code><span class="tok-k">import</span> { SyncEngine } <span class="tok-k">from</span> <span class="tok-s">'@workos-inc/pg-sync'</span>
 
 <span class="tok-k">const</span> engine = <span class="tok-k">new</span> SyncEngine({
   databaseUrl: process.env.DATABASE_URL,

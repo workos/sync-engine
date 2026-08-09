@@ -39,7 +39,7 @@ stand-in WorkOS API and an embedded Postgres:
 
 ```bash
 pnpm install
-pnpm --filter workos-sync-example start
+pnpm --filter workos-pg-sync-example start
 ```
 
 You will see the schema get created, existing data backfilled, live events
@@ -51,16 +51,16 @@ tailed, joins answered, and drift detected and repaired.
 export DATABASE_URL=postgres://localhost/app
 export WORKOS_API_KEY=sk_live_...
 
-npx workos-sync init       # create the schema
-npx workos-sync backfill   # load what already exists
-npx workos-sync listen     # tail the Events API
+npx workos-pg-sync init       # create the schema
+npx workos-pg-sync backfill   # load what already exists
+npx workos-pg-sync listen     # tail the Events API
 ```
 
 Or embed it — most deployments would, since it then uses the connection pool
 that already exists:
 
 ```ts
-import { SyncEngine } from '@workos-inc/sync-engine'
+import { SyncEngine } from '@workos-inc/pg-sync'
 
 const engine = new SyncEngine({
   databaseUrl: process.env.DATABASE_URL,
@@ -154,7 +154,7 @@ sync is one-directional and there is no write-back.
 ## Repo layout
 
 ```
-packages/sync-engine/   the library and CLI
+packages/pg-sync/   the library and CLI
 examples/basic/         runnable demo + the live-API test scripts
 docs/                   getting started, how it works, schema, queries,
                         operations, consistency

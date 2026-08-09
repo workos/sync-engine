@@ -39,8 +39,8 @@ creates a `workos` schema in your database, loads everything that already
 exists, and then follows the events API to stay current.
 
 ```
-npx workos-sync backfill
-npx workos-sync listen
+npx workos-pg-sync backfill
+npx workos-pg-sync listen
 ```
 
 After that, your identity data is ordinary tables:
@@ -100,4 +100,4 @@ replaces a set of per-endpoint tools, and the grant is easy to reason about.
 ## Available now
 
 Postgres Sync is available today under an MIT license. Install it with
-`npm install @workos-inc/sync-engine`. Check out the docs for more information.
+`npm install @workos-inc/pg-sync`. Check out the docs for more information.

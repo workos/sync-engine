@@ -1,5 +1,5 @@
 {
-  "name": "workos-sync-engine-workspace",
+  "name": "workos-pg-sync-workspace",
   "private": true,
   "type": "module",
   "scripts": {

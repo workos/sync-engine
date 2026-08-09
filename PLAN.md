@@ -10,7 +10,7 @@ Modeled on the Stripe Sync Engine (born at Supabase, adopted first-party by Stri
 
 Every serious WorkOS customer eventually hand-rolls a partial version of this: a `users` table kept in sync via webhooks, an `organizations` table populated by ad-hoc API calls, a cron job that patches up drift. The auth vendors themselves document the pattern (Clerk, Auth0, Okta all publish "sync to your DB" guides) while warning about its failure modes — and WorkOS's own docs argue at length that the Events API is the right way to do it, then leave the implementation to the customer.
 
-This plan proposes **`workos-sync-engine`**: an open-source TypeScript library + single-container service that maintains a `workos` schema in the customer's Postgres, populated by:
+This plan proposes **`workos-pg-sync`**: an open-source TypeScript library + single-container service that maintains a `workos` schema in the customer's Postgres, populated by:
 
 1. **Backfill** — paginated REST list calls for initial/historical state,
 2. **Tail** — continuous polling of the WorkOS Events API (ordered, replayable, 90-day retention) with a durable cursor,
@@ -98,25 +98,25 @@ The newest and possibly strongest driver:
 
 ### 4.1 What it is
 
-- An **open-source TypeScript library** (`@workos-inc/sync-engine` shape) + **CLI** + **single-container service** — same code, three packagings. The library form won for Stripe (125k downloads/mo vs. 486/mo for the decomposed connector packages); keep the public surface coarse.
+- An **open-source TypeScript library** (`@workos-inc/pg-sync` shape) + **CLI** + **single-container service** — same code, three packagings. The library form won for Stripe (125k downloads/mo vs. 486/mo for the decomposed connector packages); keep the public surface coarse.
 - **Read-only mirror.** One direction: WorkOS → Postgres. No write-back, ever.
 - **Postgres-first.** One destination done deeply (RLS examples, logical-replication fan-out, Supabase recipe). No connector framework until a second destination proves necessary.
 
 ### 4.2 What it is not (naming hazards)
 
 - Not **"Pipes"** — WorkOS Pipes is an unrelated third-party OAuth connector product. Avoid *pipes*, *connector*, and *data integration* in all naming.
-- Not **"pgsync"** as a public name — collides with the established `toluaina/pgsync` (Postgres→Elasticsearch). Working name for the repo directory only; recommend **`workos-sync-engine`** publicly, mirroring `stripe/sync-engine`.
+- Not **"pgsync"** as a public name — collides with the established `toluaina/pgsync` (Postgres→Elasticsearch). Working name for the repo directory only; recommend **`workos-pg-sync`** publicly, mirroring `stripe/sync-engine`.
 - Not an ETL/analytics product (though the mirror feeds warehouses via existing Postgres connectors for free), not an audit-log pipeline (Audit Logs have their own export/streaming products; see §7 Tier 4).
 
 ### 4.3 Primary interfaces
 
 ```
-workos-sync init        # create schema, tables, sync_state; validate API key
-workos-sync backfill    # full or per-object initial load; resumable
-workos-sync listen      # tail the Events API continuously (the daemon)
-workos-sync reconcile   # counts + ID-set diff + repair; --repair to fix
-workos-sync status      # cursor age, per-table freshness/lag, last errors
-workos-sync redact      # purge one subject's rows + raw events (GDPR)
+workos-pg-sync init        # create schema, tables, sync_state; validate API key
+workos-pg-sync backfill    # full or per-object initial load; resumable
+workos-pg-sync listen      # tail the Events API continuously (the daemon)
+workos-pg-sync reconcile   # counts + ID-set diff + repair; --repair to fix
+workos-pg-sync status      # cursor age, per-table freshness/lag, last errors
+workos-pg-sync redact      # purge one subject's rows + raw events (GDPR)
 ```
 
 Library equivalents: `createSyncEngine(config)`, `.backfill()`, `.start()`, `.reconcile()`, `.processWebhook(body, sig)` (optional webhook ingestion for the wake-up pattern, §5.4).
