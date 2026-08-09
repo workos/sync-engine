@@ -10,9 +10,9 @@ importers:
 
   examples/basic:
     dependencies:
-      '@workos-inc/sync-engine':
+      '@workos-inc/pg-sync':
         specifier: workspace:*
-        version: link:../../packages/sync-engine
+        version: link:../../packages/pg-sync
     devDependencies:
       '@electric-sql/pglite':
         specifier: ^0.2.17
@@ -27,7 +27,7 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
 
-  packages/sync-engine:
+  packages/pg-sync:
     dependencies:
       pg:
         specifier: ^8.13.1

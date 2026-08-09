@@ -1,12 +1,12 @@
 {
-  "name": "@workos-inc/sync-engine",
+  "name": "@workos-inc/pg-sync",
   "version": "0.1.0",
   "description": "Mirror your WorkOS data into Postgres. Backfill, tail the Events API, and reconcile drift.",
   "type": "module",
   "license": "MIT",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "bin": { "workos-sync": "./dist/cli.js" },
+  "bin": { "workos-pg-sync": "./dist/cli.js" },
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "files": ["dist"],
   "scripts": {

@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * workos-sync — command line interface.
+ * workos-pg-sync — command line interface.
  *
- *   workos-sync init                 create the schema
- *   workos-sync backfill [--resume]  page the list endpoints
- *   workos-sync listen               tail the Events API
- *   workos-sync reconcile [--repair] detect (and optionally fix) drift
- *   workos-sync refresh              re-list to refresh partial event fields
- *   workos-sync status               cursor age and per-stream freshness
- *   workos-sync redact --user <id>   erase one subject
- *   workos-sync streams              list what this build can mirror
+ *   workos-pg-sync init                 create the schema
+ *   workos-pg-sync backfill [--resume]  page the list endpoints
+ *   workos-pg-sync listen               tail the Events API
+ *   workos-pg-sync reconcile [--repair] detect (and optionally fix) drift
+ *   workos-pg-sync refresh              re-list to refresh partial event fields
+ *   workos-pg-sync status               cursor age and per-stream freshness
+ *   workos-pg-sync redact --user <id>   erase one subject
+ *   workos-pg-sync streams              list what this build can mirror
  */
 import { SyncEngine } from './engine.js'
 import { STREAMS } from './catalog.js'
@@ -87,10 +87,10 @@ function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfi
   }
 }
 
-const HELP = `workos-sync — mirror WorkOS data into Postgres
+const HELP = `workos-pg-sync — mirror WorkOS data into Postgres
 
 Usage
-  workos-sync <command> [flags]
+  workos-pg-sync <command> [flags]
 
 Commands
   init                 Create the schema and bookkeeping tables

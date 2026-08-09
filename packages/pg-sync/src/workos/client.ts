@@ -115,7 +115,7 @@ export class WorkOSClient {
         res = await this.fetchImpl(url.toString(), {
           headers: {
             Authorization: `Bearer ${this.opts.apiKey}`,
-            'User-Agent': 'workos-sync-engine',
+            'User-Agent': 'workos-pg-sync',
             Accept: 'application/json',
           },
         })

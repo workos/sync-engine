@@ -17,10 +17,10 @@ You need:
 ## Install
 
 ```bash
-npm install @workos-inc/sync-engine
+npm install @workos-inc/pg-sync
 ```
 
-The package ships both a library and a `workos-sync` command.
+The package ships both a library and a `workos-pg-sync` command.
 
 ## Create the schema
 
@@ -28,7 +28,7 @@ The package ships both a library and a `workos-sync` command.
 export DATABASE_URL="postgres://localhost:5432/app"
 export WORKOS_API_KEY="sk_live_..."
 
-npx workos-sync init
+npx workos-pg-sync init
 ```
 
 This creates a `workos` schema, one table per synced object, and two
@@ -40,7 +40,7 @@ To use a different schema name, set `WORKOS_SYNC_SCHEMA` or pass `--schema`.
 ## Load what already exists
 
 ```bash
-npx workos-sync backfill
+npx workos-pg-sync backfill
 ```
 
 Backfill pages the REST list endpoints and writes everything it finds. Before
@@ -60,7 +60,7 @@ last checkpoint instead of starting over.
 ## Start syncing
 
 ```bash
-npx workos-sync listen
+npx workos-pg-sync listen
 ```
 
 The engine now polls the Events API from its stored cursor and applies each
@@ -98,7 +98,7 @@ The same engine runs as a library, which is how most people deploy it — no
 extra service, and it uses the database connection you already have.
 
 ```ts
-import { SyncEngine } from '@workos-inc/sync-engine'
+import { SyncEngine } from '@workos-inc/pg-sync'
 
 const engine = new SyncEngine({
   databaseUrl: process.env.DATABASE_URL,
@@ -138,8 +138,8 @@ primary key.
 Schedule a reconciliation:
 
 ```bash
-npx workos-sync reconcile            # report drift, exit 2 if any is found
-npx workos-sync reconcile --repair   # fix it
+npx workos-pg-sync reconcile            # report drift, exit 2 if any is found
+npx workos-pg-sync reconcile --repair   # fix it
 ```
 
 Reconciliation compares the mirror against the API and reports two numbers per

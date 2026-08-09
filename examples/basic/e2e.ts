@@ -17,8 +17,8 @@
  *   5. detect drift the event stream cannot see, and repair it
  */
 import { PGlite } from '@electric-sql/pglite'
-import { SyncEngine, WorkOSClient, type SqlClient } from '@workos-inc/sync-engine'
-import { FakeWorkOS } from '../../packages/sync-engine/test/helpers/fake-workos.js'
+import { SyncEngine, WorkOSClient, type SqlClient } from '@workos-inc/pg-sync'
+import { FakeWorkOS } from '../../packages/pg-sync/test/helpers/fake-workos.js'
 
 const heading = (n: number, title: string) =>
   console.log(`\n\x1b[1m${n}. ${title}\x1b[0m\n${'─'.repeat(60)}`)

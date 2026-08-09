@@ -1,5 +1,5 @@
 /**
- * @workos-inc/sync-engine
+ * @workos-inc/pg-sync
  *
  * Mirror WorkOS data into your own Postgres so you can join it with your
  * application's tables in SQL.
