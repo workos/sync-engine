@@ -5,9 +5,9 @@ allowBuilds:
   esbuild: true
 
 overrides:
-  # Security patches for transitive dev tooling. vitest 3.2.7 accepts vite 7
-  # (`^5 || ^6 || ^7.0.0-0`), and vite 7 brings an esbuild past the advisory,
-  # so both are pinned forward rather than left on vitest's defaults.
+  # Security floors for transitive dev tooling. vitest 5 itself requires vite
+  # ^7.1.12, which brings an esbuild past the advisory; the floors stay so no
+  # future vitest range can resolve below them.
   vite: "^7.1.12" # GHSA vite <= 6.4.2
   esbuild: "^0.25.0" # esbuild <= 0.24.2
 
