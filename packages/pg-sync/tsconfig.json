@@ -12,7 +12,11 @@
     "declaration": true,
     "sourceMap": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    // Typecheck and editors see @workos/sync source directly, so a change
+    // there never needs a rebuild to show up here. The build (tsconfig.build)
+    // clears this and resolves the real package.
+    "paths": { "@workos/sync": ["../sync/src/index.ts"] }
   },
   "include": ["src/**/*", "test/**/*"]
 }

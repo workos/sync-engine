@@ -223,7 +223,7 @@ behind.
 and it uses the connection pool you already have.
 
 ```ts
-const engine = new SyncEngine({ databaseUrl, environments })
+const engine = new SyncEngine({ destination: new PostgresDestination({ databaseUrl }), environments })
 await engine.init()
 engine.listen().catch((err) => { logger.error(err); process.exit(1) })
 ```

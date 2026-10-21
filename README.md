@@ -60,10 +60,10 @@ Or embed it — most deployments would, since it then uses the connection pool
 that already exists:
 
 ```ts
-import { SyncEngine } from '@workos/pg-sync'
+import { SyncEngine, PostgresDestination } from '@workos/pg-sync'
 
 const engine = new SyncEngine({
-  databaseUrl: process.env.DATABASE_URL,
+  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
   environments: [{ name: 'production', apiKey: process.env.WORKOS_API_KEY! }],
   hydrate: { users: 'on_create' },
 })
@@ -153,8 +153,16 @@ sync is one-directional and there is no write-back.
 
 ## Repo layout
 
+Two packages. `@workos/sync` is the engine-agnostic core: the stream catalog,
+event routing, backfill, tail and reconcile, writing through a small
+`Destination` interface. `@workos/pg-sync` is the Postgres destination plus the
+CLI, and re-exports the core so it is the only package an application installs.
+A future engine (Snowflake, SQLite, ...) is another implementation of
+`Destination`.
+
 ```
-packages/pg-sync/   the library and CLI
+packages/sync/          @workos/sync — the engine, catalog, router, API client
+packages/pg-sync/       @workos/pg-sync — PostgresDestination, DDL, CLI
 examples/basic/         runnable demo + the live-API test scripts
 docs/                   getting started, how it works, schema, queries,
                         operations, consistency

@@ -3,11 +3,10 @@
  * fake WorkOS API and a real Postgres.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync'
 import { createTestDb } from './helpers/pg.js'
-import { FakeWorkOS, resetIds } from './helpers/fake-workos.js'
-import { SyncEngine } from '../src/engine.js'
-import { WorkOSClient } from '../src/workos/client.js'
-import { silentLogger } from '../src/logger.js'
+import { FakeWorkOS, resetIds } from '../../sync/test/helpers/fake-workos.js'
+import { PostgresDestination } from '../src/destination.js'
 import type { SqlClient } from '../src/db/client.js'
 
 const TIER1 = [
@@ -23,7 +22,7 @@ const TIER1 = [
 function makeEngine(db: SqlClient, fake: FakeWorkOS, streams = TIER1, extra = {}) {
   return new SyncEngine(
     {
-      schema: 'workos',
+      destination: new PostgresDestination({ db, schema: 'workos' }),
       environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
       streams,
       logger: silentLogger,
@@ -31,7 +30,6 @@ function makeEngine(db: SqlClient, fake: FakeWorkOS, streams = TIER1, extra = {}
       ...extra,
     },
     {
-      db,
       clientFor: () =>
         new WorkOSClient({
           apiKey: 'sk_test_1',
@@ -318,7 +316,7 @@ describe('sync engine', () => {
 
     const engine = new SyncEngine(
       {
-        schema: 'workos',
+        destination: new PostgresDestination({ db, schema: 'workos' }),
         environments: [
           { name: 'prod', apiKey: 'sk_live' },
           { name: 'staging', apiKey: 'sk_test' },
@@ -328,7 +326,6 @@ describe('sync engine', () => {
         lagWindowMs: 0,
       },
       {
-        db,
         clientFor: (env) =>
           new WorkOSClient({
             apiKey: env.apiKey,

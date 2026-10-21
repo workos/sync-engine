@@ -1,6 +1,7 @@
 /**
  * Core types for the WorkOS sync engine.
  */
+import type { Destination } from './destination.js'
 
 /** Column types we project out of the raw JSONB payload. */
 export type ColumnType = 'text' | 'boolean' | 'bigint' | 'numeric' | 'jsonb' | 'timestamptz'
@@ -105,10 +106,8 @@ export interface EnvironmentConfig {
 export type HydrateMode = 'off' | 'on_create' | 'always'
 
 export interface SyncEngineConfig {
-  /** Postgres connection string, or a pre-built client. */
-  databaseUrl?: string
-  /** Schema the mirror lives in. Applies to DDL *and* DML. */
-  schema?: string
+  /** Where the mirror is written, e.g. `new PostgresDestination(...)` from `@workos/pg-sync`. */
+  destination: Destination
   environments: EnvironmentConfig[]
   /** Streams to sync. Defaults to every tier 1-3 stream. */
   streams?: string[]
@@ -129,12 +128,8 @@ export interface SyncEngineConfig {
    * ID generation. Reprocessing is free; a skipped event is not.
    */
   lagWindowMs?: number
-  /** Rows per upsert statement. */
-  batchSize?: number
   /** Page size for list and event calls. The API default is 10; always send 100. */
   pageSize?: number
-  /** Identifier when several syncs share one database. */
-  syncId?: string
   logger?: Logger
 }
 

@@ -10,7 +10,7 @@
  * reconciliation reporting zero drift immediately after a backfill.
  */
 import { PGlite } from '@electric-sql/pglite'
-import { SyncEngine, WorkOSClient, type SqlClient } from '@workos/pg-sync'
+import { SyncEngine, WorkOSClient, PostgresDestination, type SqlClient } from '@workos/pg-sync'
 
 const API_KEY = process.env.WORKOS_API_KEY
 if (!API_KEY) throw new Error('WORKOS_API_KEY is not set')
@@ -43,7 +43,7 @@ async function main() {
 
   const engine = new SyncEngine(
     {
-      schema: 'workos',
+      destination: new PostgresDestination({ db, schema: 'workos' }),
       environments: [{ name: ENV_LABEL, apiKey: API_KEY!, apiUrl: API_URL }],
       streams: [
         'users', 'organizations', 'organization_memberships', 'organization_domains',
@@ -58,7 +58,7 @@ async function main() {
         error: (m, f) => console.error('   error:', m, JSON.stringify(f ?? {})),
       },
     },
-    { db, clientFor: (env) => new WorkOSClient({ apiKey: env.apiKey, apiUrl: API_URL, pageSize: 100 }) },
+    { clientFor: (env) => new WorkOSClient({ apiKey: env.apiKey, apiUrl: API_URL, pageSize: 100 }) },
   )
 
   step('1.', 'Create the schema against real Postgres')

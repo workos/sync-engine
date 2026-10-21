@@ -7,8 +7,7 @@
  * mirror table — or one this version of the engine has never heard of — remains
  * queryable in `workos.events`.
  */
-import type { SqlClient } from '../db/client.js'
-import { upsertRows, deleteRows, relinkRows } from '../db/upsert.js'
+import type { Destination } from '../destination.js'
 import { streamByName } from '../catalog.js'
 import { routeEvent, sourceUpdatedAt, objectIdOf } from '../router.js'
 import type { WorkOSClient } from '../workos/client.js'
@@ -16,9 +15,7 @@ import type { HydrateMode, Logger, WorkOSEvent, WriteStats } from '../types.js'
 import { addStats, emptyStats } from '../types.js'
 
 export interface ApplyOptions {
-  schema: string
   env: string
-  batchSize?: number
   logger?: Logger
   hydrate?: HydrateMode | Record<string, HydrateMode>
   api?: WorkOSClient
@@ -40,7 +37,7 @@ function hydrateModeFor(opts: ApplyOptions, stream: string): HydrateMode {
 }
 
 export async function applyEvents(
-  db: SqlClient,
+  destination: Destination,
   events: WorkOSEvent[],
   opts: ApplyOptions,
 ): Promise<ApplyResult> {
@@ -61,9 +58,7 @@ export async function applyEvents(
   // 1. Archive every event verbatim. This is the local audit trail, the replay
   //    source, and the reason an unrecognised event is never a data loss event.
   const eventsStream = streamByName('events')!
-  const archived = await upsertRows(
-    db,
-    { schema: opts.schema, batchSize: opts.batchSize },
+  const archived = await destination.upsert(
     eventsStream,
     opts.env,
     events.map((e) => ({ data: e as unknown as Record<string, unknown>, updatedAt: e.created_at })),
@@ -122,7 +117,6 @@ export async function applyEvents(
   for (const [streamName, streamOps] of ops) {
     const def = streamByName(streamName)
     if (!def) continue
-    const writeOpts = { schema: opts.schema, batchSize: opts.batchSize }
 
     // Group consecutive ops of the same kind so ordering is preserved while
     // still batching. An upsert followed by a delete must not be reordered.
@@ -138,19 +132,19 @@ export async function applyEvents(
       switch (kind) {
         case 'upsert':
           // Merge: event payloads are subsets of the REST object.
-          bump(streamName, await upsertRows(db, writeOpts, def, opts.env, rows, 'merge'))
+          bump(streamName, await destination.upsert(def, opts.env, rows, 'merge'))
           break
         case 'append':
-          bump(streamName, await upsertRows(db, writeOpts, def, opts.env, rows, 'replace'))
+          bump(streamName, await destination.upsert(def, opts.env, rows, 'replace'))
           break
         case 'delete':
-          bump(streamName, await deleteRows(db, writeOpts, def, opts.env, rows))
+          bump(streamName, await destination.delete(def, opts.env, rows))
           break
         case 'link':
-          bump(streamName, await relinkRows(db, writeOpts, def, opts.env, rows))
+          bump(streamName, await destination.relink(def, opts.env, rows))
           break
         case 'unlink':
-          bump(streamName, await deleteRows(db, writeOpts, def, opts.env, rows))
+          bump(streamName, await destination.delete(def, opts.env, rows))
           break
       }
     }

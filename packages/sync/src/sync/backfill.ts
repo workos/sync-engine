@@ -11,18 +11,15 @@
  * idempotent upserts resolve the collision. Trying to make the two phases abut
  * precisely is how gaps get created.
  */
-import type { SqlClient } from '../db/client.js'
-import { upsertRows } from '../db/upsert.js'
-import type { StateStore, BackfillState } from '../db/state.js'
+import type { Destination, Row } from '../destination.js'
+import type { StateStore, BackfillState } from '../state.js'
 import type { WorkOSClient } from '../workos/client.js'
 import { streamByName } from '../catalog.js'
 import type { Logger, StreamDef, WriteStats } from '../types.js'
 import { addStats, emptyStats } from '../types.js'
 
 export interface BackfillOptions {
-  schema: string
   env: string
-  batchSize?: number
   logger?: Logger
   /** Resume from stored state instead of restarting the stream. */
   resume?: boolean
@@ -35,26 +32,8 @@ export interface BackfillStreamResult {
   skippedReason?: string
 }
 
-/** Rows of a parent stream, for endpoints that can only be listed per parent. */
-async function parentIds(
-  db: SqlClient,
-  schema: string,
-  env: string,
-  parentStream: string,
-): Promise<string[]> {
-  const def = streamByName(parentStream)
-  if (!def) return []
-  const idCol = def.key[0] ?? 'id'
-  const r = await db.query<{ id: string }>(
-    `select "${idCol}" as id from "${schema}"."${parentStream}"
-     where "_env" = $1 and "_deleted_at" is null order by "${idCol}"`,
-    [env],
-  )
-  return r.rows.map((row) => row.id)
-}
-
 export async function backfillStream(
-  db: SqlClient,
+  destination: Destination,
   api: WorkOSClient,
   state: StateStore,
   stream: StreamDef,
@@ -66,7 +45,7 @@ export async function backfillStream(
   // Organization domains arrive embedded in the organization payload; there is
   // no standalone list endpoint for them.
   if (stream.name === 'organization_domains') {
-    return backfillEmbeddedDomains(db, opts, stats)
+    return backfillEmbeddedDomains(destination, opts, stats)
   }
 
   if (!stream.list) {
@@ -84,9 +63,7 @@ export async function backfillStream(
   const write = async (rows: Record<string, unknown>[]) => {
     // REST is the authoritative full object, so it replaces `_raw` rather than
     // merging into it.
-    const s = await upsertRows(
-      db,
-      { schema: opts.schema, batchSize: opts.batchSize },
+    const s = await destination.upsert(
       stream,
       opts.env,
       rows.map((data) => ({
@@ -110,7 +87,8 @@ export async function backfillStream(
         : 'global'
 
   if (stream.list.parent) {
-    const parents = await parentIds(db, opts.schema, opts.env, stream.list.parent.stream)
+    const parentDef = streamByName(stream.list.parent.stream)
+    const parents = parentDef ? await destination.liveIds(parentDef, opts.env) : []
     opts.logger?.info('backfill starting (per-parent)', {
       stream: stream.name,
       parents: parents.length,
@@ -176,24 +154,19 @@ export async function backfillStream(
  * rows the organizations backfill already wrote.
  */
 async function backfillEmbeddedDomains(
-  db: SqlClient,
+  destination: Destination,
   opts: BackfillOptions,
   stats: WriteStats,
 ): Promise<BackfillStreamResult> {
   const def = streamByName('organization_domains')!
-  const r = await db.query<{ domains: unknown; org_id: string }>(
-    `select "_raw"->'domains' as domains, "id" as org_id
-     from "${opts.schema}"."organizations"
-     where "_env" = $1 and "_raw" ? 'domains'`,
-    [opts.env],
-  )
-  const rows: { data: Record<string, unknown>; updatedAt: string }[] = []
-  for (const row of r.rows) {
-    const domains = Array.isArray(row.domains) ? row.domains : []
+  const orgs = await destination.rawRows(streamByName('organizations')!, opts.env)
+  const rows: Row[] = []
+  for (const org of orgs) {
+    const domains = Array.isArray(org['domains']) ? org['domains'] : []
     for (const d of domains as Record<string, unknown>[]) {
       if (!d || typeof d !== 'object' || !d['id']) continue
       rows.push({
-        data: { organization_id: row.org_id, ...d },
+        data: { organization_id: org['id'], ...d },
         updatedAt:
           (typeof d['updated_at'] === 'string' && d['updated_at']) ||
           (typeof d['created_at'] === 'string' && d['created_at']) ||
@@ -201,14 +174,7 @@ async function backfillEmbeddedDomains(
       })
     }
   }
-  const s = await upsertRows(
-    db,
-    { schema: opts.schema, batchSize: opts.batchSize },
-    def,
-    opts.env,
-    rows,
-    'replace',
-  )
+  const s = await destination.upsert(def, opts.env, rows, 'replace')
   opts.logger?.info('backfill complete (from embedded organization payloads)', {
     stream: 'organization_domains',
     ...s,
