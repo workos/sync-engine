@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * workos-pg-sync — command line interface.
+ * workos-sync-postgres — command line interface.
  *
- *   workos-pg-sync init                 create the schema
- *   workos-pg-sync backfill [--resume]  page the list endpoints
- *   workos-pg-sync listen               tail the Events API
- *   workos-pg-sync reconcile [--repair] detect (and optionally fix) drift
- *   workos-pg-sync refresh              re-list to refresh partial event fields
- *   workos-pg-sync status               cursor age and per-stream freshness
- *   workos-pg-sync redact --user <id>   erase one subject
- *   workos-pg-sync streams              list what this build can mirror
+ *   workos-sync-postgres init                 create the schema
+ *   workos-sync-postgres backfill [--resume]  page the list endpoints
+ *   workos-sync-postgres listen               tail the Events API
+ *   workos-sync-postgres reconcile [--repair] detect (and optionally fix) drift
+ *   workos-sync-postgres refresh              re-list to refresh partial event fields
+ *   workos-sync-postgres status               cursor age and per-stream freshness
+ *   workos-sync-postgres redact --user <id>   erase one subject
+ *   workos-sync-postgres streams              list what this build can mirror
  */
 import {
   SyncEngine,
@@ -18,7 +18,7 @@ import {
   type EnvironmentConfig,
   type LogLevel,
   type SyncEngineConfig,
-} from '@workos/sync'
+} from '@workos/sync-engine'
 import { PostgresDestination } from './destination.js'
 
 interface Args {
@@ -97,10 +97,10 @@ function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfi
   }
 }
 
-const HELP = `workos-pg-sync — mirror WorkOS data into Postgres
+const HELP = `workos-sync-postgres — mirror WorkOS data into Postgres
 
 Usage
-  workos-pg-sync <command> [flags]
+  workos-sync-postgres <command> [flags]
 
 Commands
   init                 Create the schema and bookkeeping tables

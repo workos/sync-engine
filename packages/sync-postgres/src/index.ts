@@ -1,10 +1,10 @@
 /**
- * @workos/pg-sync
+ * @workos/sync-postgres
  *
  * Mirror WorkOS data into your own Postgres so you can join it with your
  * application's tables in SQL.
  *
- * The engine itself lives in `@workos/sync` and is re-exported here, so this
+ * The engine itself lives in `@workos/sync-engine` and is re-exported here, so this
  * one package is all an application needs to import. This package adds the
  * Postgres destination, the DDL and write path behind it, and the CLI.
  *
@@ -12,7 +12,7 @@
  * seconds. Read from it for joins, lists, dashboards, analytics and agents;
  * keep writes and authoritative post-signup checks on the WorkOS API.
  */
-export * from '@workos/sync'
+export * from '@workos/sync-engine'
 
 export { PostgresDestination } from './destination.js'
 export type { PostgresDestinationOptions } from './destination.js'

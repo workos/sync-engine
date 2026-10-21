@@ -1,10 +1,10 @@
 /**
- * @workos/sync
+ * @workos/sync-engine
  *
  * The engine-agnostic core for mirroring WorkOS data into a database of your
  * choosing: the stream catalog, event routing, backfill, the events tail and
  * reconciliation. Writes go through the `Destination` interface; pair this
- * with a destination package such as `@workos/pg-sync`.
+ * with a destination package such as `@workos/sync-postgres`.
  *
  * The mirror is a **read model**. It is eventually consistent, typically within
  * seconds. Read from it for joins, lists, dashboards, analytics and agents;

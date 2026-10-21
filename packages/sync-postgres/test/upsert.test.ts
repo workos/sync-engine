@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb } from './helpers/pg.js'
 import { migrate } from '../src/schema/migrate.js'
 import { upsertRows, deleteRows, relinkRows, dedupeByKey, keyValues } from '../src/db/upsert.js'
-import { streamByName, STREAMS } from '@workos/sync'
+import { streamByName, STREAMS } from '@workos/sync-engine'
 import type { SqlClient } from '../src/db/client.js'
 
 const users = streamByName('users')!

@@ -11,7 +11,7 @@
  * is genuine Postgres behaviour.
  */
 import { PGlite } from '@electric-sql/pglite'
-import { SyncEngine, WorkOSClient, PostgresDestination, type SqlClient } from '@workos/pg-sync'
+import { SyncEngine, WorkOSClient, PostgresDestination, type SqlClient } from '@workos/sync-postgres'
 
 const API_KEY = process.env.WORKOS_API_KEY
 if (!API_KEY) throw new Error('WORKOS_API_KEY is not set')
