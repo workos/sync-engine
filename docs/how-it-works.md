@@ -45,12 +45,12 @@ overlap costs nothing, because every write is idempotent.
 WorkOS recommends the Events API for keeping a datastore in sync, and the
 reasons are structural:
 
-| | Events API | Webhooks |
-|---|---|---|
-| Order | Consistent | No guarantee on receipt |
-| Recovery | Replayable from any cursor | Retries stop after 3 days |
-| Pace | Set by your process | Set by the sender |
-| Exposure | Authenticated pull | A public endpoint you must secure |
+|          | Events API                 | Webhooks                          |
+| -------- | -------------------------- | --------------------------------- |
+| Order    | Consistent                 | No guarantee on receipt           |
+| Recovery | Replayable from any cursor | Retries stop after 3 days         |
+| Pace     | Set by your process        | Set by the sender                 |
+| Exposure | Authenticated pull         | A public endpoint you must secure |
 
 The failure that motivates this most clearly: a `user.deleted` processed before
 the matching `user.created` leaves an active user in your database that should
@@ -70,8 +70,8 @@ The engine derives its subscription from the streams you sync, so the two stay
 in step:
 
 ```ts
-import { subscribedEventTypes } from '@workos/pg-sync'
-subscribedEventTypes()  // every event type the catalog knows about
+import { subscribedEventTypes } from "@workos/sync-postgres";
+subscribedEventTypes(); // every event type the catalog knows about
 ```
 
 The consequence is real and worth planning around: **you cannot subscribe to
@@ -82,30 +82,33 @@ hand, but it cannot conjure an event you never asked for. To widen the
 subscription without waiting for a release, pass `eventTypes` explicitly:
 
 ```ts
-import { subscribedEventTypes, ARCHIVE_ONLY_EVENT_TYPES } from '@workos/pg-sync'
+import {
+  subscribedEventTypes,
+  ARCHIVE_ONLY_EVENT_TYPES,
+} from "@workos/sync-postgres";
 
 new SyncEngine({
   // ...
   eventTypes: [...subscribedEventTypes(), ...ARCHIVE_ONLY_EVENT_TYPES],
-})
+});
 ```
 
-Webhooks remain useful as a *trigger*. If you configure one, a verified
+Webhooks remain useful as a _trigger_. If you configure one, a verified
 delivery wakes the poller immediately rather than waiting for the next
 interval — but the state still flows through the ordered stream.
 
 ```ts
-import { verifyWebhook } from '@workos/pg-sync'
+import { verifyWebhook } from "@workos/sync-postgres";
 
-app.post('/workos/webhook', async (req, res) => {
+app.post("/workos/webhook", async (req, res) => {
   verifyWebhook({
-    payload: req.rawBody,          // raw bytes, not a re-serialized object
-    signature: req.header('WorkOS-Signature')!,
+    payload: req.rawBody, // raw bytes, not a re-serialized object
+    signature: req.header("WorkOS-Signature")!,
     secret: process.env.WORKOS_WEBHOOK_SECRET!,
-  })
-  res.sendStatus(200)              // respond first
-  await engine.processWebhook()    // then poll
-})
+  });
+  res.sendStatus(200); // respond first
+  await engine.processWebhook(); // then poll
+});
 ```
 
 ## The write path
@@ -148,7 +151,7 @@ than the comparison.
 event's `created_at`, otherwise (during backfill) the response time.
 
 It is never `now()` and never a trigger. A destination-stamped timestamp
-records when *you* wrote, which is not comparable across delivery paths — and
+records when _you_ wrote, which is not comparable across delivery paths — and
 worse, a redelivered event would always look newer than the row it is
 replacing, defeating the gate entirely.
 
@@ -254,7 +257,7 @@ order. `after` pages forward in time. The documented default of `desc` is not
 observable in the response.
 
 This has one practical consequence. There is no cheap way to ask for "the id of
-the newest event" — `order=desc&limit=1` returns the *oldest* event, not the
+the newest event" — `order=desc&limit=1` returns the _oldest_ event, not the
 newest, so using it to record a starting position would set the cursor to the
 beginning of the retention window and replay 90 days on every fresh start.
 

@@ -1,0 +1,56 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pnpm writes `resolution: {integrity}` with no URL for a package at its
+      # registry's canonical path, so the lockfile is registry-agnostic by
+      # default — the pnpm counterpart of npm's omit-lockfile-registry-resolved.
+      # A tarball at a non-canonical path is the exception: pnpm keeps its full
+      # URL, and if it was resolved through Socket Firewall that URL binds every
+      # later install to the private registry. The scrub action that repairs
+      # npm and Bun lockfiles does not support pnpm, so this is the backstop.
+      - name: Lockfile is registry-agnostic
+        run: |
+          if grep -n 'socket-firewall' pnpm-lock.yaml; then
+            echo "::error::pnpm-lock.yaml references the private Socket Firewall registry; the lockfile must stay registry-agnostic."
+            exit 1
+          fi
+
+      # Package-manager setup comes first so Socket Firewall configures the
+      # registry pnpm will actually use. The pnpm version is read from the
+      # `packageManager` field in package.json.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Setup Socket Firewall
+        uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d
+        with:
+          token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
+          allow-external-fork-fallback: true
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Typecheck
+        run: pnpm typecheck

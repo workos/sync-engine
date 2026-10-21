@@ -17,10 +17,12 @@ You need:
 ## Install
 
 ```bash
-npm install @workos/pg-sync
+npm install @workos/sync-postgres
 ```
 
-The package ships both a library and a `workos-pg-sync` command.
+The package ships both a library and a `workos-sync-postgres` command. It depends on
+and re-exports `@workos/sync-engine`, the engine-agnostic core, so this is the only
+package you install.
 
 ## Create the schema
 
@@ -28,7 +30,7 @@ The package ships both a library and a `workos-pg-sync` command.
 export DATABASE_URL="postgres://localhost:5432/app"
 export WORKOS_API_KEY="sk_live_..."
 
-npx workos-pg-sync init
+npx workos-sync-postgres init
 ```
 
 This creates a `workos` schema, one table per synced object, and two
@@ -40,7 +42,7 @@ To use a different schema name, set `WORKOS_SYNC_SCHEMA` or pass `--schema`.
 ## Load what already exists
 
 ```bash
-npx workos-pg-sync backfill
+npx workos-sync-postgres backfill
 ```
 
 Backfill pages the REST list endpoints and writes everything it finds. Before
@@ -60,7 +62,7 @@ last checkpoint instead of starting over.
 ## Start syncing
 
 ```bash
-npx workos-pg-sync listen
+npx workos-sync-postgres listen
 ```
 
 The engine now polls the Events API from its stored cursor and applies each
@@ -98,10 +100,10 @@ The same engine runs as a library, which is how most people deploy it — no
 extra service, and it uses the database connection you already have.
 
 ```ts
-import { SyncEngine } from '@workos/pg-sync'
+import { SyncEngine, PostgresDestination } from '@workos/sync-postgres'
 
 const engine = new SyncEngine({
-  databaseUrl: process.env.DATABASE_URL,
+  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
   environments: [
     { name: 'production', apiKey: process.env.WORKOS_API_KEY! },
   ],
@@ -138,8 +140,8 @@ primary key.
 Schedule a reconciliation:
 
 ```bash
-npx workos-pg-sync reconcile            # report drift, exit 2 if any is found
-npx workos-pg-sync reconcile --repair   # fix it
+npx workos-sync-postgres reconcile            # report drift, exit 2 if any is found
+npx workos-sync-postgres reconcile --repair   # fix it
 ```
 
 Reconciliation compares the mirror against the API and reports two numbers per

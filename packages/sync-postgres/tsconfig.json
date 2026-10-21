@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "sourceMap": true,
+    "noEmit": true,
+    "types": ["node"],
+    // Typecheck and editors see @workos/sync-engine source directly, so a change
+    // there never needs a rebuild to show up here. The build (tsconfig.build)
+    // clears this and resolves the real package.
+    "paths": { "@workos/sync-engine": ["../sync-engine/src/index.ts"] }
+  },
+  "include": ["src/**/*", "test/**/*"]
+}

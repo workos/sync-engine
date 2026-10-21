@@ -48,20 +48,20 @@ To get the most out of this guide, you'll need:
 :::code-group{title="Install the sync engine"}
 
 ```bash language="js" title="npm" tab="js-1"
-npm install @workos/pg-sync
+npm install @workos/sync-postgres
 ```
 
 ```bash language="js" title="Yarn" tab="js-2"
-yarn add @workos/pg-sync
+yarn add @workos/sync-postgres
 ```
 
 ```bash language="js" title="pnpm" tab="js-3"
-pnpm add @workos/pg-sync
+pnpm add @workos/sync-postgres
 ```
 
 :::
 
-The package includes both a library and a `workos-pg-sync` command.
+The package includes both a library and a `workos-sync-postgres` command.
 
 ### Set secrets
 
@@ -82,7 +82,7 @@ WORKOS_API_KEY='sk_example_123456789'
 ## (2) Create the schema
 
 ```bash title="Terminal"
-npx workos-pg-sync init
+npx workos-sync-postgres init
 ```
 
 This creates a `workos` schema containing one table per synced object. The
@@ -115,7 +115,7 @@ API cannot break your sync. It is queryable as `_raw->>'field'` immediately.
 ## (3) Backfill existing data
 
 ```bash title="Terminal"
-npx workos-pg-sync backfill
+npx workos-sync-postgres backfill
 ```
 
 Backfill pages the list endpoints and writes every object that currently
@@ -130,7 +130,7 @@ rather than missed.
 Backfill checkpoints after each page. If it is interrupted, resume it:
 
 ```bash title="Terminal"
-npx workos-pg-sync backfill --resume
+npx workos-sync-postgres backfill --resume
 ```
 
 Large directories take time. The `/directory_users` endpoint is limited to 4
@@ -142,7 +142,7 @@ directories. The engine paces itself to stay within it.
 ## (4) Start syncing
 
 ```bash title="Terminal"
-npx workos-pg-sync listen
+npx workos-sync-postgres listen
 ```
 
 The engine now polls the [events API](https://workos.com/docs/reference/events)
@@ -152,10 +152,10 @@ long-lived service.
 To embed it in an existing service instead of running a separate process:
 
 ```js title="Embedding the sync engine"
-import { SyncEngine } from '@workos/pg-sync'
+import { SyncEngine, PostgresDestination } from '@workos/sync-postgres'
 
 const engine = new SyncEngine({
-  databaseUrl: process.env.DATABASE_URL,
+  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
   environments: [{ name: 'production', apiKey: process.env.WORKOS_API_KEY }],
 })
 
@@ -174,7 +174,7 @@ Because the cursor is a position in a 90-day window, a sync that stops for long
 enough cannot be replayed. Monitor the cursor age:
 
 ```bash title="Terminal"
-npx workos-pg-sync status
+npx workos-sync-postgres status
 ```
 
 ***
@@ -233,7 +233,7 @@ bug in event processing, or a deploy that wrote bad data. Reconciliation
 compares the mirror against the WorkOS API and reports the differences.
 
 ```bash title="Terminal"
-npx workos-pg-sync reconcile
+npx workos-sync-postgres reconcile
 ```
 
 The command reports two numbers per object type, and they mean different
@@ -247,7 +247,7 @@ present upstream but absent locally are missed creates.
 To repair what it finds:
 
 ```bash title="Terminal"
-npx workos-pg-sync reconcile --repair
+npx workos-sync-postgres reconcile --repair
 ```
 
 Reconciliation also refreshes fields that event payloads do not carry. Weekly
@@ -296,7 +296,7 @@ reconcile, enable hydration:
 
 ```js title="Hydrate new objects on creation"
 const engine = new SyncEngine({
-  databaseUrl: process.env.DATABASE_URL,
+  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
   environments: [{ name: 'production', apiKey: process.env.WORKOS_API_KEY }],
   hydrate: { users: 'on_create', organizations: 'on_create' },
 })
@@ -315,7 +315,7 @@ verified delivery to prompt an immediate poll. State still flows through the
 ordered events API, so you keep the ordering and replay guarantees.
 
 ```js title="Webhook as a trigger"
-import { verifyWebhook } from '@workos/pg-sync'
+import { verifyWebhook } from '@workos/sync-postgres'
 
 app.post('/workos/webhook', async (req, res) => {
   verifyWebhook({
@@ -336,7 +336,7 @@ A mirror carries the same deletion obligations as any other copy of the data,
 including the archived event payloads. To remove a subject completely:
 
 ```bash title="Terminal"
-npx workos-pg-sync redact --user user_01EHZNVPK3SFK441A1RGBFSHRT
+npx workos-sync-postgres redact --user user_01EHZNVPK3SFK441A1RGBFSHRT
 ```
 
 Unlike a tombstone, this hard-deletes the subject's rows across every mirrored

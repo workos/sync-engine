@@ -13,7 +13,7 @@ history and a cursor older than that cannot be replayed.
 So the single most important alert is **cursor age**, not error rate.
 
 ```bash
-npx workos-pg-sync status
+npx workos-sync-postgres status
 ```
 
 ```json
@@ -111,10 +111,10 @@ Three tiers, cheapest first:
 
 ```bash
 # Report only. Exits 2 when drift is found, so it works as a scheduled check.
-npx workos-pg-sync reconcile
+npx workos-sync-postgres reconcile
 
 # Fix what it finds.
-npx workos-pg-sync reconcile --repair
+npx workos-sync-postgres reconcile --repair
 ```
 
 Reconciliation reports two numbers per stream, and they mean different things:
@@ -142,7 +142,7 @@ ever been touched by events will be missing `external_id`, `metadata`,
 Backfill and reconcile both fix this. To do it on its own:
 
 ```bash
-npx workos-pg-sync refresh
+npx workos-sync-postgres refresh
 ```
 
 Or avoid the gap entirely for new objects by hydrating on create:
@@ -167,7 +167,7 @@ directory takes as long as it takes: roughly 400 users per second at best.
 Backfill checkpoints after every page, so an interrupted run resumes:
 
 ```bash
-npx workos-pg-sync backfill --resume
+npx workos-sync-postgres backfill --resume
 ```
 
 ## Recovery
@@ -192,7 +192,7 @@ delete from workos._sync_state where env = 'production' and stream = 'users';
 ```
 
 ```bash
-npx workos-pg-sync backfill --streams users
+npx workos-sync-postgres backfill --streams users
 ```
 
 **A bad deploy wrote wrong data.** The event archive is a local, ordered log,
@@ -210,7 +210,7 @@ The mirror inherits the deletion obligations of any other copy of the data.
 Archived event payloads embed personal data too, so both have to go:
 
 ```bash
-npx workos-pg-sync redact --user user_01H...
+npx workos-sync-postgres redact --user user_01H...
 ```
 
 This hard-deletes the subject's rows across every mirrored table and removes
@@ -223,7 +223,7 @@ behind.
 and it uses the connection pool you already have.
 
 ```ts
-const engine = new SyncEngine({ databaseUrl, environments })
+const engine = new SyncEngine({ destination: new PostgresDestination({ databaseUrl }), environments })
 await engine.init()
 engine.listen().catch((err) => { logger.error(err); process.exit(1) })
 ```
@@ -232,8 +232,8 @@ engine.listen().catch((err) => { logger.error(err); process.exit(1) })
 
 ```dockerfile
 FROM node:22-slim
-RUN npm install -g @workos/pg-sync
-CMD ["workos-pg-sync", "listen"]
+RUN npm install -g @workos/sync-postgres
+CMD ["workos-sync-postgres", "listen"]
 ```
 
 Run **one listener per environment set**. Two processes tailing the same
@@ -247,7 +247,7 @@ stopping, so a rolling deploy does not interrupt a write mid-flight.
 **As a scheduled job**, if a few minutes of lag is acceptable:
 
 ```bash
-*/5 * * * * workos-pg-sync tick
+*/5 * * * * workos-sync-postgres tick
 ```
 
 ## Database sizing

@@ -1,0 +1,67 @@
+name: Release Please
+
+# Parked: not ready to publish. Before restoring the `push` trigger, the
+# repo needs to be public (npm generates no provenance for internal repos),
+# both packages need trusted publishers on npmjs.com pointing at
+# release.yml, and PUBLIC_SOCKET_FIREWALL_TOKEN needs to reach this repo.
+#
+#   push:
+#     branches:
+#       - main
+on:
+  workflow_dispatch:
+
+# id-token: write is not used by this workflow directly, but the caller's
+# token permissions cap what the called release.yml may request — its
+# publish job needs id-token: write for npm trusted publishing (OIDC).
+# Without it here, the whole run fails at startup with a workflow-file error.
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  # Each package is its own release-please component with its own version,
+  # changelog and tag (sync-engine-v1.2.3). A commit counts toward a package
+  # when it touches files under that package's directory, and the
+  # node-workspace plugin gives @workos/sync-postgres a patch release
+  # whenever @workos/sync-engine releases, so the published pair is always
+  # one that was tested together.
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      sync-engine--release_created: ${{ steps.release.outputs['packages/sync-engine--release_created'] }}
+      sync-engine--tag_name: ${{ steps.release.outputs['packages/sync-engine--tag_name'] }}
+      sync-postgres--release_created: ${{ steps.release.outputs['packages/sync-postgres--release_created'] }}
+      sync-postgres--tag_name: ${{ steps.release.outputs['packages/sync-postgres--tag_name'] }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-sync-engine:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.sync-engine--release_created == 'true' }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.sync-engine--tag_name }}
+    # Called workflows receive no secrets by default.
+    secrets:
+      PUBLIC_SOCKET_FIREWALL_TOKEN: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
+
+  # Runs after the engine so that, when both release from one merge, the
+  # dependency is on npm before the package that pins it. `!cancelled()` lets
+  # this run when the engine job was skipped because only the destination
+  # changed.
+  publish-sync-postgres:
+    needs: [release-please, publish-sync-engine]
+    if: >-
+      ${{ !cancelled()
+          && needs.publish-sync-engine.result != 'failure'
+          && needs.release-please.outputs.sync-postgres--release_created == 'true' }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.sync-postgres--tag_name }}
+    secrets:
+      PUBLIC_SOCKET_FIREWALL_TOKEN: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}

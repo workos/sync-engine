@@ -1,0 +1,75 @@
+/**
+ * Cursor and run state.
+ *
+ * State lives in the destination, alongside the data, so a cursor checkpoint
+ * and the rows it covers share a transaction domain. The invariant that
+ * matters: a cursor is never advanced before the writes it describes are
+ * durable. Getting that backwards loses data silently on a crash.
+ */
+import type { Destination } from './destination.js'
+
+/** Live tail position: the last event id processed. */
+export interface TailState {
+  kind: 'tail'
+  cursor: string | null
+  /**
+   * Bootstrap position, used until the first event yields a real cursor.
+   *
+   * `GET /events` always returns oldest-first — the `order` parameter has no
+   * observable effect — so there is no cheap way to ask for "the id of the
+   * newest event". Recording the wall clock at capture time and starting the
+   * tail with `range_start` is the way to say "begin from here" without
+   * replaying the whole retention window.
+   */
+  rangeStart?: string | null
+  /** created_at of the last processed event, for lag reporting. */
+  lastEventAt?: string | null
+  updatedAt?: string
+}
+
+/** Backfill progress for one stream, resumable at page granularity. */
+export interface BackfillState {
+  kind: 'backfill'
+  status: 'pending' | 'running' | 'complete'
+  /** Pagination cursor within the current listing. */
+  after?: string | null
+  /** For N+1 streams: parents already fully listed. */
+  doneParents?: string[]
+  count?: number
+  startedAt?: string
+  completedAt?: string
+}
+
+export type StreamState = TailState | BackfillState | Record<string, unknown>
+
+const TAIL_STREAM = '__tail__'
+
+export class StateStore {
+  constructor(private destination: Destination) {}
+
+  get<T = StreamState>(env: string, stream: string): Promise<T | null> {
+    return this.destination.getState<T>(env, stream)
+  }
+
+  set(env: string, stream: string, state: StreamState): Promise<void> {
+    return this.destination.setState(env, stream, state)
+  }
+
+  getTail(env: string): Promise<TailState | null> {
+    return this.get<TailState>(env, TAIL_STREAM)
+  }
+
+  async setTail(
+    env: string,
+    next: { cursor: string | null; lastEventAt?: string | null; rangeStart?: string | null },
+  ): Promise<void> {
+    await this.set(env, TAIL_STREAM, {
+      kind: 'tail',
+      cursor: next.cursor,
+      // Once a real cursor exists the bootstrap position is redundant, and the
+      // API rejects a request carrying both.
+      rangeStart: next.cursor ? null : (next.rangeStart ?? null),
+      lastEventAt: next.lastEventAt ?? null,
+    })
+  }
+}

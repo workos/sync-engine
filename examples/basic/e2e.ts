@@ -17,8 +17,8 @@
  *   5. detect drift the event stream cannot see, and repair it
  */
 import { PGlite } from '@electric-sql/pglite'
-import { SyncEngine, WorkOSClient, type SqlClient } from '@workos/pg-sync'
-import { FakeWorkOS } from '../../packages/pg-sync/test/helpers/fake-workos.js'
+import { SyncEngine, WorkOSClient, PostgresDestination, type SqlClient } from '@workos/sync-postgres'
+import { FakeWorkOS } from '../../packages/sync-engine/test/helpers/fake-workos.js'
 
 const heading = (n: number, title: string) =>
   console.log(`\n\x1b[1m${n}. ${title}\x1b[0m\n${'─'.repeat(60)}`)
@@ -83,7 +83,7 @@ async function main() {
   fake.createDirectoryUser(directory['id'] as string, acme['id'] as string)
 
   const engine = new SyncEngine({
-    schema: 'workos',
+    destination: new PostgresDestination({ db, schema: 'workos' }),
     environments: [{ name: 'production', apiKey: 'sk_test_example', apiUrl: url }],
     streams: [
       'users',
@@ -100,7 +100,6 @@ async function main() {
     hydrate: { users: 'on_create' },
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: (m, f) => console.error(m, f) },
   }, {
-    db,
     clientFor: (env) => new WorkOSClient({ apiKey: env.apiKey, apiUrl: url, pageSize: 100 }),
   })
 

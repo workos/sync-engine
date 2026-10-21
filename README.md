@@ -39,7 +39,7 @@ stand-in WorkOS API and an embedded Postgres:
 
 ```bash
 pnpm install
-pnpm --filter workos-pg-sync-example start
+pnpm --filter workos-sync-postgres-example start
 ```
 
 You will see the schema get created, existing data backfilled, live events
@@ -51,19 +51,19 @@ tailed, joins answered, and drift detected and repaired.
 export DATABASE_URL=postgres://localhost/app
 export WORKOS_API_KEY=sk_live_...
 
-npx workos-pg-sync init       # create the schema
-npx workos-pg-sync backfill   # load what already exists
-npx workos-pg-sync listen     # tail the Events API
+npx workos-sync-postgres init       # create the schema
+npx workos-sync-postgres backfill   # load what already exists
+npx workos-sync-postgres listen     # tail the Events API
 ```
 
 Or embed it — most deployments would, since it then uses the connection pool
 that already exists:
 
 ```ts
-import { SyncEngine } from '@workos/pg-sync'
+import { SyncEngine, PostgresDestination } from '@workos/sync-postgres'
 
 const engine = new SyncEngine({
-  databaseUrl: process.env.DATABASE_URL,
+  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
   environments: [{ name: 'production', apiKey: process.env.WORKOS_API_KEY! }],
   hydrate: { users: 'on_create' },
 })
@@ -153,14 +153,22 @@ sync is one-directional and there is no write-back.
 
 ## Repo layout
 
+Two packages. `@workos/sync-engine` is the engine-agnostic core: the stream
+catalog, event routing, backfill, tail and reconcile, writing through a small
+`Destination` interface. `@workos/sync-postgres` is the Postgres destination
+plus the CLI, and re-exports the core so it is the only package an application
+installs. A future engine (Snowflake, SQLite, ...) is another implementation of
+`Destination`, published as `@workos/sync-<engine>`.
+
 ```
-packages/pg-sync/   the library and CLI
-examples/basic/         runnable demo + the live-API test scripts
-docs/                   getting started, how it works, schema, queries,
-                        operations, consistency
-docs/workos-site/       DRAFT docs page, blog post and changelog entry —
-                        unreviewed copy, not approved for publication
-PLAN.md                 the research and the argument behind the design
+packages/sync-engine/     @workos/sync-engine — the engine, catalog, router, API client
+packages/sync-postgres/   @workos/sync-postgres — PostgresDestination, DDL, CLI
+examples/basic/           runnable demo + the live-API test scripts
+docs/                     getting started, how it works, schema, queries,
+                          operations, consistency
+docs/workos-site/         DRAFT docs page, blog post and changelog entry —
+                          unreviewed copy, not approved for publication
+PLAN.md                   the research and the argument behind the design
 ```
 
 ## License

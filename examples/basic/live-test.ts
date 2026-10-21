@@ -11,7 +11,7 @@
  * is genuine Postgres behaviour.
  */
 import { PGlite } from '@electric-sql/pglite'
-import { SyncEngine, WorkOSClient, type SqlClient } from '@workos/pg-sync'
+import { SyncEngine, WorkOSClient, PostgresDestination, type SqlClient } from '@workos/sync-postgres'
 
 const API_KEY = process.env.WORKOS_API_KEY
 if (!API_KEY) throw new Error('WORKOS_API_KEY is not set')
@@ -60,7 +60,7 @@ async function main() {
 
   const engine = new SyncEngine(
     {
-      schema: 'workos',
+      destination: new PostgresDestination({ db, schema: 'workos' }),
       environments: [{ name: 'pgsync-test', apiKey: API_KEY!, apiUrl: API_URL }],
       streams: [
         'users', 'organizations', 'organization_memberships', 'organization_domains',
@@ -76,7 +76,7 @@ async function main() {
         error: (m, f) => console.error('   error:', m, f ?? ''),
       },
     },
-    { db, clientFor: (env) => new WorkOSClient({ apiKey: env.apiKey, apiUrl: API_URL, pageSize: 100 }) },
+    { clientFor: (env) => new WorkOSClient({ apiKey: env.apiKey, apiUrl: API_URL, pageSize: 100 }) },
   )
 
   const q = async (sql: string, params: unknown[] = []) => (await db.query(sql, params)).rows as any[]
