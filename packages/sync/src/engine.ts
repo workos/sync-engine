@@ -25,6 +25,7 @@ import type {
   Logger,
   StreamDef,
   SyncEngineConfig,
+  WorkOSEvent,
   WriteStats,
 } from './types.js'
 import { addStats, emptyStats } from './types.js'
@@ -177,22 +178,37 @@ export class SyncEngine {
       checkCursorAge(tail?.lastEventAt, this.logger)
 
       try {
-        const batch = await fetchEvents(
-          api,
-          {
-            after: tail?.cursor ?? null,
-            // Only used until the first real cursor arrives; sending both is a
-            // 400 ("Only one of range_start and after may be provided").
-            ...(tail?.cursor ? {} : { rangeStart: tail?.rangeStart ?? undefined }),
-            limit: this.config.pageSize ?? 100,
-            lagWindowMs: this.config.lagWindowMs ?? 5_000,
-            events: this.eventTypes,
-          },
-          this.logger,
-        )
-        if (batch.events.length === 0) continue
+        const limit = this.config.pageSize ?? 100
+        const max = this.config.maxEventsPerTick ?? limit
+        const events: WorkOSEvent[] = []
+        let cursor = tail?.cursor ?? null
+        let pages = 0
+        let hasMore = true
+        // Pull pages until the budget is met or the stream is caught up, then
+        // apply them as one batch so the destination sees one write per
+        // stream and the cursor is checkpointed once.
+        while (hasMore && events.length < max) {
+          const batch = await fetchEvents(
+            api,
+            {
+              after: cursor,
+              // Only used until the first real cursor arrives; sending both is a
+              // 400 ("Only one of range_start and after may be provided").
+              ...(cursor ? {} : { rangeStart: tail?.rangeStart ?? undefined }),
+              limit,
+              lagWindowMs: this.config.lagWindowMs ?? 5_000,
+              events: this.eventTypes,
+            },
+            this.logger,
+          )
+          pages++
+          events.push(...batch.events)
+          cursor = batch.cursor
+          hasMore = batch.hasMore
+        }
+        if (events.length === 0) continue
 
-        const result = await applyEvents(this.destination, batch.events, {
+        const result = await applyEvents(this.destination, events, {
           env: env.name,
           logger: this.logger,
           hydrate: this.config.hydrate,
@@ -200,19 +216,20 @@ export class SyncEngine {
         })
 
         // Checkpoint only after the writes above are durable.
-        const last = batch.events[batch.events.length - 1]!
+        const last = events[events.length - 1]!
         await this.state.setTail(env.name, {
-          cursor: batch.cursor,
+          cursor,
           lastEventAt: last.created_at,
           rangeStart: tail?.rangeStart ?? null,
         })
 
-        processed += batch.events.length
+        processed += events.length
         stats = addStats(stats, result.stats)
         this.logger.info('processed events', {
           env: env.name,
-          events: batch.events.length,
-          cursor: batch.cursor,
+          events: events.length,
+          pages,
+          cursor,
           ...result.stats,
         })
       } catch (err) {

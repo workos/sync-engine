@@ -290,6 +290,20 @@ describe('sync engine', () => {
     expect(third.processed).toBe(1)
   })
 
+  it('drains several pages in one tick when maxEventsPerTick allows it', async () => {
+    for (let i = 0; i < 5; i++) fake.createUser()
+
+    // Default: one page per tick, so a backlog takes as many ticks as pages.
+    const paged = makeEngine(db, fake, TIER1, { pageSize: 2 })
+    expect((await paged.tick()).processed).toBe(2)
+
+    // Budgeted: the remaining 3 arrive across two pages but one tick.
+    const budgeted = makeEngine(db, fake, TIER1, { pageSize: 2, maxEventsPerTick: 10 })
+    expect((await budgeted.tick()).processed).toBe(3)
+    expect((await budgeted.tick()).processed).toBe(0)
+    expect(await count('users')).toBe(5)
+  })
+
   it('explodes organization domains out of the organization payload', async () => {
     // organization_domains has events but no list endpoint of its own.
     fake.createOrganization({
