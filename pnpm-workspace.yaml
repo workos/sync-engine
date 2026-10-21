@@ -3,11 +3,3 @@ packages:
   - 'examples/*'
 allowBuilds:
   esbuild: true
-
-overrides:
-  # Security floors for transitive dev tooling. vitest 5 itself requires vite
-  # ^7.1.12, which brings an esbuild past the advisory; the floors stay so no
-  # future vitest range can resolve below them.
-  vite: "^7.3.7" # GHSA-587h-7wmj-h5pm and four more, vite <= 7.3.6
-  esbuild: "^0.25.0" # esbuild <= 0.24.2
-
