@@ -9,7 +9,7 @@ query the engine issues.
 | Column | Type | Meaning |
 |---|---|---|
 | `_env` | `text` | The environment label from your config. Part of every primary key. |
-| `_raw` | `jsonb` | The object as WorkOS returned it. The only column the engine writes. |
+| `_raw` | `jsonb` | The object as WorkOS returned it, minus any credential the stream declares in `redact`. The only column the engine writes. |
 | `_updated_at` | `timestamptz` | Source time. The staleness gate compares this. |
 | `_synced_at` | `timestamptz` | Write time. Lag is `_synced_at - _updated_at`. |
 | `_deleted_at` | `timestamptz` | Tombstone. `null` means live. Absent on append-only tables. |
@@ -40,7 +40,7 @@ Two consequences worth internalising:
 | `organizations` | `id` | `organization.created/updated/deleted` | `/organizations` | Events omit `metadata`, `stripe_customer_id` |
 | `organization_memberships` | `id` | `organization_membership.*` | per organization | List requires a filter and defaults to active only; the engine asks for all statuses |
 | `organization_domains` | `id` | `organization_domain.*` (5 types) | embedded in organizations | No standalone list endpoint |
-| `invitations` | `id` | `invitation.created/accepted/resent/revoked` | `/user_management/invitations` | Token and URL are never in events |
+| `invitations` | `id` | `invitation.created/accepted/resent/revoked` | `/user_management/invitations` | `token` and `accept_invitation_url` are stripped before the row is written; events never carry them |
 | `sessions` | `id` | `session.created/revoked` | per user, active only | Backfill is partial by construction |
 
 ### Directory Sync and SSO
@@ -100,6 +100,7 @@ Stated plainly, because knowing the boundary matters:
 | Radar block/allow lists | Write-only endpoints. |
 | Vault values | Should not leave Vault. Vault *activity* is archived to `events`. |
 | Portal links, widget tokens | Ephemeral credentials, not state. |
+| Invitation acceptance tokens, webhook signing secrets | Live credentials. The REST objects carry them, so the engine strips them (`StreamDef.redact`) before any row is written. |
 
 Certificate, Vault, Radar, agent and Pipes events are archived to
 `workos.events` even though they have no mirror table.

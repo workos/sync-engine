@@ -17,6 +17,7 @@ import type { WorkOSClient } from '../workos/client.js'
 import { streamByName } from '../catalog.js'
 import type { Logger, StreamDef, WriteStats } from '../types.js'
 import { addStats, emptyStats } from '../types.js'
+import { redacting } from '../redact.js'
 
 export interface BackfillOptions {
   env: string
@@ -41,6 +42,7 @@ export async function backfillStream(
 ): Promise<BackfillStreamResult> {
   const stats = emptyStats()
   let pages = 0
+  destination = redacting(destination)
 
   // Organization domains arrive embedded in the organization payload; there is
   // no standalone list endpoint for them.

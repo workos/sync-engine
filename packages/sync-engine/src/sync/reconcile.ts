@@ -20,6 +20,7 @@ import type { Destination, FreshnessRow } from '../destination.js'
 import { streamByName } from '../catalog.js'
 import type { WorkOSClient } from '../workos/client.js'
 import type { Logger, StreamDef } from '../types.js'
+import { redacting } from '../redact.js'
 
 export async function freshness(
   destination: Destination,
@@ -58,6 +59,7 @@ export async function diffStream(
   stream: StreamDef,
   opts: { repair?: boolean; logger?: Logger } = {},
 ): Promise<DiffResult> {
+  destination = redacting(destination)
   if (!stream.list || stream.mode === 'append') {
     return {
       stream: stream.name,
@@ -164,6 +166,7 @@ export async function refreshStream(
   stream: StreamDef,
 ): Promise<{ stream: string; refreshed: number }> {
   if (!stream.list) return { stream: stream.name, refreshed: 0 }
+  destination = redacting(destination)
   let refreshed = 0
   const rateKey = stream.list.rateKey === 'user_management' ? 'user_management' : 'global'
   for await (const page of api.paginate(
