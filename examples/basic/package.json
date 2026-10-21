@@ -1,5 +1,5 @@
 {
-  "name": "workos-pg-sync-example",
+  "name": "workos-sync-postgres-example",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@workos/pg-sync": "workspace:*"
+    "@workos/sync-postgres": "workspace:*"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",

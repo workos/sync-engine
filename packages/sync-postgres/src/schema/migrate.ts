@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto'
 import type { SqlClient } from '../db/client.js'
 import { buildSchemaSql, createSchemaSql, bookkeepingSql, parseIso8601Function, quoteIdent } from './ddl.js'
-import type { Logger, StreamDef } from '@workos/sync'
+import type { Logger, StreamDef } from '@workos/sync-engine'
 
 export function fingerprint(streams: StreamDef[], schema: string): string {
   const canonical = JSON.stringify({

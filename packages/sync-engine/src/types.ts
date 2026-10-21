@@ -106,7 +106,7 @@ export interface EnvironmentConfig {
 export type HydrateMode = 'off' | 'on_create' | 'always'
 
 export interface SyncEngineConfig {
-  /** Where the mirror is written, e.g. `new PostgresDestination(...)` from `@workos/pg-sync`. */
+  /** Where the mirror is written, e.g. `new PostgresDestination(...)` from `@workos/sync-postgres`. */
   destination: Destination
   environments: EnvironmentConfig[]
   /** Streams to sync. Defaults to every tier 1-3 stream. */

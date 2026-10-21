@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb } from './helpers/pg.js'
 import { migrate, fingerprint } from '../src/schema/migrate.js'
 import { buildSchemaSql, safeIdentifier, columnExpression, createTableSql } from '../src/schema/ddl.js'
-import { STREAMS, streamByName } from '@workos/sync'
+import { STREAMS, streamByName } from '@workos/sync-engine'
 import type { SqlClient } from '../src/db/client.js'
 
 describe('DDL generation', () => {

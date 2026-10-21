@@ -2,8 +2,8 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 export default defineConfig({
   resolve: {
-    // Tests run against @workos/sync source, not its last build.
-    alias: { '@workos/sync': fileURLToPath(new URL('../sync/src/index.ts', import.meta.url)) },
+    // Tests run against @workos/sync-engine source, not its last build.
+    alias: { '@workos/sync-engine': fileURLToPath(new URL('../sync-engine/src/index.ts', import.meta.url)) },
   },
   test: {
     include: ['test/**/*.test.ts'],

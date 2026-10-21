@@ -5,7 +5,7 @@
  * staleness rules, backfill ordering, reconciliation — lives in this package.
  * Everything it knows about a particular database lives behind this interface.
  * A new engine (Snowflake, SQLite, ...) is a new implementation of it; see
- * `@workos/pg-sync` for the Postgres one.
+ * `@workos/sync-postgres` for the Postgres one.
  *
  * Implementations own the write semantics the engine depends on:
  *

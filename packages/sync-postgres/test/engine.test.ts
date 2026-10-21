@@ -3,9 +3,9 @@
  * fake WorkOS API and a real Postgres.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync'
+import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
 import { createTestDb } from './helpers/pg.js'
-import { FakeWorkOS, resetIds } from '../../sync/test/helpers/fake-workos.js'
+import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
 import { PostgresDestination } from '../src/destination.js'
 import type { SqlClient } from '../src/db/client.js'
 

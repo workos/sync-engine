@@ -1,5 +1,5 @@
 /**
- * The Postgres destination: everything `@workos/sync` needs to know about a
+ * The Postgres destination: everything `@workos/sync-engine` needs to know about a
  * database, implemented with `pg` in production and PGlite in tests.
  */
 import type {
@@ -10,7 +10,7 @@ import type {
   StreamDef,
   WriteMode,
   WriteStats,
-} from '@workos/sync'
+} from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows } from './db/upsert.js'
 import { migrate } from './schema/migrate.js'
