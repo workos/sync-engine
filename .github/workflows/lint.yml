@@ -40,11 +40,14 @@ jobs:
         with:
           node-version: 24
 
-      - name: Setup Socket Firewall
-        uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d
-        with:
-          token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
-          allow-external-fork-fallback: true
+      # Socket Firewall is off until PUBLIC_SOCKET_FIREWALL_TOKEN reaches this
+      # repo: with no token the action fails every run that is not a public
+      # external-fork pull request. Uncomment to turn it back on.
+      # - name: Setup Socket Firewall
+      #   uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d
+      #   with:
+      #     token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
+      #     allow-external-fork-fallback: true
 
       - name: Install
         run: pnpm install --frozen-lockfile
