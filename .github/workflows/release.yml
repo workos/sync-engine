@@ -1,15 +1,15 @@
 name: Release
 
-# release-please creates the GitHub release and pushes its tag; this workflow
-# publishes both packages to npm from that tag. Re-run it by hand for an
-# existing tag if a previous run failed — versions already on npm are
-# skipped, so a partially published release converges.
+# Publishes one package to npm from its component tag (sync-engine-v1.2.3,
+# sync-postgres-v0.4.0). release-please calls this once per package it
+# released; re-run it by hand for an existing tag if a run failed — a
+# version already on npm is skipped, so a retry converges.
 
 on:
   workflow_call:
     inputs:
       tag_name:
-        description: Release tag name (e.g., v0.2.0)
+        description: Component release tag (e.g., sync-postgres-v0.2.0)
         type: string
         required: true
     secrets:
@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Release tag name (e.g., v0.2.0)
+        description: Component release tag (e.g., sync-postgres-v0.2.0)
         type: string
         required: true
 
@@ -47,6 +47,38 @@ jobs:
         with:
           node-version: 24
 
+      # The tag is `<component>-v<version>`; the component is the directory
+      # under packages/. The package.json must agree with the tag, otherwise
+      # release-please and the checkout are out of step.
+      - name: Resolve the package from the tag
+        id: pkg
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          COMPONENT="${TAG_NAME%-v*}"
+          VERSION="${TAG_NAME##*-v}"
+          DIR="packages/$COMPONENT"
+          if [ ! -f "$DIR/package.json" ]; then
+            echo "::error::tag $TAG_NAME names no package: $DIR/package.json does not exist"
+            exit 1
+          fi
+          NAME="$(node -p "require('./$DIR/package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./$DIR/package.json').version")"
+          if [ "$PACKAGE_VERSION" != "$VERSION" ]; then
+            echo "::error::$NAME is $PACKAGE_VERSION in package.json but the tag says $VERSION"
+            exit 1
+          fi
+          case "$VERSION" in
+            *-*) NPM_TAG=beta ;;
+            *)   NPM_TAG=latest ;;
+          esac
+          {
+            echo "dir=$DIR"
+            echo "name=$NAME"
+            echo "version=$VERSION"
+            echo "npm_tag=$NPM_TAG"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Setup Socket Firewall
         uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d
         with:
@@ -66,39 +98,21 @@ jobs:
       - name: Teardown Socket Firewall
         uses: workos/setup-socket-firewall/teardown@ca93dd8aa351f54f4729fe3377a9be23c631c25d
 
-      - name: Determine npm tag
-        id: npm-tag
-        env:
-          TAG_NAME: ${{ inputs.tag_name }}
-        run: |
-          VERSION="${TAG_NAME#v}"
-          if [[ "$VERSION" == *"-"* ]]; then
-            echo "tag=beta" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-          fi
-
-      # `pnpm pack` rewrites `workspace:*` to the released version, which a
-      # plain `npm publish` of the directory would not, and `npm publish` of
-      # the tarball handles trusted publishing (OIDC provenance). Core goes
-      # first so @workos/sync-postgres's dependency resolves as soon as it appears.
+      # `pnpm pack` rewrites `workspace:*` to the dependency's version in this
+      # checkout, which a plain `npm publish` of the directory would not, and
+      # `npm publish` of the tarball handles trusted publishing (OIDC
+      # provenance).
       - name: Publish
         env:
-          TAG_NAME: ${{ inputs.tag_name }}
-          NPM_TAG: ${{ steps.npm-tag.outputs.tag }}
+          DIR: ${{ steps.pkg.outputs.dir }}
+          NAME: ${{ steps.pkg.outputs.name }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+          NPM_TAG: ${{ steps.pkg.outputs.npm_tag }}
         run: |
-          VERSION="${TAG_NAME#v}"
-          for dir in packages/sync-engine packages/sync-postgres; do
-            PACKAGE_NAME="$(node -p "require('./$dir/package.json').name")"
-            PACKAGE_VERSION="$(node -p "require('./$dir/package.json').version")"
-            test "$PACKAGE_VERSION" = "$VERSION"
-
-            if npm view "$PACKAGE_NAME@$VERSION" version >/dev/null 2>&1; then
-              echo "$PACKAGE_NAME@$VERSION already published; skipping"
-              continue
-            fi
-
-            TARBALL="$(pnpm --filter "./$dir" pack --json --pack-destination "$RUNNER_TEMP" \
-              | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).filename")"
-            npm publish "$TARBALL" --tag "$NPM_TAG" --access public --provenance
-          done
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION already published; skipping"
+            exit 0
+          fi
+          TARBALL="$(pnpm --filter "./$DIR" pack --json --pack-destination "$RUNNER_TEMP" \
+            | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).filename")"
+          npm publish "$TARBALL" --tag "$NPM_TAG" --access public --provenance
