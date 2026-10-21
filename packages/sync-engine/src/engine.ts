@@ -20,6 +20,7 @@ import { applyEvents } from './sync/apply.js'
 import { backfillStream, type BackfillStreamResult } from './sync/backfill.js'
 import { diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
 import { createLogger } from './logger.js'
+import { redacting } from './redact.js'
 import type {
   EnvironmentConfig,
   Logger,
@@ -61,7 +62,9 @@ export class SyncEngine {
     private deps: EngineDeps = {},
   ) {
     if (!config.destination) throw new Error('a destination is required')
-    this.destination = config.destination
+    // Credential paths a stream declares are stripped before any row reaches
+    // the destination, whichever database is behind it.
+    this.destination = redacting(config.destination)
     this.state = new StateStore(this.destination)
     this.logger = config.logger ?? createLogger('info')
     const names = config.streams ?? defaultStreams()

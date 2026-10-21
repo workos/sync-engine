@@ -13,6 +13,7 @@ import { routeEvent, sourceUpdatedAt, objectIdOf } from '../router.js'
 import type { WorkOSClient } from '../workos/client.js'
 import type { HydrateMode, Logger, WorkOSEvent, WriteStats } from '../types.js'
 import { addStats, emptyStats } from '../types.js'
+import { redacting } from '../redact.js'
 
 export interface ApplyOptions {
   env: string
@@ -49,6 +50,7 @@ export async function applyEvents(
     hydrated: 0,
   }
   if (events.length === 0) return result
+  destination = redacting(destination)
 
   const bump = (stream: string, s: WriteStats) => {
     result.byStream[stream] = addStats(result.byStream[stream] ?? emptyStats(), s)

@@ -167,6 +167,12 @@ export const STREAMS: StreamDef[] = [
       ],
     },
     list: { path: '/user_management/invitations', rateKey: 'user_management' },
+    // The REST invitation object carries the live acceptance credential
+    // (`token`) and a URL that embeds the same token. Anyone who can accept the
+    // invite can join the organization as the invited identity, so these must
+    // never land in the customer-readable mirror. Event payloads already omit
+    // them; this covers the backfill/reconcile/hydrate REST paths.
+    redact: ['token', 'accept_invitation_url'],
   },
   {
     name: 'events',
@@ -551,6 +557,9 @@ export const STREAMS: StreamDef[] = [
       ...timestamps,
     ],
     list: { path: '/webhook_endpoints' },
+    // The webhook endpoint object exposes its signing `secret`; mirroring it
+    // verbatim would let any mirror reader forge signed webhook deliveries.
+    redact: ['secret'],
   },
 ]
 

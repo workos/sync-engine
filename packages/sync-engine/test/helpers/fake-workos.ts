@@ -177,6 +177,53 @@ export class FakeWorkOS {
     return m
   }
 
+  createInvitation(orgId: string, fields: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    const iid = (fields['id'] as string) ?? id('invitation_')
+    const token = `tok_${iid.slice(-8)}`
+    const inv = {
+      object: 'invitation',
+      id: iid,
+      email: `invitee${iid.slice(-4)}@example.com`,
+      state: 'pending',
+      accepted_at: null,
+      revoked_at: null,
+      expires_at: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      organization_id: orgId,
+      inviter_user_id: null,
+      accepted_user_id: null,
+      role_slug: 'member',
+      // The live acceptance credential. The REST object carries it, in both
+      // the list and get-by-id responses; `invitation.*` events never do.
+      token,
+      accept_invitation_url: `https://auth.example.com/invite?invitation_token=${token}`,
+      created_at: this.now(),
+      updated_at: this.now(),
+      ...fields,
+    }
+    this.invitations.set(iid, inv)
+    this.emit('invitation.created', this.invitationEventPayload(inv))
+    return inv
+  }
+
+  /** The documented subset that `invitation.*` events carry: no token, no URL. */
+  invitationEventPayload(inv: Record<string, unknown>): Record<string, unknown> {
+    const { token: _token, accept_invitation_url: _url, ...rest } = inv
+    return rest
+  }
+
+  acceptInvitation(iid: string, userId: string): Record<string, unknown> {
+    const inv = {
+      ...this.invitations.get(iid)!,
+      state: 'accepted',
+      accepted_at: this.now(),
+      accepted_user_id: userId,
+      updated_at: this.now(),
+    }
+    this.invitations.set(iid, inv)
+    this.emit('invitation.accepted', this.invitationEventPayload(inv))
+    return inv
+  }
+
   createDirectory(orgId: string): Record<string, unknown> {
     const did = id('directory_')
     const d = {
