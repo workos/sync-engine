@@ -85,6 +85,13 @@ export interface StreamDef {
    * Tier for docs/config grouping.
    */
   tier: 1 | 2 | 3 | 4
+  /**
+   * Live credentials to strip from the payload before any row reaches the
+   * destination — e.g. an invitation's acceptance `token`. Each entry is a
+   * top-level key, or a nested path as a string array. No column may project
+   * from a redacted path.
+   */
+  redact?: (string | string[])[]
 }
 
 export interface WorkOSEvent {
