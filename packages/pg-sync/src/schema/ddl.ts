@@ -11,7 +11,7 @@
  * before parents routinely (a `group.user_added` before the `user.created`),
  * and an FK would turn that ordering artifact into a hard write failure.
  */
-import type { ColumnDef, StreamDef } from '../types.js'
+import type { ColumnDef, StreamDef } from '@workos/sync'
 
 export const RAW = '_raw'
 export const ENV = '_env'

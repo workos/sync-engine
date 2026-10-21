@@ -69,7 +69,7 @@ the fake entirely:
 
 ```ts
 const engine = new SyncEngine({
-  databaseUrl: process.env.DATABASE_URL,
+  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
   environments: [{ name: 'production', apiKey: process.env.WORKOS_API_KEY! }],
 })
 ```

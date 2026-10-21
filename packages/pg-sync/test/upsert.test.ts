@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb } from './helpers/pg.js'
 import { migrate } from '../src/schema/migrate.js'
 import { upsertRows, deleteRows, relinkRows, dedupeByKey, keyValues } from '../src/db/upsert.js'
-import { streamByName, STREAMS } from '../src/catalog.js'
+import { streamByName, STREAMS } from '@workos/sync'
 import type { SqlClient } from '../src/db/client.js'
 
 const users = streamByName('users')!
@@ -264,13 +264,14 @@ describe('freshness reporting', () => {
     // modified months ago reported a lag of months, while the sync was
     // perfectly current. Lag must measure the delay between an upstream change
     // and the write, so it is only meaningful for recently-changed rows.
-    const { freshness } = await import('../src/sync/reconcile.js')
+    const { PostgresDestination } = await import('../src/destination.js')
+    const destination = new PostgresDestination({ db, schema: 'workos' })
 
     await upsertRows(db, opts, users, 'prod', [
       { data: userPayload({ id: 'user_old' }), updatedAt: '2024-01-01T00:00:00.000Z' },
     ], 'replace')
 
-    const stale = (await freshness(db, 'workos', 'prod', [users]))[0]!
+    const stale = await destination.freshness(users, 'prod', 24)
     expect(stale.rows).toBe(1)
     expect(stale.lagSampleSize).toBe(0)
     expect(stale.lagSeconds).toBeNull()
@@ -280,7 +281,7 @@ describe('freshness reporting', () => {
       { data: userPayload({ id: 'user_fresh' }), updatedAt: new Date(Date.now() - 2000).toISOString() },
     ], 'replace')
 
-    const fresh = (await freshness(db, 'workos', 'prod', [users]))[0]!
+    const fresh = await destination.freshness(users, 'prod', 24)
     expect(fresh.lagSampleSize).toBe(1)
     expect(fresh.lagSeconds).not.toBeNull()
     expect(fresh.lagSeconds!).toBeLessThan(60)

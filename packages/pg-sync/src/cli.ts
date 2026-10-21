@@ -11,10 +11,15 @@
  *   workos-pg-sync redact --user <id>   erase one subject
  *   workos-pg-sync streams              list what this build can mirror
  */
-import { SyncEngine } from './engine.js'
-import { STREAMS } from './catalog.js'
-import { createLogger, type LogLevel } from './logger.js'
-import type { EnvironmentConfig, SyncEngineConfig } from './types.js'
+import {
+  SyncEngine,
+  STREAMS,
+  createLogger,
+  type EnvironmentConfig,
+  type LogLevel,
+  type SyncEngineConfig,
+} from '@workos/sync'
+import { PostgresDestination } from './destination.js'
 
 interface Args {
   command: string
@@ -75,14 +80,16 @@ function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfi
   if (!databaseUrl) throw new Error('set DATABASE_URL (or pass --database-url)')
   const streams = typeof flags['streams'] === 'string' ? flags['streams'].split(',') : undefined
   return {
-    databaseUrl,
-    schema: (flags['schema'] as string) ?? process.env['WORKOS_SYNC_SCHEMA'] ?? 'workos',
+    destination: new PostgresDestination({
+      databaseUrl,
+      schema: (flags['schema'] as string) ?? process.env['WORKOS_SYNC_SCHEMA'] ?? 'workos',
+      syncId: process.env['WORKOS_SYNC_ID'] ?? 'default',
+    }),
     environments: environmentsFromEnv(),
     streams,
     hydrate: (process.env['WORKOS_SYNC_HYDRATE'] as never) ?? { users: 'on_create', organizations: 'on_create' },
     pollIntervalMs: Number(process.env['WORKOS_SYNC_POLL_MS'] ?? 5000),
     lagWindowMs: Number(process.env['WORKOS_SYNC_LAG_MS'] ?? 5000),
-    syncId: process.env['WORKOS_SYNC_ID'] ?? 'default',
     logger: createLogger((process.env['LOG_LEVEL'] as LogLevel) ?? 'info'),
   }
 }

@@ -11,15 +11,14 @@
  * Steps 2 and 3 overlap on purpose. Anything that changes mid-backfill is
  * replayed in step 3, and the staleness gate decides which version wins.
  */
-import { connect, type SqlClient } from './db/client.js'
-import { StateStore } from './db/state.js'
-import { migrate } from './schema/migrate.js'
+import type { Destination, FreshnessRow } from './destination.js'
+import { StateStore } from './state.js'
 import { STREAMS, streamByName, defaultStreams, subscribedEventTypes } from './catalog.js'
 import { WorkOSClient } from './workos/client.js'
 import { fetchEvents, checkCursorAge, CursorDirectionError } from './workos/events.js'
 import { applyEvents } from './sync/apply.js'
 import { backfillStream, type BackfillStreamResult } from './sync/backfill.js'
-import { diffStream, freshness, refreshStream, type DiffResult, type FreshnessRow } from './sync/reconcile.js'
+import { diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
 import { createLogger } from './logger.js'
 import type {
   EnvironmentConfig,
@@ -42,20 +41,17 @@ export interface EnvironmentStatus {
 }
 
 export interface EngineDeps {
-  db?: SqlClient
   /** Injectable for tests; one client per environment. */
   clientFor?: (env: EnvironmentConfig) => WorkOSClient
 }
 
 export class SyncEngine {
-  readonly schema: string
   readonly streams: StreamDef[]
-  private db!: SqlClient
-  private state!: StateStore
+  private destination: Destination
+  private state: StateStore
   private logger: Logger
   private clients = new Map<string, WorkOSClient>()
   private stopping = false
-  private ownsDb = false
   /** Event types passed to `GET /events`, which requires them. */
   readonly eventTypes: string[]
 
@@ -63,7 +59,9 @@ export class SyncEngine {
     private config: SyncEngineConfig,
     private deps: EngineDeps = {},
   ) {
-    this.schema = config.schema ?? 'workos'
+    if (!config.destination) throw new Error('a destination is required')
+    this.destination = config.destination
+    this.state = new StateStore(this.destination)
     this.logger = config.logger ?? createLogger('info')
     const names = config.streams ?? defaultStreams()
     this.streams = STREAMS.filter((s) => names.includes(s.name))
@@ -106,18 +104,7 @@ export class SyncEngine {
 
   /** Connect and apply the schema. Idempotent. */
   async init(): Promise<void> {
-    if (!this.db) {
-      if (this.deps.db) {
-        this.db = this.deps.db
-      } else if (this.config.databaseUrl) {
-        this.db = await connect(this.config.databaseUrl)
-        this.ownsDb = true
-      } else {
-        throw new Error('databaseUrl or a db dependency is required')
-      }
-      this.state = new StateStore(this.db, this.schema, this.config.syncId ?? 'default')
-    }
-    await migrate(this.db, this.streams, this.schema, this.logger)
+    await this.destination.init(this.streams, this.logger)
   }
 
   /**
@@ -152,10 +139,8 @@ export class SyncEngine {
       for (const stream of ordered) {
         if (stream.mode === 'append') continue
         try {
-          const r = await backfillStream(this.db, api, this.state, stream, {
-            schema: this.schema,
+          const r = await backfillStream(this.destination, api, this.state, stream, {
             env: env.name,
-            batchSize: this.config.batchSize,
             logger: this.logger,
             resume: options.resume,
           })
@@ -207,10 +192,8 @@ export class SyncEngine {
         )
         if (batch.events.length === 0) continue
 
-        const result = await applyEvents(this.db, batch.events, {
-          schema: this.schema,
+        const result = await applyEvents(this.destination, batch.events, {
           env: env.name,
-          batchSize: this.config.batchSize,
           logger: this.logger,
           hydrate: this.config.hydrate,
           api,
@@ -278,13 +261,13 @@ export class SyncEngine {
       diffs: {} as Record<string, DiffResult[]>,
     }
     for (const env of this.config.environments) {
-      out.freshness[env.name] = await freshness(this.db, this.schema, env.name, chosen)
+      out.freshness[env.name] = await freshness(this.destination, env.name, chosen)
       const api = this.clientFor(env)
       const diffs: DiffResult[] = []
       for (const stream of chosen) {
         try {
           diffs.push(
-            await diffStream(this.db, api, this.schema, env.name, stream, {
+            await diffStream(this.destination, api, env.name, stream, {
               repair: options.repair,
               logger: this.logger,
             }),
@@ -306,7 +289,7 @@ export class SyncEngine {
       const api = this.clientFor(env)
       for (const stream of this.streams) {
         if (!stream.list || stream.list.parent) continue
-        out.push(await refreshStream(this.db, api, this.schema, env.name, stream))
+        out.push(await refreshStream(this.destination, api, env.name, stream))
       }
     }
     return out
@@ -326,7 +309,7 @@ export class SyncEngine {
         rangeStart: tail?.rangeStart ?? null,
         started: Boolean(tail?.cursor || tail?.rangeStart),
         cursorAgeDays: age,
-        streams: await freshness(this.db, this.schema, env.name, this.streams),
+        streams: await freshness(this.destination, env.name, this.streams),
       }
     }
     return out
@@ -340,25 +323,7 @@ export class SyncEngine {
     await this.init()
     const out: { table: string; rows: number }[] = []
     for (const env of this.config.environments) {
-      for (const stream of this.streams) {
-        const col = stream.columns.find(
-          (c) => c.name === 'user_id' || (c.name === 'id' && stream.name === 'users'),
-        )
-        if (!col) continue
-        const r = await this.db.query(
-          `delete from "${this.schema}"."${stream.name}"
-           where "_env" = $1 and "${col.name}" = $2 returning 1`,
-          [env.name, userId],
-        )
-        if (r.rows.length > 0) out.push({ table: stream.name, rows: r.rows.length })
-      }
-      // Archived events embed the payload, so they must be scrubbed too.
-      const ev = await this.db.query(
-        `delete from "${this.schema}"."events"
-         where "_env" = $1 and ("object_id" = $2 or "_raw"->'data'->>'user_id' = $2) returning 1`,
-        [env.name, userId],
-      )
-      if (ev.rows.length > 0) out.push({ table: 'events', rows: ev.rows.length })
+      out.push(...(await this.destination.redact(this.streams, env.name, userId)))
     }
     return out
   }
@@ -371,7 +336,7 @@ export class SyncEngine {
 
   async close(): Promise<void> {
     this.stop()
-    if (this.ownsDb && this.db) await this.db.close()
+    await this.destination.close()
   }
 }
 

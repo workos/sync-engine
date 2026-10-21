@@ -20,7 +20,9 @@ You need:
 npm install @workos/pg-sync
 ```
 
-The package ships both a library and a `workos-pg-sync` command.
+The package ships both a library and a `workos-pg-sync` command. It depends on
+and re-exports `@workos/sync`, the engine-agnostic core, so this is the only
+package you install.
 
 ## Create the schema
 
@@ -98,10 +100,10 @@ The same engine runs as a library, which is how most people deploy it — no
 extra service, and it uses the database connection you already have.
 
 ```ts
-import { SyncEngine } from '@workos/pg-sync'
+import { SyncEngine, PostgresDestination } from '@workos/pg-sync'
 
 const engine = new SyncEngine({
-  databaseUrl: process.env.DATABASE_URL,
+  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
   environments: [
     { name: 'production', apiKey: process.env.WORKOS_API_KEY! },
   ],

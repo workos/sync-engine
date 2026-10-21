@@ -1,13 +1,12 @@
 /**
  * Cursor and run state.
  *
- * State lives in the destination database, in the same schema as the data, so a
- * cursor checkpoint and the rows it covers share a transaction domain. The
- * invariant that matters: a cursor is never advanced before the writes it
- * describes are durable. Getting that backwards loses data silently on a crash.
+ * State lives in the destination, alongside the data, so a cursor checkpoint
+ * and the rows it covers share a transaction domain. The invariant that
+ * matters: a cursor is never advanced before the writes it describes are
+ * durable. Getting that backwards loses data silently on a crash.
  */
-import type { SqlClient } from './client.js'
-import { quoteIdent } from '../schema/ddl.js'
+import type { Destination } from './destination.js'
 
 /** Live tail position: the last event id processed. */
 export interface TailState {
@@ -46,32 +45,14 @@ export type StreamState = TailState | BackfillState | Record<string, unknown>
 const TAIL_STREAM = '__tail__'
 
 export class StateStore {
-  constructor(
-    private db: SqlClient,
-    private schema: string,
-    private syncId: string,
-  ) {}
+  constructor(private destination: Destination) {}
 
-  private table(): string {
-    return `${quoteIdent(this.schema)}."_sync_state"`
+  get<T = StreamState>(env: string, stream: string): Promise<T | null> {
+    return this.destination.getState<T>(env, stream)
   }
 
-  async get<T = StreamState>(env: string, stream: string): Promise<T | null> {
-    const r = await this.db.query<{ state: T }>(
-      `select state from ${this.table()} where sync_id = $1 and env = $2 and stream = $3`,
-      [this.syncId, env, stream],
-    )
-    return r.rows[0]?.state ?? null
-  }
-
-  async set(env: string, stream: string, state: StreamState): Promise<void> {
-    await this.db.query(
-      `insert into ${this.table()} (sync_id, env, stream, state, updated_at)
-       values ($1, $2, $3, $4::jsonb, now())
-       on conflict (sync_id, env, stream) do update
-         set state = excluded.state, updated_at = now()`,
-      [this.syncId, env, stream, JSON.stringify(state)],
-    )
+  set(env: string, stream: string, state: StreamState): Promise<void> {
+    return this.destination.setState(env, stream, state)
   }
 
   getTail(env: string): Promise<TailState | null> {
@@ -90,13 +71,5 @@ export class StateStore {
       rangeStart: next.cursor ? null : (next.rangeStart ?? null),
       lastEventAt: next.lastEventAt ?? null,
     })
-  }
-
-  async all(env: string): Promise<{ stream: string; state: StreamState; updatedAt: string }[]> {
-    const r = await this.db.query<{ stream: string; state: StreamState; updated_at: string }>(
-      `select stream, state, updated_at from ${this.table()} where sync_id = $1 and env = $2 order by stream`,
-      [this.syncId, env],
-    )
-    return r.rows.map((row) => ({ stream: row.stream, state: row.state, updatedAt: row.updated_at }))
   }
 }

@@ -25,6 +25,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@workos/sync": "workspace:*",
     "pg": "^8.13.1"
   },
   "devDependencies": {

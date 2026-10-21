@@ -152,10 +152,10 @@ long-lived service.
 To embed it in an existing service instead of running a separate process:
 
 ```js title="Embedding the sync engine"
-import { SyncEngine } from '@workos/pg-sync'
+import { SyncEngine, PostgresDestination } from '@workos/pg-sync'
 
 const engine = new SyncEngine({
-  databaseUrl: process.env.DATABASE_URL,
+  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
   environments: [{ name: 'production', apiKey: process.env.WORKOS_API_KEY }],
 })
 
@@ -296,7 +296,7 @@ reconcile, enable hydration:
 
 ```js title="Hydrate new objects on creation"
 const engine = new SyncEngine({
-  databaseUrl: process.env.DATABASE_URL,
+  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
   environments: [{ name: 'production', apiKey: process.env.WORKOS_API_KEY }],
   hydrate: { users: 'on_create', organizations: 'on_create' },
 })
