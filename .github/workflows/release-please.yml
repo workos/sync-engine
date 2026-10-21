@@ -1,9 +1,15 @@
 name: Release Please
 
+# Parked: not ready to publish. Before restoring the `push` trigger, the
+# repo needs to be public (npm generates no provenance for internal repos),
+# both packages need trusted publishers on npmjs.com pointing at
+# release.yml, and PUBLIC_SOCKET_FIREWALL_TOKEN needs to reach this repo.
+#
+#   push:
+#     branches:
+#       - main
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 # id-token: write is not used by this workflow directly, but the caller's
 # token permissions cap what the called release.yml may request — its
