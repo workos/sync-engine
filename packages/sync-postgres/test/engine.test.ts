@@ -323,6 +323,50 @@ describe('sync engine', () => {
     expect(r.rows[0]!.organization_id).toMatch(/^org_/)
   })
 
+  it('never mirrors invitation acceptance tokens, however the row arrives', async () => {
+    const org = fake.createOrganization({ name: 'Acme' })
+    const invite = fake.createInvitation(org['id'] as string)
+    const token = invite['token'] as string
+
+    const stored = async () => {
+      const r = await db.query<{ raw: Record<string, unknown>; email: string; state: string }>(
+        `select "_raw" as raw, email, state from workos.invitations where id = $1`,
+        [invite['id']],
+      )
+      return r.rows[0]!
+    }
+
+    // Backfill writes the REST object, which is where the credential lives.
+    const engine = makeEngine(db, fake)
+    await engine.backfill()
+    let row = await stored()
+    expect(row.email).toBe(invite['email'])
+    expect(row.raw['token']).toBeUndefined()
+    expect(row.raw['accept_invitation_url']).toBeUndefined()
+    expect(JSON.stringify(row.raw)).not.toContain(token)
+
+    // An event merges into the stored payload; it must not reintroduce it.
+    fake.acceptInvitation(invite['id'] as string, 'user_1')
+    await engine.tick()
+    row = await stored()
+    expect(row.state).toBe('accepted')
+    expect(JSON.stringify(row.raw)).not.toContain(token)
+
+    // Refresh and repair re-list the REST object; same guarantee.
+    await engine.refresh()
+    await db.query(`delete from workos.invitations where id = $1`, [invite['id']])
+    await engine.reconcile({ repair: true, streams: ['invitations'] })
+    row = await stored()
+    expect(row.state).toBe('accepted')
+    expect(JSON.stringify(row.raw)).not.toContain(token)
+
+    const archive = await db.query<{ n: string }>(
+      `select count(*)::text as n from workos.events where "_raw"::text like $1`,
+      [`%${token}%`],
+    )
+    expect(Number(archive.rows[0]!.n)).toBe(0)
+  })
+
   it('keeps two environments apart in one database', async () => {
     const staging = new FakeWorkOS()
     staging.createUser({ email: 'staging@example.com' })

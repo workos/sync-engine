@@ -15,6 +15,7 @@ export type { EngineDeps } from './engine.js'
 
 export type { Destination, FreshnessRow, Row, WriteMode } from './destination.js'
 export { StateStore } from './state.js'
+export { redactPayload, redactRows, RedactingDestination, redacting } from './redact.js'
 
 export {
   STREAMS,
