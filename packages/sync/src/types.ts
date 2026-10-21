@@ -130,6 +130,15 @@ export interface SyncEngineConfig {
   lagWindowMs?: number
   /** Page size for list and event calls. The API default is 10; always send 100. */
   pageSize?: number
+  /**
+   * Events to apply per tick, fetched across as many pages as needed and
+   * rounded up to a whole page. Defaults to one page. Raising it means fewer,
+   * larger writes and one checkpoint per tick instead of per page — which
+   * matters for destinations where every statement is expensive — at the
+   * cost of holding that many events in memory and replaying up to that many
+   * after a mid-tick crash.
+   */
+  maxEventsPerTick?: number
   logger?: Logger
 }
 

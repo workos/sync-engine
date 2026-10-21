@@ -90,6 +90,9 @@ function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfi
     hydrate: (process.env['WORKOS_SYNC_HYDRATE'] as never) ?? { users: 'on_create', organizations: 'on_create' },
     pollIntervalMs: Number(process.env['WORKOS_SYNC_POLL_MS'] ?? 5000),
     lagWindowMs: Number(process.env['WORKOS_SYNC_LAG_MS'] ?? 5000),
+    maxEventsPerTick: process.env['WORKOS_SYNC_MAX_EVENTS_PER_TICK']
+      ? Number(process.env['WORKOS_SYNC_MAX_EVENTS_PER_TICK'])
+      : undefined,
     logger: createLogger((process.env['LOG_LEVEL'] as LogLevel) ?? 'info'),
   }
 }
