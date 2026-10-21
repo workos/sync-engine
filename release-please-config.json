@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "include-component-in-tag": false,
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "bump-minor-pre-major": true,
+      "changelog-path": "CHANGELOG.md",
+      "versioning": "default",
+      "extra-files": [
+        { "type": "json", "path": "packages/sync-engine/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/sync-postgres/package.json", "jsonpath": "$.version" }
+      ]
+    }
+  }
+}

@@ -4,6 +4,11 @@
   "description": "Engine-agnostic core for mirroring WorkOS data: stream catalog, event routing, backfill, tail and reconcile. Pair with a destination package such as @workos/sync-postgres.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/workos/workos-pg-sync.git",
+    "directory": "packages/sync-engine"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

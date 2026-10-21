@@ -4,6 +4,11 @@
   "description": "Mirror your WorkOS data into Postgres. Backfill, tail the Events API, and reconcile drift.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/workos/workos-pg-sync.git",
+    "directory": "packages/sync-postgres"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
