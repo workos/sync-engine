@@ -1,9 +1,11 @@
 name: Release
 
 # Publishes one package to npm from its component tag (sync-engine-v1.2.3,
-# sync-postgres-v0.4.0). release-please calls this once per package it
-# released; re-run it by hand for an existing tag if a run failed — a
-# version already on npm is skipped, so a retry converges.
+# sync-postgres-v0.4.0), and the destination packages — the ones with a CLI —
+# to GHCR as a container image after that. release-please calls this once per
+# package it released; re-run it by hand for an existing tag if a run failed —
+# a version already on npm is skipped and an image push is idempotent, so a
+# retry converges.
 
 on:
   workflow_call:
@@ -35,6 +37,12 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      component: ${{ steps.pkg.outputs.component }}
+      destination: ${{ steps.pkg.outputs.destination }}
+      version: ${{ steps.pkg.outputs.version }}
+      description: ${{ steps.pkg.outputs.description }}
+      image: ${{ steps.pkg.outputs.image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,11 +80,20 @@ jobs:
             *-*) NPM_TAG=beta ;;
             *)   NPM_TAG=latest ;;
           esac
+          # A package with a `bin` is a destination and ships as an image too;
+          # the engine is a library and does not. The Dockerfile's DESTINATION
+          # arg is the component without its sync- prefix.
+          IMAGE="$(node -p "require('./$DIR/package.json').bin ? 'true' : 'false'")"
+          DESCRIPTION="$(node -p "require('./$DIR/package.json').description ?? ''")"
           {
             echo "dir=$DIR"
             echo "name=$NAME"
+            echo "component=$COMPONENT"
+            echo "destination=${COMPONENT#sync-}"
             echo "version=$VERSION"
             echo "npm_tag=$NPM_TAG"
+            echo "image=$IMAGE"
+            echo "description=$DESCRIPTION"
           } >> "$GITHUB_OUTPUT"
 
       # Socket Firewall is off until PUBLIC_SOCKET_FIREWALL_TOKEN reaches this
@@ -119,3 +136,124 @@ jobs:
           TARBALL="$(pnpm --filter "./$DIR" pack --json --pack-destination "$RUNNER_TEMP" \
             | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).filename")"
           npm publish "$TARBALL" --tag "$NPM_TAG" --access public --provenance
+
+  # A multi-arch image for each destination package, after its npm package is
+  # out so the two never sit at different versions. The image name is the npm
+  # name without its scope: @workos/sync-postgres → ghcr.io/workos/sync-postgres.
+  publish-ghcr:
+    name: Publish container image to GHCR
+    needs: publish
+    if: ${{ needs.publish.outputs.image == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag_name }}
+          persist-credentials: false
+
+      - name: Determine image tags
+        id: image
+        env:
+          COMPONENT: ${{ needs.publish.outputs.component }}
+          VERSION: ${{ needs.publish.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          case "$VERSION" in
+            *-*) CHANNEL=beta ;;
+            *)   CHANNEL=latest ;;
+          esac
+          # github.sha is the commit the workflow ran from, not the tag's.
+          REVISION="$(git rev-parse HEAD)"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          IMAGE="ghcr.io/${OWNER}/${COMPONENT}"
+          {
+            echo "tags=${IMAGE}:${VERSION},${IMAGE}:${CHANNEL},${IMAGE}:sha-${SHORT_SHA}"
+            echo "revision=$REVISION"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # QEMU + Buildx let a single amd64 runner build and push a multi-arch
+      # manifest list (amd64 + arm64) so ARM hosts pull a native image. The
+      # node:24-alpine base is already multi-arch.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Socket Firewall is off until PUBLIC_SOCKET_FIREWALL_TOKEN reaches this
+      # repo. To turn it on, uncomment this block; the plain publish below is
+      # then skipped, and a run without the firewall fails instead.
+      # - name: Prepare Docker install config directory
+      #   run: mkdir -p "$RUNNER_TEMP/sfw-docker-npm"
+      #
+      # - name: Setup Socket Firewall
+      #   id: sfw
+      #   uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d
+      #   env:
+      #     NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/sfw-docker-npm/.npmrc
+      #   with:
+      #     token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
+      #
+      # - name: Require Socket Firewall for container publication
+      #   if: steps.sfw.outputs.active != 'true'
+      #   run: |
+      #     echo "::error::Socket Firewall must be active before container publication."
+      #     exit 1
+      #
+      # - name: Publish image with Socket Firewall
+      #   uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      #   with:
+      #     context: .
+      #     platforms: linux/amd64,linux/arm64
+      #     push: true
+      #     tags: ${{ steps.image.outputs.tags }}
+      #     labels: |
+      #       org.opencontainers.image.version=${{ needs.publish.outputs.version }}
+      #       org.opencontainers.image.revision=${{ steps.image.outputs.revision }}
+      #       org.opencontainers.image.description=${{ needs.publish.outputs.description }}
+      #     build-args: |
+      #       DESTINATION=${{ needs.publish.outputs.destination }}
+      #       SFW_REQUIRED=true
+      #     add-hosts: |
+      #       registry.npmjs.org:127.0.0.1
+      #       registry.yarnpkg.com:127.0.0.1
+      #     secret-files: |
+      #       npmrc=${{ runner.temp }}/sfw-docker-npm/.npmrc
+      #
+      # - name: Teardown Socket Firewall
+      #   if: ${{ always() && steps.sfw.outputs.active == 'true' }}
+      #   uses: workos/setup-socket-firewall/teardown@ca93dd8aa351f54f4729fe3377a9be23c631c25d
+      #
+      # - name: Remove private Docker install config
+      #   if: ${{ always() }}
+      #   env:
+      #     SFW_NPM_CONFIG_FILE: ${{ runner.temp }}/sfw-docker-npm/.npmrc
+      #   run: |
+      #     rm -f "$SFW_NPM_CONFIG_FILE"
+      #     if [ -e "$SFW_NPM_CONFIG_FILE" ]; then
+      #       echo "::error::Private Docker install config was not removed."
+      #       exit 1
+      #     fi
+
+      # Once the Socket Firewall block is on, delete this step: the Require
+      # step refuses to publish without the firewall, and the firewalled
+      # publish takes its place.
+      - name: Publish image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.image.outputs.tags }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.publish.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.image.outputs.revision }}
+            org.opencontainers.image.description=${{ needs.publish.outputs.description }}
+          build-args: |
+            DESTINATION=${{ needs.publish.outputs.destination }}

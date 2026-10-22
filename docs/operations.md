@@ -300,13 +300,18 @@ engine.listen().catch((err) => {
 });
 ```
 
-**As a standalone container:**
+**As a standalone container**, from the published image:
 
-```dockerfile
-FROM node:22-slim
-RUN npm install -g @workos/sync-postgres
-CMD ["workos-sync-postgres", "listen"]
+```bash
+docker run -d --restart unless-stopped \
+  -e DATABASE_URL -e WORKOS_API_KEY -e WORKOS_ENVIRONMENT_NAME=production \
+  ghcr.io/workos/sync-postgres:0.2.0 listen
 ```
+
+The package and its production runs as a non-root user, and takes the same commands, flags and
+environment as the CLI. It honors `HTTPS_PROXY` and `NO_PROXY` for calls to
+the WorkOS API. To run the schema creation on each deploy,
+run `init` as a one-shot container before starting `listen`.
 
 Run **one listener per environment**, each with its own `WORKOS_API_KEY` and
 `WORKOS_ENVIRONMENT_NAME`; they can share a database. Two processes tailing the

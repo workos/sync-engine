@@ -1,0 +1,111 @@
+name: Docker
+
+# Builds each destination's image on both architectures release.yml publishes,
+# natively rather than under QEMU, and runs the CLI from the built image.
+# Nothing is pushed; release.yml publishes to GHCR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    name: Docker ${{ matrix.destination }} on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per destination package: packages/sync-<destination>.
+        destination:
+          - postgres
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The docker-container driver is what makes the GitHub Actions layer
+      # cache usable; the default driver cannot export cache.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Socket Firewall is off until PUBLIC_SOCKET_FIREWALL_TOKEN reaches this
+      # repo. To turn it on, uncomment this block; the plain build below then
+      # only runs as the public external-fork fallback.
+      #
+      # The action writes a second npmrc under RUNNER_TEMP (the directory has
+      # to exist first) which the Dockerfile mounts as a BuildKit secret, and
+      # add-hosts null-routes the public registries inside the build the same
+      # way the action does on the runner.
+      # - name: Prepare Docker install config directory
+      #   run: mkdir -p "$RUNNER_TEMP/sfw-docker-npm"
+      #
+      # - name: Setup Socket Firewall
+      #   id: sfw
+      #   uses: workos/setup-socket-firewall@ca93dd8aa351f54f4729fe3377a9be23c631c25d
+      #   env:
+      #     NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/sfw-docker-npm/.npmrc
+      #   with:
+      #     token: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
+      #     allow-external-fork-fallback: true
+      #
+      # - name: Build image with Socket Firewall
+      #   if: steps.sfw.outputs.active == 'true'
+      #   uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      #   with:
+      #     context: .
+      #     push: false
+      #     load: true
+      #     tags: sync-${{ matrix.destination }}:ci
+      #     build-args: |
+      #       DESTINATION=${{ matrix.destination }}
+      #       SFW_REQUIRED=true
+      #     add-hosts: |
+      #       registry.npmjs.org:127.0.0.1
+      #       registry.yarnpkg.com:127.0.0.1
+      #     secret-files: |
+      #       npmrc=${{ runner.temp }}/sfw-docker-npm/.npmrc
+      #     cache-from: type=gha,scope=sync-${{ matrix.destination }}-${{ runner.arch }}
+      #     cache-to: type=gha,mode=max,scope=sync-${{ matrix.destination }}-${{ runner.arch }}
+      #
+      # - name: Teardown Socket Firewall
+      #   if: ${{ always() && steps.sfw.outputs.active == 'true' }}
+      #   uses: workos/setup-socket-firewall/teardown@ca93dd8aa351f54f4729fe3377a9be23c631c25d
+      #
+      # - name: Remove private Docker install config
+      #   if: ${{ always() }}
+      #   env:
+      #     SFW_NPM_CONFIG_FILE: ${{ runner.temp }}/sfw-docker-npm/.npmrc
+      #   run: |
+      #     rm -f "$SFW_NPM_CONFIG_FILE"
+      #     if [ -e "$SFW_NPM_CONFIG_FILE" ]; then
+      #       echo "::error::Private Docker install config was not removed."
+      #       exit 1
+      #     fi
+
+      # Once the Socket Firewall block is on, give this step
+      # `if: steps.sfw.outputs.active != 'true'` so it only runs as the
+      # public external-fork fallback.
+      - name: Build image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          push: false
+          load: true
+          tags: sync-${{ matrix.destination }}:ci
+          build-args: |
+            DESTINATION=${{ matrix.destination }}
+          cache-from: type=gha,scope=sync-${{ matrix.destination }}-${{ runner.arch }}
+          cache-to: type=gha,mode=max,scope=sync-${{ matrix.destination }}-${{ runner.arch }}
+
+      # The entrypoint runs, and the build carries the stream catalog, with no
+      # database or credentials involved.
+      - name: Container smoke test
+        env:
+          IMAGE: sync-${{ matrix.destination }}:ci
+        run: |
+          docker run --rm "$IMAGE" | grep -q '^Usage'
+          docker run --rm "$IMAGE" streams | jq -e 'any(.[]; .stream == "users")'

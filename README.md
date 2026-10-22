@@ -49,6 +49,22 @@ npx workos-sync-postgres backfill   # load what already exists
 npx workos-sync-postgres listen     # tail the Events API
 ```
 
+The same command ships as a container image, one per destination, for
+`linux/amd64` and `linux/arm64`:
+
+```bash
+docker run --rm -e DATABASE_URL -e WORKOS_API_KEY ghcr.io/workos/sync-postgres init
+docker run --rm -e DATABASE_URL -e WORKOS_API_KEY ghcr.io/workos/sync-postgres backfill
+docker run --rm -e DATABASE_URL -e WORKOS_API_KEY ghcr.io/workos/sync-postgres listen
+```
+
+Tags are `latest`, the version (e.g. `0.2.0`), `beta` for prereleases, and
+`sha-<commit>`. To build the image yourself:
+
+```bash
+docker build --build-arg DESTINATION=postgres -t sync-postgres .
+```
+
 Or embed it in your app:
 
 ```ts

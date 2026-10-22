@@ -11,14 +11,16 @@ name: Release Please
 on:
   workflow_dispatch:
 
-# id-token: write is not used by this workflow directly, but the caller's
-# token permissions cap what the called release.yml may request — its
-# publish job needs id-token: write for npm trusted publishing (OIDC).
-# Without it here, the whole run fails at startup with a workflow-file error.
+# id-token: write and packages: write are not used by this workflow directly,
+# but the caller's token permissions cap what the called release.yml may
+# request — its publish job needs id-token: write for npm trusted publishing
+# (OIDC) and its publish-ghcr job needs packages: write to push the image.
+# Without them here, the whole run fails at startup with a workflow-file error.
 permissions:
   contents: write
   pull-requests: write
   id-token: write
+  packages: write
 
 jobs:
   # Each package is its own release-please component with its own version,
