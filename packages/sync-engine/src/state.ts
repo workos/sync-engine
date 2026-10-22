@@ -22,8 +22,15 @@ export interface TailState {
    * replaying the whole retention window.
    */
   rangeStart?: string | null
-  /** created_at of the last processed event, for lag reporting. */
+  /** created_at of the last processed event. Drives the retention-cliff alarm. */
   lastEventAt?: string | null
+  /**
+   * Wall-clock time of the last poll that completed without error, whether
+   * or not it returned events. This is the liveness signal: a quiet upstream
+   * leaves `lastEventAt` old while the sync is perfectly healthy, so stall
+   * detection has to look here instead.
+   */
+  lastPolledAt?: string | null
   updatedAt?: string
 }
 
@@ -61,7 +68,12 @@ export class StateStore {
 
   async setTail(
     env: string,
-    next: { cursor: string | null; lastEventAt?: string | null; rangeStart?: string | null },
+    next: {
+      cursor: string | null
+      lastEventAt?: string | null
+      rangeStart?: string | null
+      lastPolledAt?: string | null
+    },
   ): Promise<void> {
     await this.set(env, TAIL_STREAM, {
       kind: 'tail',
@@ -70,6 +82,12 @@ export class StateStore {
       // API rejects a request carrying both.
       rangeStart: next.cursor ? null : (next.rangeStart ?? null),
       lastEventAt: next.lastEventAt ?? null,
+      lastPolledAt: next.lastPolledAt ?? null,
     })
+  }
+
+  /** Forget the tail position entirely; the next capture starts from now. */
+  clearTail(env: string): Promise<void> {
+    return this.set(env, TAIL_STREAM, { kind: 'tail', cursor: null, rangeStart: null, lastEventAt: null, lastPolledAt: null })
   }
 }

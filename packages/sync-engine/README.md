@@ -11,18 +11,18 @@ particular database. Writes go through a small `Destination` interface.
 **You probably want a destination package instead.** Each one depends on this
 package and re-exports it, so it is the only thing to install:
 
-| Destination | Package |
-|---|---|
-| Postgres | [`@workos/sync-postgres`](https://www.npmjs.com/package/@workos/sync-postgres) |
+| Destination | Package                                                                        |
+| ----------- | ------------------------------------------------------------------------------ |
+| Postgres    | [`@workos/sync-postgres`](https://www.npmjs.com/package/@workos/sync-postgres) |
 
 Install this package directly only to write a new destination.
 
 ## What is in here
 
 - **Catalog** — `STREAMS`: every WorkOS object the engine can mirror, with its
-  key, projected columns, list endpoint, and the event types that create,
-  update and delete it. `defaultStreams()` is the tier 1–3 set;
-  `subscribedEventTypes(streams)` derives the `GET /events` filter from it.
+  group, key, projected columns, list endpoint, and the event types that
+  create, update and delete it. `defaultStreams()` is every stream that has
+  events; `subscribedEventTypes(streams)` derives the `GET /events` filter.
 - **Router** — `routeEvent(event)`: event name → upsert / delete / link /
   unlink / append / archive-only. An unknown event type is archived and
   reported, never thrown.
@@ -40,37 +40,48 @@ Install this package directly only to write a new destination.
 ## Using the engine
 
 ```ts
-import { SyncEngine } from '@workos/sync-engine'
+import { SyncEngine } from "@workos/sync-engine";
 
 const engine = new SyncEngine({
-  destination,                                  // see below
-  environments: [{ name: 'production', apiKey: process.env.WORKOS_API_KEY! }],
-})
+  destination, // see below
+  environments: [{ name: "production", apiKey: process.env.WORKOS_API_KEY! }],
+});
 
-await engine.backfill()   // 1. capture the stream position, 2. page the REST endpoints
-await engine.listen()     // 3. replay events from the captured position, 4. tail forever
+await engine.backfill(); // 1. capture the stream position, 2. page the REST endpoints
+await engine.listen(); // 3. replay events from the captured position, 4. tail forever
 ```
 
-The lifecycle is deliberately overlapping: the cursor is captured *before*
+The lifecycle is deliberately overlapping: the cursor is captured _before_
 backfill starts, so anything that changes mid-backfill is replayed afterwards
 and the staleness gate decides which version wins.
 
-| Option | Default | |
-|---|---|---|
-| `destination` | — | A `Destination` implementation. Required. |
-| `environments` | — | `{ name, apiKey, apiUrl? }[]`. `name` is written to every row and must never change. |
-| `streams` | tiers 1–3 | Stream names to sync. |
-| `eventTypes` | derived from `streams` | The `GET /events` filter. Widen it to archive event families with no mirror table. |
-| `hydrate` | `off` | Re-fetch objects on event receipt: `off`, `on_create`, `always`, or a per-stream map. |
-| `pollIntervalMs` | `5000` | Idle wait between polls. |
-| `lagWindowMs` | `5000` | Never advance the cursor past events younger than this. |
-| `pageSize` | `100` | Page size for list and event calls. |
-| `maxEventsPerTick` | one page | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive. |
-| `logger` | JSON to stdout | `{ debug, info, warn, error }`. |
+| Option             | Default                             |                                                                                                                                               |
+| ------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `destination`      | —                                   | A `Destination` implementation. Required.                                                                                                     |
+| `environments`     | —                                   | `{ name, apiKey, apiUrl? }[]`. `name` is written to every row and must never change.                                                          |
+| `streams`          | `defaultStreams()`                  | Stream names to sync: every stream with events. Poll-only streams are opt-in. `events` is always included.                                    |
+| `extraColumns`     | —                                   | Extra typed columns to project out of `_raw`, keyed by stream. Add-only.                                                                      |
+| `eventTypes`       | derived from `streams`              | The `GET /events` filter. Widen it to archive event families with no mirror table.                                                            |
+| `hydrate`          | users and organizations `on_create` | Re-fetch objects on event receipt: `off`, `on_create`, `always`, or a per-stream map. Only streams with a get-by-id endpoint can be hydrated. |
+| `pollIntervalMs`   | `5000`                              | Idle wait between polls.                                                                                                                      |
+| `lagWindowMs`      | `5000`                              | Never advance the cursor past events younger than this.                                                                                       |
+| `pageSize`         | `100`                               | Page size for list and event calls.                                                                                                           |
+| `maxEventsPerTick` | one page                            | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive.                       |
+| `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                               |
 
 Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
 `reconcile({ repair, streams })`, `refresh()`, `status()`, `redact(userId)`,
-`processWebhook()`, `close()`.
+`processWebhook()`, `close()`. Every method applies the schema first, so
+`init()` is optional.
+
+`status()` reports, per environment, the cursor, `pollAgeSeconds` (time since
+the last successful poll; alert on this), `cursorAgeDays` (age of the newest
+event applied; distance from the 90-day retention cliff, not liveness), and
+per-stream row counts, tombstones, staleness and lag.
+
+A rejected credential (401 or 403) and a cursor that pages backwards are
+fatal: the engine stops rather than retrying. Everything else is retried or
+isolated by stream.
 
 ## Writing a destination
 
@@ -80,24 +91,43 @@ entirely yours.
 
 ```ts
 import type {
-  Destination, FreshnessRow, Logger, Row, StreamDef, WriteMode, WriteStats,
-} from '@workos/sync-engine'
+  Destination,
+  FreshnessRow,
+  Logger,
+  Row,
+  StreamDef,
+  WriteMode,
+  WriteStats,
+} from "@workos/sync-engine";
 
 class MyDestination implements Destination {
-  init(streams: StreamDef[], logger?: Logger): Promise<void>
-  close(): Promise<void>
+  init(streams: StreamDef[], logger?: Logger): Promise<void>;
+  close(): Promise<void>;
 
-  upsert(stream: StreamDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats>
-  delete(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
-  relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
+  upsert(
+    stream: StreamDef,
+    env: string,
+    rows: Row[],
+    mode: WriteMode,
+  ): Promise<WriteStats>;
+  delete(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
+  relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
 
-  liveIds(stream: StreamDef, env: string): Promise<string[]>
-  rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>
-  freshness(stream: StreamDef, env: string, lagWindowHours: number): Promise<FreshnessRow>
-  redact(streams: StreamDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]>
+  liveIds(stream: StreamDef, env: string): Promise<string[]>;
+  rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>;
+  freshness(
+    stream: StreamDef,
+    env: string,
+    lagWindowHours: number,
+  ): Promise<FreshnessRow>;
+  redact(
+    streams: StreamDef[],
+    env: string,
+    userId: string,
+  ): Promise<{ table: string; rows: number }[]>;
 
-  getState<T>(env: string, stream: string): Promise<T | null>
-  setState(env: string, stream: string, state: unknown): Promise<void>
+  getState<T>(env: string, stream: string): Promise<T | null>;
+  setState(env: string, stream: string, state: unknown): Promise<void>;
 }
 ```
 

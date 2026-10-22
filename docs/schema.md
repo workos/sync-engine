@@ -22,6 +22,13 @@ Two consequences worth internalising:
 - **Join on `_env` as well as the id.** Ids are unique within an environment,
   and one database can mirror several.
 
+## Bookkeeping tables
+
+| Table         | Purpose                                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `_sync_state` | Cursors and checkpoints, keyed by `(sync_id, env, stream)`. The tail position is the row with `stream = '__tail__'`; backfill progress is one row per stream. |
+| `_migrations` | Fingerprints of the schema versions that have been applied, so `init` is a single `SELECT` when nothing changed.                                              |
+
 ## Stream modes
 
 | Mode     | Behaviour                                                                |
@@ -30,39 +37,61 @@ Two consequences worth internalising:
 | `append` | Immutable log. Rows are never updated or deleted.                        |
 | `poll`   | No events exist upstream. Only as fresh as the last `reconcile`.         |
 
+## Which streams sync by default
+
+Every stream that has events. That is everything below except the two
+poll-only streams at the end, which cost a full re-list on every reconcile and
+are only as fresh as that run, so they are opt-in:
+
+```ts
+import { defaultStreams } from "@workos/sync-postgres";
+
+new SyncEngine({
+  // ...
+  streams: [...defaultStreams(), "fga_resources", "webhook_endpoints"],
+});
+```
+
+Or on the command line, `--streams users,organizations,...`. The `events`
+archive is always included, whatever you pass, because every event is written
+there before it is routed.
+
+`workos-sync-postgres streams` prints each stream with its group, mode,
+whether it is on by default, and how it is backfilled.
+
 ## Tables
 
 ### Identity
 
 | Table                      | Key  | Events                                       | Backfill                       | Notes                                                                                               |
 | -------------------------- | ---- | -------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `users`                    | `id` | `user.created/updated/deleted`               | `/user_management/users`       | Events omit `external_id`, `metadata`, `last_sign_in_at`, `locale`                                  |
-| `organizations`            | `id` | `organization.created/updated/deleted`       | `/organizations`               | Events omit `metadata`, `stripe_customer_id`                                                        |
+| `users`                    | `id` | `user.created/updated/deleted`               | `/user_management/users`       | Events omit `external_id`, `metadata`, `last_sign_in_at`, `locale`; hydrated on create by default   |
+| `organizations`            | `id` | `organization.created/updated/deleted`       | `/organizations`               | Events omit `metadata`, `stripe_customer_id`; hydrated on create by default                         |
 | `organization_memberships` | `id` | `organization_membership.*`                  | per organization               | List requires a filter and defaults to active only; the engine asks for all statuses                |
-| `organization_domains`     | `id` | `organization_domain.*` (5 types)            | embedded in organizations      | No standalone list endpoint                                                                         |
+| `organization_domains`     | `id` | `organization_domain.*` (5 types)            | embedded in organizations      | No standalone list endpoint, so `reconcile` cannot check it                                         |
 | `invitations`              | `id` | `invitation.created/accepted/resent/revoked` | `/user_management/invitations` | `token` and `accept_invitation_url` are stripped before the row is written; events never carry them |
 | `sessions`                 | `id` | `session.created/revoked`                    | per user, active only          | Backfill is partial by construction                                                                 |
 
 ### Directory Sync and SSO
 
-| Table                         | Key                                       | Events                                     | Backfill            | Notes                                                                                                                     |
-| ----------------------------- | ----------------------------------------- | ------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `directories`                 | `id`                                      | `dsync.activated`, `dsync.deleted`         | `/directories`      | **No `dsync.updated` exists** — a directory going `linked → invalid_credentials` emits nothing. Only `reconcile` sees it. |
-| `directory_users`             | `id`                                      | `dsync.user.*`                             | `/directory_users`  | 4 req/s per directory; `groups` is omitted from events                                                                    |
-| `directory_groups`            | `id`                                      | `dsync.group.created/updated/deleted`      | `/directory_groups` |                                                                                                                           |
-| `directory_group_memberships` | `(directory_group_id, directory_user_id)` | `dsync.group.user_added/removed`           | —                   | The membership has no upstream id; the pair is the key                                                                    |
-| `connections`                 | `id`                                      | `connection.activated/deactivated/deleted` | `/connections`      | Certificate events are archived to `events` only                                                                          |
+| Table                         | Key                                       | Events                                     | Backfill            | Notes                                                                                                                    |
+| ----------------------------- | ----------------------------------------- | ------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `directories`                 | `id`                                      | `dsync.activated`, `dsync.deleted`         | `/directories`      | **No `dsync.updated` exists.** A directory going `linked → invalid_credentials` emits nothing. Only `reconcile` sees it. |
+| `directory_users`             | `id`                                      | `dsync.user.*`                             | `/directory_users`  | 4 req/s per directory; the REST object's `groups` array is omitted from events                                           |
+| `directory_groups`            | `id`                                      | `dsync.group.created/updated/deleted`      | `/directory_groups` |                                                                                                                          |
+| `directory_group_memberships` | `(directory_group_id, directory_user_id)` | `dsync.group.user_added/removed`           | none                | The membership has no upstream id; the pair is the key. Memberships that predate the sync are not mirrored.              |
+| `connections`                 | `id`                                      | `connection.activated/deactivated/deleted` | `/connections`      | Certificate events are archived to `events` only                                                                         |
 
 ### Authorization
 
-| Table                | Key                                      | Events                          | Backfill                     | Notes                                                            |
-| -------------------- | ---------------------------------------- | ------------------------------- | ---------------------------- | ---------------------------------------------------------------- |
-| `groups`             | `id`                                     | `group.created/updated/deleted` | per organization             |                                                                  |
-| `group_memberships`  | `(group_id, organization_membership_id)` | `group.member_added/removed`    | —                            | Payload is ids only                                              |
-| `roles`              | `slug`                                   | `role.created/updated/deleted`  | `/authorization/roles`       | **Events carry no `id`** — slug is the key. List is unpaginated. |
-| `organization_roles` | `(organization_id, slug)`                | `organization_role.*`           | per organization             |                                                                  |
-| `permissions`        | `slug`                                   | `permission.*`                  | `/authorization/permissions` |                                                                  |
-| `feature_flags`      | `slug`                                   | `flag.*`                        | `/feature-flags`             | Flags are project-scoped, shared across environments             |
+| Table                | Key                                      | Events                          | Backfill                     | Notes                                                                                                      |
+| -------------------- | ---------------------------------------- | ------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `groups`             | `id`                                     | `group.created/updated/deleted` | per organization             |                                                                                                            |
+| `group_memberships`  | `(group_id, organization_membership_id)` | `group.member_added/removed`    | none                         | Payload is ids only. Memberships that predate the sync are not mirrored.                                   |
+| `roles`              | `slug`                                   | `role.created/updated/deleted`  | `/authorization/roles`       | **Events carry no `id`**, so slug is the key. List is unpaginated.                                         |
+| `organization_roles` | `(organization_id, slug)`                | `organization_role.*`           | per organization             |                                                                                                            |
+| `permissions`        | `slug`                                   | `permission.*`                  | `/authorization/permissions` |                                                                                                            |
+| `feature_flags`      | `slug`                                   | `flag.*`                        | `/feature-flags`             | Flags are defined per project, so every environment key lists the same flags; each appears once per `_env` |
 
 ### Logs
 
@@ -77,47 +106,68 @@ you do not capture them as they happen the history is gone after 90 days. Once
 mirrored, it is an ordinary table:
 
 ```sql
-select email, count(*) as failures
-from workos.auth_attempts
-where status = 'failed' and created_at > now() - interval '1 hour'
-group by email having count(*) > 5;
+SELECT email, COUNT(*) AS failures
+   FROM workos.auth_attempts
+   WHERE status = 'failed' AND created_at > NOW() - INTERVAL '1 hour'
+   GROUP BY email
+   HAVING COUNT(*) > 5;
 ```
 
-### Poll-only
+### Poll-only (opt-in)
 
-`fga_resources` and `webhook_endpoints` have list endpoints but no events at
-all. They are refreshed by `reconcile`, and are exactly as stale as your last
-run.
+| Table               | Key  | Backfill                   | Notes                                                               |
+| ------------------- | ---- | -------------------------- | ------------------------------------------------------------------- |
+| `fga_resources`     | `id` | `/authorization/resources` | No events exist. Refreshed by `reconcile`, and exactly that stale.  |
+| `webhook_endpoints` | `id` | `/webhook_endpoints`       | No events exist. The signing `secret` is stripped before any write. |
 
 ## What is not mirrored
-
-Stated plainly, because knowing the boundary matters:
 
 | Object                                                | Why                                                                                                                      |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | SSO profiles                                          | No list endpoint, no get-by-id, and no events. Only returned during a live sign-in.                                      |
 | Audit log events                                      | Not listable and not evented. Use per-organization CSV exports or Log Streams.                                           |
 | Radar block/allow lists                               | Write-only endpoints.                                                                                                    |
-| Vault values                                          | Should not leave Vault. Vault _activity_ is archived to `events`.                                                        |
+| Vault values                                          | Should not leave Vault. Vault _activity_ events can be archived to `events` if you subscribe to them.                    |
 | Portal links, widget tokens                           | Ephemeral credentials, not state.                                                                                        |
 | Invitation acceptance tokens, webhook signing secrets | Live credentials. The REST objects carry them, so the engine strips them (`StreamDef.redact`) before any row is written. |
 
-Certificate, Vault, Radar, agent and Pipes events are archived to
-`workos.events` even though they have no mirror table.
+Events with no mirror table (certificate renewals, Vault activity, Radar,
+agent, Pipes, API keys, password resets, and so on) are not fetched by default:
+the subscription is only what the mirrored streams declare, because
+`GET /events` requires an explicit list. Add their names to `eventTypes` and
+they are archived verbatim to `workos.events`, where they stay queryable.
 
 ## Extending it
 
-To project a field you care about that is not yet a typed column, add it to the
-stream's `columns` and re-run `init`:
+To project a field you care about that is not yet a typed column, pass it as
+an extra column. The next `init` (or any engine method, since each applies the
+schema first) issues `ALTER TABLE ... ADD COLUMN ... GENERATED ALWAYS AS ... STORED`,
+which Postgres computes from data already in `_raw`. No backfill, no
+downtime.
 
 ```ts
-{ name: 'department', type: 'text', path: ['custom_attributes', 'department'], index: true }
+new SyncEngine({
+  // ...
+  extraColumns: {
+    directory_users: [
+      {
+        name: "department",
+        type: "text",
+        path: ["custom_attributes", "department"],
+        index: true,
+      },
+    ],
+  },
+});
 ```
 
-The next run issues `ALTER TABLE ... ADD COLUMN ... GENERATED ALWAYS AS ...
-STORED`, which Postgres computes from data already in `_raw`. No backfill, no
-downtime. Until then, query it directly:
+Column types are `text`, `boolean`, `bigint`, `numeric`, `jsonb` and
+`timestamptz`. The `path` is a top-level key or a list of keys to walk.
+
+This is add-only. Changing a column's path or type, or removing one, is manual
+DDL on your side: the engine never drops or alters a column that already
+exists. Until a column exists, query the field directly:
 
 ```sql
-select _raw->'custom_attributes'->>'department' as department from workos.directory_users;
+SELECT _raw->'custom_attributes'->>'department' AS department FROM workos.directory_users;
 ```

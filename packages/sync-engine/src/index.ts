@@ -23,7 +23,6 @@ export {
   streamForId,
   defaultStreams,
   subscribedEventTypes,
-  ARCHIVE_ONLY_EVENT_TYPES,
 } from './catalog.js'
 export { routeEvent, sourceUpdatedAt } from './router.js'
 export type { RouteAction } from './router.js'
@@ -46,7 +45,7 @@ export { diffStream, freshness, refreshStream } from './sync/reconcile.js'
 export { createLogger, silentLogger } from './logger.js'
 export type { LogLevel } from './logger.js'
 
-export { addStats, emptyStats } from './types.js'
+export { addStats, emptyStats, DEFAULT_HYDRATE } from './types.js'
 export type {
   ColumnDef,
   ColumnType,
@@ -55,6 +54,7 @@ export type {
   ListEndpoint,
   Logger,
   StreamDef,
+  StreamGroup,
   StreamMode,
   SyncEngineConfig,
   WorkOSEvent,

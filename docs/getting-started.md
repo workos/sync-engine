@@ -10,7 +10,8 @@ This guide takes you from an empty database to a mirror that stays current.
 
 You need:
 
-- A Postgres database (14 or newer) that the engine can create a schema in.
+- A Postgres database (12 or newer, for generated columns) that the engine can create a schema in.
+- Node 22 or newer.
 - A WorkOS API key for the environment you want to mirror. Each key is scoped to
   a single environment, so mirroring both staging and production means two keys.
 
@@ -34,10 +35,16 @@ npx workos-sync-postgres init
 ```
 
 This creates a `workos` schema, one table per synced object, and two
-bookkeeping tables. It is safe to run repeatedly — the schema is fingerprinted,
-so a second run with no changes does nothing.
+bookkeeping tables: `_sync_state` (cursors and backfill checkpoints) and
+`_migrations` (which version of the schema has been applied). It is safe to run
+repeatedly. The schema is fingerprinted, so a second run with no changes does
+nothing.
 
 To use a different schema name, set `WORKOS_SYNC_SCHEMA` or pass `--schema`.
+
+With a single key, every row is labelled `_env = 'production'`. If that is not
+what this key is, set `WORKOS_ENVIRONMENT_NAME` before the first write. The
+label is part of every primary key and must not change once you have data.
 
 ## Load what already exists
 
@@ -66,24 +73,33 @@ npx workos-sync-postgres listen
 ```
 
 The engine now polls the Events API from its stored cursor and applies each
-change. Leave it running as a service.
+change. Leave it running as a service. If a few minutes of lag is acceptable,
+`tick` does one poll and exits, which suits a cron job instead of a process.
 
-<Note>
-The engine polls the Events API rather than receiving webhooks. Events come back
-in a consistent order, the stream is replayable from any cursor, and your
-process controls its own pace instead of absorbing whatever spike arrives. You
-do not need to expose a public endpoint.
-</Note>
+> [!NOTE]
+> The engine polls the Events API rather than receiving webhooks. Events come back
+> in a consistent order, the stream is replayable from any cursor, and your
+> process controls its own pace instead of absorbing whatever spike arrives. You
+> do not need to expose a public endpoint.
+
+### New objects are complete immediately
+
+WorkOS event payloads are subsets of the REST objects: `user.created` does not
+carry `external_id` or `metadata`. By default the engine re-fetches a user or
+organization when its create event arrives, so the row is complete from the
+start rather than at the next backfill. Creates are low-volume, so this costs
+one extra request each. Set `WORKOS_SYNC_HYDRATE=off` (or `hydrate: 'off'` in
+the library) to turn it off.
 
 ## Query it
 
 ```sql
-select o.name as organization, u.email, m.role_slug
-from workos.organization_memberships m
-join workos.users u on u.id = m.user_id and u._env = m._env
-join workos.organizations o on o.id = m.organization_id and o._env = m._env
-where u._deleted_at is null and m._deleted_at is null
-order by o.name, u.email;
+SELECT o.name AS organization, u.email, m.role_slug
+   FROM workos.organization_memberships m
+      JOIN workos.users u ON u.id = m.user_id AND u._env = m._env
+      JOIN workos.organizations o ON o.id = m.organization_id AND o._env = m._env
+   WHERE u._deleted_at IS NULL AND m._deleted_at IS NULL
+   ORDER BY o.name, u.email;
 ```
 
 Two conventions to know:
@@ -94,10 +110,9 @@ Two conventions to know:
 - **Always join on `_env` as well as the id.** Object ids are unique within an
   environment, and the mirror can hold several environments at once.
 
-## Embed it instead
+## Embed it
 
-The same engine runs as a library, which is how most people deploy it — no
-extra service, and it uses the database connection you already have.
+The same engine runs as a library, so you can reuse the database connection you already have.
 
 ```ts
 import { SyncEngine, PostgresDestination } from "@workos/sync-postgres";
@@ -109,20 +124,29 @@ const engine = new SyncEngine({
   environments: [{ name: "production", apiKey: process.env.WORKOS_API_KEY! }],
 });
 
-await engine.init();
 await engine.backfill();
 await engine.listen(); // resolves when you call engine.stop()
 ```
 
+Every method applies the schema before it runs, so there is no separate
+`init()` call to remember. It exists if you want to create the schema ahead of
+time, for example during a deploy.
+
 ## Mirror several environments
 
 A workspace can hold many environments, and their display names repeat across
-projects. Give each one a stable label of your own — it is written to every row
+projects. Give each one a stable label of your own. It is written to every row
 and must not change once you have data.
 
+On the command line, run one process per environment into the same database.
+Each process keeps its own cursor under its label, so they never collide:
+
 ```bash
-export WORKOS_ENVIRONMENTS="production=sk_live_...,staging=sk_test_..."
+WORKOS_API_KEY=sk_live_... WORKOS_ENVIRONMENT_NAME=production npx workos-sync-postgres listen
+WORKOS_API_KEY=sk_test_... WORKOS_ENVIRONMENT_NAME=staging    npx workos-sync-postgres listen
 ```
+
+In the library, one engine can hold several:
 
 ```ts
 environments: [
@@ -144,14 +168,15 @@ npx workos-sync-postgres reconcile            # report drift, exit 2 if any is f
 npx workos-sync-postgres reconcile --repair   # fix it
 ```
 
-Reconciliation compares the mirror against the API and reports two numbers per
-stream: rows you have that no longer exist upstream (missed deletes), and rows
-upstream that you do not have (missed creates). Weekly is a reasonable default;
-run it after any incident that touched the sync.
+Reconciliation compares the set of ids in the mirror against the API and
+reports two numbers per stream: rows you have that no longer exist upstream
+(missed deletes), and rows upstream that you do not have (missed creates). It
+does not re-read rows that match. Daily is a reasonable default for the report,
+weekly for `--repair`, and run it after any incident that touched the sync.
 
 ## Next steps
 
-- [How it works](how-it-works.md) — the lifecycle and the design decisions
-- [Querying the mirror](queries.md) — worked examples
-- [Consistency](consistency.md) — what the mirror guarantees, and what it does not
-- [Operations](operations.md) — monitoring, alerting and recovery
+- [How it works](how-it-works.md): the lifecycle and the design decisions
+- [Querying the mirror](queries.md): worked examples
+- [Consistency](consistency.md): what the mirror guarantees, and what it does not
+- [Operations](operations.md): monitoring, alerting and recovery

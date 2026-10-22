@@ -407,6 +407,132 @@ describe('sync engine', () => {
     expect(Object.keys(status)).toEqual(['prod', 'staging'])
   })
 
+  it('always includes the events archive, whatever streams are selected', async () => {
+    // Every event is archived before it is routed, so a stream list without
+    // `events` used to fail every tick with "relation workos.events does not exist".
+    fake.createUser()
+    const engine = makeEngine(db, fake, ['users'])
+    expect(engine.streams.map((s) => s.name)).toEqual(['users', 'events'])
+
+    const r = await engine.tick()
+    expect(r.processed).toBe(1)
+    expect(await count('events')).toBe(1)
+  })
+
+  it('rejects a stream name it does not know', () => {
+    expect(() => makeEngine(db, fake, ['users', 'customers'])).toThrow(/unknown stream: customers/)
+  })
+
+  it('records the last successful poll even when nothing arrived', async () => {
+    const engine = makeEngine(db, fake)
+    await engine.backfill()
+    const fresh = await engine.status()
+    expect(fresh['prod']!.lastPolledAt).toBeNull()
+    expect(fresh['prod']!.pollAgeSeconds).toBeNull()
+    // Nothing happened upstream, so there is no event to advance the cursor
+    // with. The poll still succeeded, and that is the liveness signal.
+    expect(fresh['prod']!.cursorAgeDays).toBeNull()
+
+    await engine.tick()
+    const polled = await engine.status()
+    expect(polled['prod']!.lastPolledAt).not.toBeNull()
+    expect(polled['prod']!.pollAgeSeconds).toBeGreaterThanOrEqual(0)
+    expect(polled['prod']!.pollAgeSeconds).toBeLessThan(5)
+    expect(polled['prod']!.cursorAgeDays).toBeNull()
+  })
+
+  it('stops on a rejected credential instead of retrying forever', async () => {
+    const strict = new FakeWorkOS({ apiKey: 'sk_test_1' })
+    strict.createUser()
+    const engine = new SyncEngine(
+      {
+        destination: new PostgresDestination({ db, schema: 'workos' }),
+        environments: [{ name: 'prod', apiKey: 'sk_test_WRONG' }],
+        streams: TIER1,
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({
+            apiKey: 'sk_test_WRONG',
+            apiUrl: 'http://fake.workos.local',
+            fetchImpl: strict.fetchImpl,
+            maxRetries: 0,
+          }),
+      },
+    )
+    // A 401 is a configuration error. Retrying every poll interval would hide
+    // it behind a process that looks alive, so the engine stops instead.
+    await expect(engine.tick()).rejects.toThrow(/401/)
+    await expect(engine.backfill()).rejects.toThrow(/401/)
+    await expect(engine.reconcile()).rejects.toThrow(/401/)
+  })
+
+  it('re-captures the starting position when the stored cursor is past retention', async () => {
+    const engine = makeEngine(db, fake)
+    await engine.init()
+    const stale = new Date(Date.now() - 100 * 86_400_000).toISOString()
+    await db.query(
+      `insert into workos."_sync_state" (sync_id, env, stream, state)
+       values ('default', 'prod', '__tail__', $1::jsonb)`,
+      [JSON.stringify({ kind: 'tail', cursor: 'event_000', lastEventAt: stale })],
+    )
+
+    // Replaying from a cursor the API no longer has is impossible, and this
+    // backfill re-establishes current state, so the tail restarts from now.
+    await engine.backfill()
+    const status = await engine.status()
+    expect(status['prod']!.cursor).toBeNull()
+    expect(status['prod']!.rangeStart).not.toBeNull()
+    expect(status['prod']!.cursorAgeDays).toBeNull()
+  })
+
+  it('projects extra columns out of _raw without touching the catalog', async () => {
+    fake.createUser({ metadata: { plan: 'pro', region: 'eu' } })
+    const engine = makeEngine(db, fake, TIER1, {
+      extraColumns: {
+        users: [{ name: 'region', type: 'text', path: ['metadata', 'region'], index: true }],
+      },
+    })
+    await engine.backfill()
+
+    const r = await db.query<{ region: string; is_generated: string }>(
+      `select u.region, c.is_generated
+       from workos.users u, information_schema.columns c
+       where c.table_schema = 'workos' and c.table_name = 'users' and c.column_name = 'region'`,
+    )
+    expect(r.rows[0]!.region).toBe('eu')
+    expect(r.rows[0]!.is_generated).toBe('ALWAYS')
+  })
+
+  it('hydrates users and organizations on create by default', async () => {
+    const engine = makeEngine(db, fake)
+    expect(engine.hydrate).toEqual({ users: 'on_create', organizations: 'on_create' })
+    await engine.backfill()
+
+    fake.createUser({ email: 'default@example.com' })
+    await engine.tick()
+    const r = await db.query<{ external_id: string }>(
+      `select external_id from workos.users where email = 'default@example.com'`,
+    )
+    expect(r.rows[0]!.external_id).toMatch(/^ext_/)
+  })
+
+  it('leaves event-only fields empty when hydration is off', async () => {
+    const engine = makeEngine(db, fake, TIER1, { hydrate: 'off' })
+    await engine.backfill()
+
+    fake.createUser({ email: 'raw@example.com' })
+    await engine.tick()
+    const r = await db.query<{ external_id: string | null }>(
+      `select external_id from workos.users where email = 'raw@example.com'`,
+    )
+    // user.created does not carry external_id; without hydration it stays
+    // null until backfill or refresh.
+    expect(r.rows[0]!.external_id).toBeNull()
+  })
+
   it('hydrates on create so a new user has its full payload immediately', async () => {
     const engine = makeEngine(db, fake, TIER1, { hydrate: { users: 'on_create' } })
     await engine.backfill()
@@ -568,7 +694,7 @@ describe('reconciliation', () => {
 
   it('refreshes fields that event payloads omit', async () => {
     const user = fake.createUser()
-    const engine = makeEngine(db, fake)
+    const engine = makeEngine(db, fake, TIER1, { hydrate: 'off' })
     await engine.tick()
 
     // Event-only: the row exists but the omitted columns are empty.

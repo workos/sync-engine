@@ -14,8 +14,14 @@
 import type { Destination, FreshnessRow } from './destination.js'
 import { StateStore } from './state.js'
 import { STREAMS, streamByName, defaultStreams, subscribedEventTypes } from './catalog.js'
-import { WorkOSClient } from './workos/client.js'
-import { fetchEvents, checkCursorAge, CursorDirectionError } from './workos/events.js'
+import { WorkOSClient, WorkOSApiError } from './workos/client.js'
+import {
+  fetchEvents,
+  checkCursorAge,
+  cursorAgeDays,
+  CursorDirectionError,
+  EVENT_RETENTION_DAYS,
+} from './workos/events.js'
 import { applyEvents } from './sync/apply.js'
 import { backfillStream, type BackfillStreamResult } from './sync/backfill.js'
 import { diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
@@ -23,13 +29,14 @@ import { createLogger } from './logger.js'
 import { redacting } from './redact.js'
 import type {
   EnvironmentConfig,
+  HydrateMode,
   Logger,
   StreamDef,
   SyncEngineConfig,
   WorkOSEvent,
   WriteStats,
 } from './types.js'
-import { addStats, emptyStats } from './types.js'
+import { addStats, emptyStats, DEFAULT_HYDRATE } from './types.js'
 
 export interface EnvironmentStatus {
   /** Last processed event id. Null until the first event is applied. */
@@ -38,7 +45,16 @@ export interface EnvironmentStatus {
   rangeStart: string | null
   /** Whether a starting position has been recorded at all. */
   started: boolean
+  /**
+   * Age of the newest event applied, in days. This is the distance from the
+   * 90-day retention cliff, not a liveness signal: a quiet environment makes
+   * it grow while the sync is healthy. Null until the first event is applied.
+   */
   cursorAgeDays: number | null
+  /** When the last successful poll finished, event or no event. Null before the first poll. */
+  lastPolledAt: string | null
+  /** Seconds since `lastPolledAt`. This is the number to alert on for a stalled sync. */
+  pollAgeSeconds: number | null
   streams: FreshnessRow[]
 }
 
@@ -56,6 +72,8 @@ export class SyncEngine {
   private stopping = false
   /** Event types passed to `GET /events`, which requires them. */
   readonly eventTypes: string[]
+  /** Effective hydration setting, after defaults. */
+  readonly hydrate: HydrateMode | Record<string, HydrateMode>
 
   constructor(
     private config: SyncEngineConfig,
@@ -67,9 +85,21 @@ export class SyncEngine {
     this.destination = redacting(config.destination)
     this.state = new StateStore(this.destination)
     this.logger = config.logger ?? createLogger('info')
-    const names = config.streams ?? defaultStreams()
-    this.streams = STREAMS.filter((s) => names.includes(s.name))
+    // Every event is archived to `events` before it is routed, so that table
+    // has to exist whatever else is selected.
+    const names = new Set([...(config.streams ?? defaultStreams()), 'events'])
+    for (const n of names) {
+      if (!streamByName(n)) throw new Error(`unknown stream: ${n}`)
+    }
+    const extra = config.extraColumns ?? {}
+    this.streams = STREAMS.filter((s) => names.has(s.name)).map((s) =>
+      extra[s.name]?.length ? { ...s, columns: [...s.columns, ...extra[s.name]!] } : s,
+    )
+    for (const name of Object.keys(extra)) {
+      if (!names.has(name)) throw new Error(`extraColumns names a stream that is not selected: ${name}`)
+    }
     if (this.streams.length === 0) throw new Error('no streams selected')
+    this.hydrate = config.hydrate ?? DEFAULT_HYDRATE
     // The events endpoint rejects a request with no `events` filter, so the
     // subscription is derived from whichever streams are being synced.
     this.eventTypes = config.eventTypes ?? subscribedEventTypes(this.streams)
@@ -124,7 +154,22 @@ export class SyncEngine {
    */
   async captureCursor(env: EnvironmentConfig): Promise<string | null> {
     const existing = await this.state.getTail(env.name)
-    if (existing?.cursor || existing?.rangeStart) return existing.cursor ?? null
+    if (existing?.cursor || existing?.rangeStart) {
+      // A cursor older than retention points at events that no longer exist.
+      // Replaying from it is impossible, and this backfill is re-establishing
+      // current state anyway, so start the tail from now instead.
+      const age = cursorAgeDays(existing.lastEventAt)
+      if (age !== null && age >= EVENT_RETENTION_DAYS) {
+        this.logger.warn('events cursor is past retention; re-capturing the starting position', {
+          env: env.name,
+          cursor: existing.cursor,
+          ageDays: Math.round(age),
+        })
+        await this.state.clearTail(env.name)
+      } else {
+        return existing.cursor ?? null
+      }
+    }
     const rangeStart = new Date().toISOString()
     await this.state.setTail(env.name, { cursor: null, rangeStart })
     this.logger.info('captured starting position', { env: env.name, rangeStart })
@@ -150,6 +195,7 @@ export class SyncEngine {
           })
           results.push(r)
         } catch (err) {
+          if (isFatal(err)) throw err
           // Stream-scoped failure: other streams continue, and this stream's
           // state is left where it was so the next run resumes.
           this.logger.error('backfill failed', {
@@ -209,12 +255,22 @@ export class SyncEngine {
           cursor = batch.cursor
           hasMore = batch.hasMore
         }
-        if (events.length === 0) continue
+        if (events.length === 0) {
+          // Nothing to apply, but the poll succeeded: record that, so a quiet
+          // upstream is distinguishable from a stalled sync.
+          await this.state.setTail(env.name, {
+            cursor: tail?.cursor ?? null,
+            lastEventAt: tail?.lastEventAt ?? null,
+            rangeStart: tail?.rangeStart ?? null,
+            lastPolledAt: new Date().toISOString(),
+          })
+          continue
+        }
 
         const result = await applyEvents(this.destination, events, {
           env: env.name,
           logger: this.logger,
-          hydrate: this.config.hydrate,
+          hydrate: this.hydrate,
           api,
         })
 
@@ -224,6 +280,7 @@ export class SyncEngine {
           cursor,
           lastEventAt: last.created_at,
           rangeStart: tail?.rangeStart ?? null,
+          lastPolledAt: new Date().toISOString(),
         })
 
         processed += events.length
@@ -239,6 +296,12 @@ export class SyncEngine {
         if (err instanceof CursorDirectionError) {
           // Loud and fatal: continuing would rewrite the mirror with history.
           this.logger.error('cursor direction check failed; stopping', { error: String(err) })
+          throw err
+        }
+        if (isFatal(err)) {
+          // A rejected credential will not fix itself; retrying every poll
+          // interval would only hide the problem behind a healthy-looking process.
+          this.logger.error('authentication failed; stopping', { env: env.name, error: String(err) })
           throw err
         }
         this.logger.error('tick failed', { env: env.name, error: String(err) })
@@ -293,6 +356,7 @@ export class SyncEngine {
             }),
           )
         } catch (err) {
+          if (isFatal(err)) throw err
           this.logger.error('reconcile failed', { stream: stream.name, error: String(err) })
         }
       }
@@ -320,15 +384,15 @@ export class SyncEngine {
     const out: Record<string, EnvironmentStatus> = {}
     for (const env of this.config.environments) {
       const tail = await this.state.getTail(env.name)
-      const age = tail?.lastEventAt
-        ? (Date.now() - Date.parse(tail.lastEventAt)) / 86_400_000
-        : null
+      const polled = tail?.lastPolledAt ? Date.parse(tail.lastPolledAt) : NaN
       out[env.name] = {
         cursor: tail?.cursor ?? null,
         // Set before the first event arrives; the tail bootstraps from here.
         rangeStart: tail?.rangeStart ?? null,
         started: Boolean(tail?.cursor || tail?.rangeStart),
-        cursorAgeDays: age,
+        cursorAgeDays: cursorAgeDays(tail?.lastEventAt),
+        lastPolledAt: tail?.lastPolledAt ?? null,
+        pollAgeSeconds: Number.isFinite(polled) ? (Date.now() - polled) / 1000 : null,
         streams: await freshness(this.destination, env.name, this.streams),
       }
     }
@@ -358,6 +422,15 @@ export class SyncEngine {
     this.stop()
     await this.destination.close()
   }
+}
+
+/**
+ * Errors that no retry and no amount of waiting will fix. The engine stops on
+ * these rather than looping, so the failure is visible instead of being a
+ * process that looks alive while writing nothing.
+ */
+function isFatal(err: unknown): boolean {
+  return err instanceof WorkOSApiError && (err.status === 401 || err.status === 403)
 }
 
 const ORDERING = ['organizations', 'users', 'directories', 'connections']

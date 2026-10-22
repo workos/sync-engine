@@ -24,12 +24,12 @@ const timestamps = [
 ]
 
 export const STREAMS: StreamDef[] = [
-  // ---------------------------------------------------------------- tier 1
+  // ------------------------------------------------------------- identity
   {
     name: 'users',
     description: 'AuthKit users',
     mode: 'mirror',
-    tier: 1,
+    group: 'identity',
     key: ['id'],
     prefixes: ['user_'],
     columns: [
@@ -54,7 +54,7 @@ export const STREAMS: StreamDef[] = [
     name: 'organizations',
     description: 'Organizations',
     mode: 'mirror',
-    tier: 1,
+    group: 'identity',
     key: ['id'],
     prefixes: ['org_'],
     columns: [
@@ -83,7 +83,7 @@ export const STREAMS: StreamDef[] = [
     name: 'organization_memberships',
     description: 'User ↔ organization memberships',
     mode: 'mirror',
-    tier: 1,
+    group: 'identity',
     key: ['id'],
     prefixes: ['om_'],
     columns: [
@@ -113,7 +113,7 @@ export const STREAMS: StreamDef[] = [
     name: 'organization_domains',
     description: 'Organization domains and their verification state',
     mode: 'mirror',
-    tier: 1,
+    group: 'identity',
     key: ['id'],
     prefixes: ['org_domain_'],
     columns: [
@@ -142,7 +142,7 @@ export const STREAMS: StreamDef[] = [
     name: 'invitations',
     description: 'Organization invitations',
     mode: 'mirror',
-    tier: 1,
+    group: 'identity',
     key: ['id'],
     prefixes: ['invitation_'],
     columns: [
@@ -178,7 +178,7 @@ export const STREAMS: StreamDef[] = [
     name: 'events',
     description: 'Raw event archive — every event, including ones with no mirror table',
     mode: 'append',
-    tier: 1,
+    group: 'logs',
     key: ['id'],
     prefixes: ['event_'],
     columns: [
@@ -195,7 +195,7 @@ export const STREAMS: StreamDef[] = [
     description:
       'Authentication attempts. These events have no REST endpoint — if you do not capture them they are gone after 90 days',
     mode: 'append',
-    tier: 1,
+    group: 'logs',
     key: ['event_id'],
     // Declared here so the subscription list is derived from the catalog. The
     // router reshapes these into log rows rather than upserting an object.
@@ -233,12 +233,12 @@ export const STREAMS: StreamDef[] = [
     ],
   },
 
-  // ---------------------------------------------------------------- tier 2
+  // ------------------------------------------------ directory sync and SSO
   {
     name: 'sessions',
     description: 'AuthKit sessions',
     mode: 'mirror',
-    tier: 2,
+    group: 'identity',
     key: ['id'],
     prefixes: ['session_'],
     columns: [
@@ -268,7 +268,7 @@ export const STREAMS: StreamDef[] = [
     name: 'directories',
     description: 'Directory Sync connections',
     mode: 'mirror',
-    tier: 2,
+    group: 'directory_sync',
     key: ['id'],
     prefixes: ['directory_'],
     columns: [
@@ -290,7 +290,7 @@ export const STREAMS: StreamDef[] = [
     name: 'directory_users',
     description: 'Users provisioned over SCIM',
     mode: 'mirror',
-    tier: 2,
+    group: 'directory_sync',
     key: ['id'],
     prefixes: ['directory_user_'],
     columns: [
@@ -324,7 +324,7 @@ export const STREAMS: StreamDef[] = [
     name: 'directory_groups',
     description: 'Groups provisioned over SCIM',
     mode: 'mirror',
-    tier: 2,
+    group: 'directory_sync',
     key: ['id'],
     prefixes: ['directory_group_'],
     columns: [
@@ -350,7 +350,7 @@ export const STREAMS: StreamDef[] = [
     name: 'directory_group_memberships',
     description: 'Directory group membership, from group.user_added / user_removed events',
     mode: 'mirror',
-    tier: 2,
+    group: 'directory_sync',
     // The membership itself has no ID upstream; the pair is the key.
     key: ['directory_group_id', 'directory_user_id'],
     columns: [
@@ -371,7 +371,7 @@ export const STREAMS: StreamDef[] = [
     name: 'connections',
     description: 'SSO connections',
     mode: 'mirror',
-    tier: 2,
+    group: 'sso',
     key: ['id'],
     // Longest-prefix-first matters: conn_ is a proper prefix of conn_app_.
     prefixes: ['conn_'],
@@ -391,12 +391,12 @@ export const STREAMS: StreamDef[] = [
     list: { path: '/connections' },
   },
 
-  // ---------------------------------------------------------------- tier 3
+  // -------------------------------------------------------- authorization
   {
     name: 'groups',
     description: 'AuthKit groups',
     mode: 'mirror',
-    tier: 3,
+    group: 'authorization',
     key: ['id'],
     prefixes: ['group_'],
     columns: [
@@ -416,7 +416,7 @@ export const STREAMS: StreamDef[] = [
     name: 'group_memberships',
     description: 'Group membership, from group.member_added / member_removed events',
     mode: 'mirror',
-    tier: 3,
+    group: 'authorization',
     key: ['group_id', 'organization_membership_id'],
     columns: [
       { name: 'group_id', type: 'text', path: 'group_id', index: true },
@@ -438,7 +438,7 @@ export const STREAMS: StreamDef[] = [
     name: 'roles',
     description: 'Environment roles',
     mode: 'mirror',
-    tier: 3,
+    group: 'authorization',
     // role.* events carry no id at all — only a slug.
     key: ['slug'],
     columns: [
@@ -457,7 +457,7 @@ export const STREAMS: StreamDef[] = [
     name: 'organization_roles',
     description: 'Organization-scoped custom roles',
     mode: 'mirror',
-    tier: 3,
+    group: 'authorization',
     key: ['organization_id', 'slug'],
     columns: [
       { name: 'organization_id', type: 'text', path: 'organization_id', index: true },
@@ -480,7 +480,7 @@ export const STREAMS: StreamDef[] = [
     name: 'permissions',
     description: 'Permissions',
     mode: 'mirror',
-    tier: 3,
+    group: 'authorization',
     key: ['slug'],
     prefixes: ['perm_'],
     columns: [
@@ -501,7 +501,7 @@ export const STREAMS: StreamDef[] = [
     name: 'feature_flags',
     description: 'Feature flags. Note: flags are project-scoped, shared across environments',
     mode: 'mirror',
-    tier: 3,
+    group: 'authorization',
     key: ['slug'],
     prefixes: ['flag_'],
     columns: [
@@ -521,14 +521,14 @@ export const STREAMS: StreamDef[] = [
     list: { path: '/feature-flags' },
   },
 
-  // ---------------------------------------------------------------- tier 4
+  // ------------------------------------------------------------ poll-only
   // No events exist for these. They are snapshot-polled and are only as fresh
-  // as the last `reconcile` run.
+  // as the last `reconcile` run, so they are opt-in rather than default.
   {
     name: 'fga_resources',
     description: 'Fine-grained authorization resources (poll-only: no events exist)',
     mode: 'poll',
-    tier: 4,
+    group: 'authorization',
     key: ['id'],
     prefixes: ['authz_resource_'],
     columns: [
@@ -546,7 +546,7 @@ export const STREAMS: StreamDef[] = [
     name: 'webhook_endpoints',
     description: 'Configured webhook endpoints (poll-only: no events exist)',
     mode: 'poll',
-    tier: 4,
+    group: 'platform',
     key: ['id'],
     prefixes: ['we_'],
     columns: [
@@ -584,9 +584,13 @@ export const streamForId = (id: string): StreamDef | undefined => {
   return best
 }
 
-/** Streams synced by default: everything that has events or a list endpoint. */
+/**
+ * Streams synced by default: every stream that has events. Poll-only streams
+ * have no events, cost a full re-list on every reconcile, and are only as
+ * fresh as that last run, so they are opt-in.
+ */
 export const defaultStreams = (): string[] =>
-  STREAMS.filter((s) => s.tier <= 3).map((s) => s.name)
+  STREAMS.filter((s) => s.mode !== 'poll').map((s) => s.name)
 
 /**
  * The event types to subscribe to on `GET /events`.
@@ -612,24 +616,3 @@ export const subscribedEventTypes = (streams: StreamDef[] = STREAMS): string[] =
   }
   return [...out].sort()
 }
-
-/**
- * Event families the engine archives but does not mirror. Subscribing to these
- * is opt-in: some of them (notably the Vault read events) are high volume, and
- * they have no mirror table, so the only effect is a larger `events` archive.
- */
-export const ARCHIVE_ONLY_EVENT_TYPES: string[] = [
-  'connection.saml_certificate_renewed',
-  'connection.saml_certificate_renewal_required',
-  'radar.challenge_created',
-  'email_verification.created',
-  'magic_auth.created',
-  'password_reset.created',
-  'password_reset.succeeded',
-  'api_key.created',
-  'api_key.updated',
-  'api_key.revoked',
-  'pipes.connected_account.connected',
-  'pipes.connected_account.disconnected',
-  'pipes.connected_account.reauthorization_needed',
-]

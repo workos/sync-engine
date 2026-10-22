@@ -1,59 +1,63 @@
 # Querying the mirror
 
-Worked examples. Every query assumes a single environment; if you mirror more
+Every example query below assumes a single environment; if you mirror more
 than one, add `_env = 'production'` or join on `_env`.
 
-Two conventions throughout:
+There are two conventions throughout:
 
 - Filter `_deleted_at is null` for live rows.
 - Join on `_env` as well as the id.
 
 ## Seats and adoption
 
-**Provisioned but dormant seats.** The question that pays for the whole
-exercise — you cannot answer it from an API without listing every membership
-and cross-referencing your own usage data.
+**Provisioned but dormant seats.**
 
 ```sql
-select o.name as organization,
-       count(*) as seats,
-       count(*) filter (where u.last_sign_in_at < now() - interval '30 days') as dormant
-from workos.organization_memberships m
-join workos.users u on u.id = m.user_id and u._env = m._env
-join workos.organizations o on o.id = m.organization_id and o._env = m._env
-where u._deleted_at is null and m._deleted_at is null and m.status = 'active'
-group by o.name
-having count(*) filter (where u.last_sign_in_at < now() - interval '30 days') > 0
-order by dormant desc;
+SELECT o.name AS organization,
+       COUNT(*) AS seats,
+       COUNT(*) FILTER (WHERE u.last_sign_in_at IS NULL
+                           OR u.last_sign_in_at < NOW() - INTERVAL '30 days') AS dormant
+   FROM workos.organization_memberships m
+      JOIN workos.users u ON u.id = m.user_id AND u._env = m._env
+      JOIN workos.organizations o ON o.id = m.organization_id AND o._env = m._env
+   WHERE u._deleted_at IS NULL AND m._deleted_at IS NULL AND m.status = 'active'
+   GROUP BY o.name
+   HAVING COUNT(*) FILTER (WHERE u.last_sign_in_at IS NULL
+                              OR u.last_sign_in_at < NOW() - INTERVAL '30 days') > 0
+   ORDER BY dormant DESC;
 ```
+
+`last_sign_in_at` is `null` for a user who has never signed in, and also for a
+row that only events have touched, since `user.*` events omit it. Hydration on
+create and `refresh` fill it in; the `is null` branch keeps the never-signed-in
+seats counted either way.
 
 **Users who signed up but never joined an organization.**
 
 ```sql
-select u.email, u.created_at, now() - u.created_at as age
-from workos.users u
-left join workos.organization_memberships m
-  on m.user_id = u.id and m._env = u._env and m._deleted_at is null
-where u._deleted_at is null
-  and m.id is null
-  and u.created_at < now() - interval '7 days'
-order by u.created_at;
+SELECT u.email, u.created_at, NOW() - u.created_at AS age
+   FROM workos.users u
+      LEFT JOIN workos.organization_memberships m
+         ON m.user_id = u.id AND m._env = u._env AND m._deleted_at IS NULL
+   WHERE u._deleted_at IS NULL
+      AND m.id IS NULL
+      AND u.created_at < NOW() - INTERVAL '7 days'
+   ORDER BY u.created_at;
 ```
 
 ## Enterprise readiness
 
-**Organizations with a verified domain but no directory.** Half-finished
-enterprise setups, which is usually a support conversation waiting to happen.
+**Organizations with a verified domain but no directory.**
 
 ```sql
-select o.name as organization, d.domain, o.created_at
-from workos.organizations o
-join workos.organization_domains d
-  on d.organization_id = o.id and d._env = o._env and d.state = 'verified'
-left join workos.directories dir
-  on dir.organization_id = o.id and dir._env = o._env and dir._deleted_at is null
-where o._deleted_at is null and dir.id is null
-order by o.created_at;
+SELECT o.name AS organization, d.domain, o.created_at
+   FROM workos.organizations o
+      JOIN workos.organization_domains d
+         ON d.organization_id = o.id AND d._env = o._env AND d.state = 'verified'
+      LEFT JOIN workos.directories dir
+         ON dir.organization_id = o.id AND dir._env = o._env AND dir._deleted_at IS NULL
+   WHERE o._deleted_at IS NULL AND dir.id IS NULL
+   ORDER BY o.created_at;
 ```
 
 **Directories in a broken state.** There is no `dsync.updated` event, so a
@@ -61,21 +65,21 @@ directory whose credentials expired emits nothing at all. This query — over a
 mirror kept fresh by `reconcile` — is how you find them.
 
 ```sql
-select o.name as organization, d.name as directory, d.type, d.state, d.updated_at
-from workos.directories d
-join workos.organizations o on o.id = d.organization_id and o._env = d._env
-where d._deleted_at is null and d.state <> 'linked'
-order by d.updated_at;
+SELECT o.name AS organization, d.name AS directory, d.type, d.state, d.updated_at
+   FROM workos.directories d
+      JOIN workos.organizations o ON o.id = d.organization_id AND o._env = d._env
+   WHERE d._deleted_at IS NULL AND d.state <> 'linked'
+   ORDER BY d.updated_at;
 ```
 
 **SSO adoption by connection type.**
 
 ```sql
-select connection_type, state, count(*) as connections
-from workos.connections
-where _deleted_at is null
-group by connection_type, state
-order by connections desc;
+SELECT connection_type, state, COUNT(*) AS connections
+   FROM workos.connections
+   WHERE _deleted_at IS NULL
+   GROUP BY connection_type, state
+   ORDER BY connections DESC;
 ```
 
 ## Authentication
@@ -86,73 +90,82 @@ there is no endpoint to ask for this history.
 **Failed sign-ins by user, last hour.**
 
 ```sql
-select coalesce(u.email, a.email) as email,
-       count(*) as failures,
-       max(a.created_at) as most_recent,
-       count(distinct a.ip_address) as distinct_ips
-from workos.auth_attempts a
-left join workos.users u on u.id = a.user_id and u._env = a._env
-where a.status = 'failed' and a.created_at > now() - interval '1 hour'
-group by 1
-having count(*) >= 5
-order by failures desc;
+SELECT COALESCE(u.email, a.email) AS email,
+       COUNT(*) AS failures,
+       MAX(a.created_at) AS most_recent,
+       COUNT(DISTINCT a.ip_address) AS distinct_ips
+   FROM workos.auth_attempts a
+      LEFT JOIN workos.users u ON u.id = a.user_id AND u._env = a._env
+   WHERE a.status = 'failed' AND a.created_at > NOW() - INTERVAL '1 hour'
+   GROUP BY 1
+   HAVING COUNT(*) >= 5
+   ORDER BY failures DESC;
 ```
 
-**Sign-in success rate by method.**
+**Sign-in success rate by method.** The `type` column is the method
+(`password`, `sso`, `oauth`, `magic_auth`, ...); `status` is derived from
+whether the event name ended in `_succeeded` or `_failed`.
 
 ```sql
-select split_part(event, '.', 2) as method,
-       count(*) filter (where status = 'succeeded') as succeeded,
-       count(*) filter (where status = 'failed') as failed,
-       round(100.0 * count(*) filter (where status = 'succeeded') / count(*), 1) as success_rate
-from workos.auth_attempts
-where created_at > now() - interval '7 days'
-group by 1
-order by succeeded + failed desc;
+SELECT type AS method,
+       COUNT(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+       COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+       ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'succeeded') / COUNT(*), 1) AS success_rate
+   FROM workos.auth_attempts
+   WHERE created_at > NOW() - INTERVAL '7 days'
+      AND status IS NOT NULL
+   GROUP BY 1
+   ORDER BY COUNT(*) DESC;
 ```
 
 **Credential stuffing: one IP against many accounts.**
 
 ```sql
-select ip_address,
-       count(distinct email) as accounts_tried,
-       count(*) as attempts
-from workos.auth_attempts
-where status = 'failed' and created_at > now() - interval '1 day'
-group by ip_address
-having count(distinct email) > 10
-order by accounts_tried desc;
+SELECT ip_address,
+       COUNT(DISTINCT email) AS accounts_tried,
+       COUNT(*) AS attempts
+   FROM workos.auth_attempts
+   WHERE status = 'failed' AND created_at > NOW() - INTERVAL '1 day'
+   GROUP BY ip_address
+   HAVING COUNT(DISTINCT email) > 10
+   ORDER BY accounts_tried DESC;
 ```
 
 ## Joining your own tables
 
-The mirror is only interesting next to your data. `external_id` is the
-intended join key — set it on the WorkOS user and it lands in the mirror.
+The mirror is only interesting next to your data. There are two ways to join,
+and the column names should say which one you chose:
+
+- Store the WorkOS ID on your side (`app.accounts.workos_user_id`) and join it
+  to `u.id`.
+- Set `external_id` on the WorkOS user to _your_ account ID, and join it to
+  your primary key. This is the intended direction: `external_id` is the
+  column WorkOS provides for exactly this.
 
 ```sql
-select u.email,
-       u.metadata->>'plan' as plan,
-       count(s.id) as sessions_30d,
-       max(s.created_at) as last_active
-from workos.users u
-join app.accounts a on a.workos_user_id = u.external_id
-left join app.sessions s on s.account_id = a.id and s.created_at > now() - interval '30 days'
-where u._deleted_at is null
-group by u.email, u.metadata->>'plan'
-order by sessions_30d desc;
+SELECT u.email,
+       u.metadata->>'plan' AS plan,
+       COUNT(s.id) AS sessions_30d,
+       MAX(s.created_at) AS last_active
+   FROM workos.users u
+      JOIN app.accounts a ON a.id = u.external_id
+      LEFT JOIN app.sessions s ON s.account_id = a.id AND s.created_at > NOW() - INTERVAL '30 days'
+   WHERE u._deleted_at IS NULL
+   GROUP BY u.email, u.metadata->>'plan'
+   ORDER BY sessions_30d DESC;
 ```
 
 If you also mirror your billing provider, `organizations.stripe_customer_id` is
 already on the organization object:
 
 ```sql
-select o.name, s.status as subscription, count(m.id) as seats
-from workos.organizations o
-join billing.subscriptions s on s.customer = o.stripe_customer_id
-left join workos.organization_memberships m
-  on m.organization_id = o.id and m._env = o._env and m._deleted_at is null
-where o._deleted_at is null
-group by o.name, s.status;
+SELECT o.name, s.status AS subscription, COUNT(m.id) AS seats
+   FROM workos.organizations o
+      JOIN billing.subscriptions s ON s.customer = o.stripe_customer_id
+      LEFT JOIN workos.organization_memberships m
+         ON m.organization_id = o.id AND m._env = o._env AND m._deleted_at IS NULL
+   WHERE o._deleted_at IS NULL
+   GROUP BY o.name, s.status;
 ```
 
 ## Change history
@@ -161,21 +174,22 @@ The `events` table is an ordered local log, so you can answer "what happened to
 this object" without an API call.
 
 ```sql
-select created_at, event, _raw->'context'->>'actor' as actor
-from workos.events
-where object_id = 'user_01HXXXXXXXXXXXXXXXXXXXXXX'
-order by created_at;
+SELECT created_at, event, context->>'actor' AS actor
+   FROM workos.events
+   WHERE object_id = 'user_01HXXXXXXXXXXXXXXXXXXXXXX'
+   ORDER BY created_at;
 ```
 
 Membership churn over time:
 
 ```sql
-select date_trunc('day', created_at) as day,
-       count(*) filter (where event = 'organization_membership.created') as joined,
-       count(*) filter (where event = 'organization_membership.deleted') as left
-from workos.events
-where event like 'organization_membership.%' and created_at > now() - interval '90 days'
-group by 1 order by 1;
+SELECT DATE_TRUNC('day', created_at) AS day,
+       COUNT(*) FILTER (WHERE event = 'organization_membership.created') AS joined,
+       COUNT(*) FILTER (WHERE event = 'organization_membership.deleted') AS departed
+   FROM workos.events
+   WHERE event LIKE 'organization_membership.%' AND created_at > NOW() - INTERVAL '90 days'
+   GROUP BY 1
+   ORDER BY 1;
 ```
 
 ## Deleted objects
@@ -183,10 +197,10 @@ group by 1 order by 1;
 Tombstones mean you can still ask who left.
 
 ```sql
-select email, _deleted_at as deleted_at, _raw->>'last_sign_in_at' as last_sign_in
-from workos.users
-where _deleted_at is not null and _deleted_at > now() - interval '30 days'
-order by _deleted_at desc;
+SELECT email, _deleted_at AS deleted_at, last_sign_in_at
+   FROM workos.users
+   WHERE _deleted_at IS NOT NULL AND _deleted_at > NOW() - INTERVAL '30 days'
+   ORDER BY _deleted_at DESC;
 ```
 
 ## Convenience views
@@ -194,13 +208,13 @@ order by _deleted_at desc;
 If filtering tombstones on every query is tedious, create views once:
 
 ```sql
-create schema if not exists workos_live;
+CREATE SCHEMA IF NOT EXISTS workos_live;
 
-create view workos_live.users as
-  select * from workos.users where _deleted_at is null;
+CREATE VIEW workos_live.users AS
+   SELECT * FROM workos.users WHERE _deleted_at IS NULL;
 
-create view workos_live.organizations as
-  select * from workos.organizations where _deleted_at is null;
+CREATE VIEW workos_live.organizations AS
+   SELECT * FROM workos.organizations WHERE _deleted_at IS NULL;
 ```
 
 ## Giving an agent read access
@@ -209,16 +223,28 @@ A read-only role over the mirror is a far better-scoped grant than an API key,
 and one SQL tool replaces a pile of per-endpoint tools:
 
 ```sql
-create role analytics_reader login password '...';
-grant usage on schema workos to analytics_reader;
-grant select on all tables in schema workos to analytics_reader;
-alter default privileges in schema workos grant select on tables to analytics_reader;
+CREATE ROLE analytics_reader LOGIN PASSWORD '...';
+GRANT USAGE ON SCHEMA workos TO analytics_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA workos TO analytics_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA workos GRANT SELECT ON TABLES TO analytics_reader;
 ```
 
-To keep personal data out of reach, grant on a redacted view instead:
+To keep personal data out of reach, grant on a redacted view instead. A user
+has no single organization, so bring memberships in as a count rather than a
+column:
 
 ```sql
-create view workos_safe.users as
-  select id, _env, organization_id_placeholder as org, created_at, last_sign_in_at
-  from workos.users where _deleted_at is null;
+CREATE SCHEMA IF NOT EXISTS workos_safe;
+
+CREATE VIEW workos_safe.users AS
+   SELECT u.id, u._env, u.created_at, u.last_sign_in_at,
+          COUNT(m.id) FILTER (WHERE m._deleted_at IS NULL) AS organizations
+      FROM workos.users u
+         LEFT JOIN workos.organization_memberships m
+            ON m.user_id = u.id AND m._env = u._env
+      WHERE u._deleted_at IS NULL
+      GROUP BY u.id, u._env, u.created_at, u.last_sign_in_at;
+
+GRANT USAGE ON SCHEMA workos_safe TO analytics_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA workos_safe TO analytics_reader;
 ```

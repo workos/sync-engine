@@ -5,6 +5,7 @@
  *   workos-sync-postgres init                 create the schema
  *   workos-sync-postgres backfill [--resume]  page the list endpoints
  *   workos-sync-postgres listen               tail the Events API
+ *   workos-sync-postgres tick                 one poll, then exit (for cron)
  *   workos-sync-postgres reconcile [--repair] detect (and optionally fix) drift
  *   workos-sync-postgres refresh              re-list to refresh partial event fields
  *   workos-sync-postgres status               cursor age and per-stream freshness
@@ -14,8 +15,11 @@
 import {
   SyncEngine,
   STREAMS,
+  DEFAULT_HYDRATE,
+  defaultStreams,
   createLogger,
   type EnvironmentConfig,
+  type HydrateMode,
   type LogLevel,
   type SyncEngineConfig,
 } from '@workos/sync-engine'
@@ -45,27 +49,15 @@ function parseArgs(argv: string[]): Args {
 }
 
 /**
- * Environments come from `WORKOS_API_KEY` for the simple case, or
- * `WORKOS_ENVIRONMENTS` as `name=key,name=key` when mirroring several into one
- * database. A workspace can hold far more than the two you might assume, and
- * environment display names repeat across projects, so the label here is yours
- * to choose and must stay stable — it is written to every row.
+ * One key, one environment, one process. `WORKOS_ENVIRONMENT_NAME` is the label
+ * written to every row as `_env`. It is yours to choose because no API call
+ * reports which environment a key belongs to, and it must stay stable across
+ * key rotation. To mirror several environments into one database, run one
+ * process per key with a different label each; cursors are kept per label.
  */
 function environmentsFromEnv(): EnvironmentConfig[] {
-  const multi = process.env['WORKOS_ENVIRONMENTS']
-  if (multi) {
-    return multi.split(',').map((pair) => {
-      const idx = pair.indexOf('=')
-      if (idx < 1) throw new Error(`invalid WORKOS_ENVIRONMENTS entry: ${pair}`)
-      return {
-        name: pair.slice(0, idx).trim(),
-        apiKey: pair.slice(idx + 1).trim(),
-        apiUrl: process.env['WORKOS_API_URL'],
-      }
-    })
-  }
   const apiKey = process.env['WORKOS_API_KEY']
-  if (!apiKey) throw new Error('set WORKOS_API_KEY (or WORKOS_ENVIRONMENTS)')
+  if (!apiKey) throw new Error('set WORKOS_API_KEY')
   return [
     {
       name: process.env['WORKOS_ENVIRONMENT_NAME'] ?? 'production',
@@ -73,6 +65,32 @@ function environmentsFromEnv(): EnvironmentConfig[] {
       apiUrl: process.env['WORKOS_API_URL'],
     },
   ]
+}
+
+const HYDRATE_MODES: HydrateMode[] = ['off', 'on_create', 'always']
+
+/**
+ * `WORKOS_SYNC_HYDRATE` is either one mode for every stream (`off`,
+ * `on_create`, `always`) or a per-stream list (`users=always,organizations=off`).
+ * Unset means the engine default: users and organizations on create.
+ */
+export function parseHydrate(value: string | undefined): SyncEngineConfig['hydrate'] {
+  if (!value || !value.trim()) return undefined
+  const v = value.trim()
+  if ((HYDRATE_MODES as string[]).includes(v)) return v as HydrateMode
+  const out: Record<string, HydrateMode> = { ...DEFAULT_HYDRATE }
+  for (const pair of v.split(',')) {
+    const idx = pair.indexOf('=')
+    const stream = pair.slice(0, idx).trim()
+    const mode = pair.slice(idx + 1).trim()
+    if (idx < 1 || !(HYDRATE_MODES as string[]).includes(mode)) {
+      throw new Error(
+        `invalid WORKOS_SYNC_HYDRATE entry "${pair}": expected off | on_create | always, or stream=mode,...`,
+      )
+    }
+    out[stream] = mode as HydrateMode
+  }
+  return out
 }
 
 function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfig {
@@ -87,7 +105,7 @@ function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfi
     }),
     environments: environmentsFromEnv(),
     streams,
-    hydrate: (process.env['WORKOS_SYNC_HYDRATE'] as never) ?? { users: 'on_create', organizations: 'on_create' },
+    hydrate: parseHydrate(process.env['WORKOS_SYNC_HYDRATE']),
     pollIntervalMs: Number(process.env['WORKOS_SYNC_POLL_MS'] ?? 5000),
     lagWindowMs: Number(process.env['WORKOS_SYNC_LAG_MS'] ?? 5000),
     maxEventsPerTick: process.env['WORKOS_SYNC_MAX_EVENTS_PER_TICK']
@@ -106,23 +124,31 @@ Commands
   init                 Create the schema and bookkeeping tables
   backfill [--resume]  Load current state from the REST list endpoints
   listen               Tail the Events API and apply changes continuously
+  tick                 One poll of the Events API, then exit (for a cron job)
   reconcile [--repair] Compare the mirror against the API; --repair fixes drift
-  refresh              Re-list every stream (refreshes fields events omit)
-  status               Cursor position, age, and per-stream freshness
+  refresh              Re-list top-level streams (refreshes fields events omit)
+  status               Cursor position, poll age, and per-stream freshness
   redact --user <id>   Delete one subject from the mirror and event archive
   streams              Show the streams this build can mirror
 
 Flags
   --database-url <url>   Postgres connection string (or DATABASE_URL)
-  --schema <name>        Target schema (default: workos)
-  --streams <a,b,c>      Restrict to specific streams
+  --schema <name>        Target schema (or WORKOS_SYNC_SCHEMA; default: workos)
+  --streams <a,b,c>      Restrict to specific streams (events is always included)
 
 Environment
-  DATABASE_URL           Postgres connection string
-  WORKOS_API_KEY         API key for a single environment
-  WORKOS_ENVIRONMENTS    name=key,name=key to mirror several environments
-  WORKOS_SYNC_SCHEMA     Target schema (default: workos)
-  LOG_LEVEL              debug | info | warn | error | silent
+  DATABASE_URL                 Postgres connection string
+  WORKOS_API_KEY               API key for the environment to mirror
+  WORKOS_ENVIRONMENT_NAME      Label written to _env on every row (default: production)
+  WORKOS_API_URL               API base URL (default: https://api.workos.com)
+  WORKOS_SYNC_SCHEMA           Target schema (default: workos)
+  WORKOS_SYNC_ID               Sync identifier when several syncs share a database (default: default)
+  WORKOS_SYNC_HYDRATE          off | on_create | always, or users=always,organizations=off
+                               (default: users and organizations on_create)
+  WORKOS_SYNC_POLL_MS          Idle wait between polls (default: 5000)
+  WORKOS_SYNC_LAG_MS           Hold back events younger than this (default: 5000)
+  WORKOS_SYNC_MAX_EVENTS_PER_TICK  Events to apply per poll (default: one page)
+  LOG_LEVEL                    debug | info | warn | error | silent
 `
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -134,11 +160,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 
   if (command === 'streams') {
+    const defaults = new Set(defaultStreams())
     const rows = STREAMS.map((s) => ({
       stream: s.name,
-      tier: s.tier,
+      group: s.group,
       mode: s.mode,
-      backfill: s.list ? 'yes' : 'no',
+      default: defaults.has(s.name) ? 'yes' : 'no (opt-in)',
+      backfill: s.list ? 'yes' : s.name === 'organization_domains' ? 'from organizations' : 'no',
       events: (s.events?.upsert?.length ?? 0) + (s.events?.delete?.length ?? 0),
     }))
     process.stdout.write(JSON.stringify(rows, null, 2) + '\n')

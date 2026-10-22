@@ -28,6 +28,9 @@ export interface ColumnDef {
  */
 export type StreamMode = 'mirror' | 'append' | 'poll'
 
+/** Product area a stream belongs to. Purely descriptive. */
+export type StreamGroup = 'identity' | 'directory_sync' | 'sso' | 'authorization' | 'logs' | 'platform'
+
 export interface ListEndpoint {
   /** Path template. `{organization_id}` etc. are filled from the parent stream. */
   path: string
@@ -81,10 +84,8 @@ export interface StreamDef {
    * object (e.g. `organization_domain.verification_failed`).
    */
   unwrap?: (data: Record<string, unknown>) => Record<string, unknown>
-  /**
-   * Tier for docs/config grouping.
-   */
-  tier: 1 | 2 | 3 | 4
+  /** Product area, for docs and the `streams` command. */
+  group: StreamGroup
   /**
    * Live credentials to strip from the payload before any row reaches the
    * destination — e.g. an invitation's acceptance `token`. Each entry is a
@@ -112,12 +113,37 @@ export interface EnvironmentConfig {
 
 export type HydrateMode = 'off' | 'on_create' | 'always'
 
+/**
+ * Default hydration: re-fetch users and organizations when their create event
+ * arrives. These are the only streams with a get-by-id endpoint, creates are
+ * low-volume, and `user.created` / `organization.created` omit the fields
+ * people join on (`external_id`, `metadata`), so the row would otherwise be
+ * incomplete until the next backfill or refresh. Pass `hydrate: 'off'` to
+ * disable.
+ */
+export const DEFAULT_HYDRATE: Readonly<Record<string, HydrateMode>> = Object.freeze({
+  users: 'on_create',
+  organizations: 'on_create',
+})
+
 export interface SyncEngineConfig {
   /** Where the mirror is written, e.g. `new PostgresDestination(...)` from `@workos/sync-postgres`. */
   destination: Destination
   environments: EnvironmentConfig[]
-  /** Streams to sync. Defaults to every tier 1-3 stream. */
+  /**
+   * Streams to sync. Defaults to `defaultStreams()`: every stream that has
+   * events. Poll-only streams (`fga_resources`, `webhook_endpoints`) are
+   * opt-in. The `events` archive is always included, because every event is
+   * written there before it is routed.
+   */
   streams?: string[]
+  /**
+   * Additional typed columns to project out of `_raw`, keyed by stream name.
+   * Each becomes a `GENERATED ALWAYS AS ... STORED` column on the next
+   * `init()`, computed from rows already present. Adding a column never
+   * rewrites data; changing or removing one you added before is manual DDL.
+   */
+  extraColumns?: Record<string, ColumnDef[]>
   /**
    * Event types to subscribe to. `GET /events` requires this filter, so it
    * defaults to the union of the event types the selected streams declare.
@@ -125,7 +151,11 @@ export interface SyncEngineConfig {
    * that have no mirror table.
    */
   eventTypes?: string[]
-  /** Re-fetch objects from the API on event receipt. Per-stream override. */
+  /**
+   * Re-fetch objects from the API on event receipt, globally or per stream.
+   * Defaults to `DEFAULT_HYDRATE` (users and organizations on create). Only
+   * streams with a get-by-id endpoint can be hydrated; others ignore it.
+   */
   hydrate?: HydrateMode | Record<string, HydrateMode>
   /** Poll interval for the events tail, in ms. */
   pollIntervalMs?: number
