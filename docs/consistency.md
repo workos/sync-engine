@@ -40,11 +40,13 @@ that path — new-user onboarding especially.
 
 ```ts
 // Wrong: the row may not exist yet.
-const user = await workos.userManagement.createUser({ email })
-const row = await db.query('select * from workos.users where id = $1', [user.id])
+const user = await workos.userManagement.createUser({ email });
+const row = await db.query("select * from workos.users where id = $1", [
+  user.id,
+]);
 
 // Right: you already have the object.
-const user = await workos.userManagement.createUser({ email })
+const user = await workos.userManagement.createUser({ email });
 ```
 
 **Authorization decisions.** Do not gate access on the mirror. Roles and
@@ -52,19 +54,19 @@ permissions belong in the session token, which is signed, current, and does not
 depend on a sync process being healthy. A mirror row can be stale, and during
 an outage it can be stale for a long time without anything appearing wrong.
 
-Use the mirror to *analyse* authorization — who has which role, which
-organizations have admins — not to *enforce* it.
+Use the mirror to _analyse_ authorization — who has which role, which
+organizations have admins — not to _enforce_ it.
 
 **Completeness for every object.** Some streams cannot be complete, and the
 engine says so rather than pretending:
 
-| Stream | Limitation |
-|---|---|
-| `sessions` | Only active sessions are listable, and only per user. Ended sessions older than the event window are unrecoverable. |
-| `auth_attempts` | No REST endpoint exists at all. History begins when you start syncing. |
-| `organization_domains` | No standalone list endpoint; sourced from the organization payload. |
-| `directories` | No `dsync.updated` event exists. A directory going `linked → invalid_credentials` emits nothing; only `reconcile` sees the change. |
-| `fga_resources`, `webhook_endpoints` | No events at all. As fresh as your last `reconcile`. |
+| Stream                               | Limitation                                                                                                                         |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `sessions`                           | Only active sessions are listable, and only per user. Ended sessions older than the event window are unrecoverable.                |
+| `auth_attempts`                      | No REST endpoint exists at all. History begins when you start syncing.                                                             |
+| `organization_domains`               | No standalone list endpoint; sourced from the organization payload.                                                                |
+| `directories`                        | No `dsync.updated` event exists. A directory going `linked → invalid_credentials` emits nothing; only `reconcile` sees the change. |
+| `fga_resources`, `webhook_endpoints` | No events at all. As fresh as your last `reconcile`.                                                                               |
 
 **Ordering for events sharing a timestamp.** Two events can carry the same
 `updated_at`. The staleness gate uses `>=`, so the last one applied wins. That
@@ -87,16 +89,16 @@ good standing. The field is accurate. The inference is yours to get right.
 
 ## Where to read from
 
-| Need | Read from |
-|---|---|
-| Authorization decision | Session token / JWT |
-| A change you just made | The API response you already have |
-| Current state of one known object | WorkOS API, or the mirror if seconds of lag are fine |
-| Lists, filters, joins, aggregates | **The mirror** |
-| Anything joined to your own tables | **The mirror** |
-| Dashboards, analytics, reporting | **The mirror** |
-| Agent or LLM access | **The mirror**, via a read-only role |
-| Sign-in history | **The mirror** — it exists nowhere else |
+| Need                               | Read from                                            |
+| ---------------------------------- | ---------------------------------------------------- |
+| Authorization decision             | Session token / JWT                                  |
+| A change you just made             | The API response you already have                    |
+| Current state of one known object  | WorkOS API, or the mirror if seconds of lag are fine |
+| Lists, filters, joins, aggregates  | **The mirror**                                       |
+| Anything joined to your own tables | **The mirror**                                       |
+| Dashboards, analytics, reporting   | **The mirror**                                       |
+| Agent or LLM access                | **The mirror**, via a read-only role                 |
+| Sign-in history                    | **The mirror** — it exists nowhere else              |
 
 ## Writes
 
@@ -130,15 +132,15 @@ a genuine event.
 
 ## Failure behaviour
 
-| Failure | Behaviour |
-|---|---|
-| Network error or 5xx | Retried with backoff. |
-| 429 | Retried, honouring `Retry-After`. |
-| One stream errors | Isolated. Other streams continue; the failed stream's cursor does not advance. |
-| Invalid API key | Fatal. The engine stops rather than looping. |
+| Failure                | Behaviour                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| Network error or 5xx   | Retried with backoff.                                                                 |
+| 429                    | Retried, honouring `Retry-After`.                                                     |
+| One stream errors      | Isolated. Other streams continue; the failed stream's cursor does not advance.        |
+| Invalid API key        | Fatal. The engine stops rather than looping.                                          |
 | Cursor pages backwards | Fatal, with an explicit error. Continuing would overwrite current state with history. |
-| Unknown event type | Archived, logged at info, processing continues. |
-| Process dies mid-batch | The batch replays on restart. Writes are idempotent. |
+| Unknown event type     | Archived, logged at info, processing continues.                                       |
+| Process dies mid-batch | The batch replays on restart. Writes are idempotent.                                  |
 
 There is no dead-letter queue. The Events API's replayability serves that role:
 a failed range simply is not acknowledged, and the next run retries it. That is

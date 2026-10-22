@@ -100,18 +100,18 @@ The same engine runs as a library, which is how most people deploy it — no
 extra service, and it uses the database connection you already have.
 
 ```ts
-import { SyncEngine, PostgresDestination } from '@workos/sync-postgres'
+import { SyncEngine, PostgresDestination } from "@workos/sync-postgres";
 
 const engine = new SyncEngine({
-  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL }),
-  environments: [
-    { name: 'production', apiKey: process.env.WORKOS_API_KEY! },
-  ],
-})
+  destination: new PostgresDestination({
+    databaseUrl: process.env.DATABASE_URL,
+  }),
+  environments: [{ name: "production", apiKey: process.env.WORKOS_API_KEY! }],
+});
 
-await engine.init()
-await engine.backfill()
-await engine.listen()   // resolves when you call engine.stop()
+await engine.init();
+await engine.backfill();
+await engine.listen(); // resolves when you call engine.stop()
 ```
 
 ## Mirror several environments
@@ -126,9 +126,9 @@ export WORKOS_ENVIRONMENTS="production=sk_live_...,staging=sk_test_..."
 
 ```ts
 environments: [
-  { name: 'production', apiKey: process.env.WORKOS_PROD_KEY! },
-  { name: 'staging', apiKey: process.env.WORKOS_STAGING_KEY! },
-]
+  { name: "production", apiKey: process.env.WORKOS_PROD_KEY! },
+  { name: "staging", apiKey: process.env.WORKOS_STAGING_KEY! },
+];
 ```
 
 Each environment gets its own cursor. Cursors are not comparable across

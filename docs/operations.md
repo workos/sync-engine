@@ -48,7 +48,7 @@ where _updated_at > now() - interval '1 hour';
 ```
 
 The `where` clause is load-bearing. Across every row, `_synced_at -
-_updated_at` reports how *old the objects are*, not how late the sync is: a
+_updated_at` reports how _old the objects are_, not how late the sync is: a
 mirror that has just backfilled year-old users will report a lag of a year
 while being perfectly current. `status` restricts the average to a 24-hour
 window for the same reason, and returns `null` with `lagSampleSize: 0` when
@@ -80,19 +80,28 @@ group by 1 order by 1;
 
 ### Alerts worth having
 
-| Alert | Condition | Why |
-|---|---|---|
-| Cursor stalled | `cursorAgeDays > 0.25` | The sync has stopped. Everything else is downstream of this. |
-| Cursor near retention | `cursorAgeDays > 60` | Replay is still possible, but the window is closing. |
-| Stream not writing | `max(_synced_at) < now() - interval '1 hour'` on a busy stream | One stream failing while others continue. |
-| Skipped writes spiking | `skipped` in the logs | Out-of-order delivery or a backfill colliding with the tail. Usually benign, occasionally not. |
-| Drift detected | `reconcile` exits 2 | Missed creates or deletes. |
+| Alert                  | Condition                                                      | Why                                                                                            |
+| ---------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Cursor stalled         | `cursorAgeDays > 0.25`                                         | The sync has stopped. Everything else is downstream of this.                                   |
+| Cursor near retention  | `cursorAgeDays > 60`                                           | Replay is still possible, but the window is closing.                                           |
+| Stream not writing     | `max(_synced_at) < now() - interval '1 hour'` on a busy stream | One stream failing while others continue.                                                      |
+| Skipped writes spiking | `skipped` in the logs                                          | Out-of-order delivery or a backfill colliding with the tail. Usually benign, occasionally not. |
+| Drift detected         | `reconcile` exits 2                                            | Missed creates or deletes.                                                                     |
 
 The engine emits structured JSON logs with per-batch counts:
 
 ```json
-{"level":"info","msg":"processed events","env":"production","events":42,
- "created":3,"updated":38,"skipped":1,"deleted":0,"cursor":"event_01H..."}
+{
+  "level": "info",
+  "msg": "processed events",
+  "env": "production",
+  "events": 42,
+  "created": 3,
+  "updated": 38,
+  "skipped": 1,
+  "deleted": 0,
+  "cursor": "event_01H..."
+}
 ```
 
 `skipped` is the health metric to graph. A steady trickle is normal — it is the
@@ -103,10 +112,10 @@ delivery ordering.
 
 Three tiers, cheapest first:
 
-| Cadence | Command | Finds |
-|---|---|---|
-| Continuous | `status` | Stalls and lag |
-| Daily | `reconcile` | Count-level drift |
+| Cadence                        | Command              | Finds                      |
+| ------------------------------ | -------------------- | -------------------------- |
+| Continuous                     | `status`             | Stalls and lag             |
+| Daily                          | `reconcile`          | Count-level drift          |
 | Weekly, and after any incident | `reconcile --repair` | Missed creates and deletes |
 
 ```bash
@@ -156,11 +165,11 @@ hydrate: { users: 'on_create', organizations: 'on_create' }
 The engine paces itself against the documented limits, but they shape how long
 a backfill takes:
 
-| Endpoint | Limit | Effect |
-|---|---|---|
-| Everything | 6,000 / 60s per key | Rarely binding |
-| `/user_management/*` reads | 1,000 / 10s per environment | Comfortable |
-| **`/directory_users`** | **4 / second per directory** | The real constraint |
+| Endpoint                   | Limit                        | Effect              |
+| -------------------------- | ---------------------------- | ------------------- |
+| Everything                 | 6,000 / 60s per key          | Rarely binding      |
+| `/user_management/*` reads | 1,000 / 10s per environment  | Comfortable         |
+| **`/directory_users`**     | **4 / second per directory** | The real constraint |
 
 The directory limit is **per directory and does not aggregate**, so a large
 directory takes as long as it takes: roughly 400 users per second at best.
@@ -223,9 +232,15 @@ behind.
 and it uses the connection pool you already have.
 
 ```ts
-const engine = new SyncEngine({ destination: new PostgresDestination({ databaseUrl }), environments })
-await engine.init()
-engine.listen().catch((err) => { logger.error(err); process.exit(1) })
+const engine = new SyncEngine({
+  destination: new PostgresDestination({ databaseUrl }),
+  environments,
+});
+await engine.init();
+engine.listen().catch((err) => {
+  logger.error(err);
+  process.exit(1);
+});
 ```
 
 **As a standalone container:**
