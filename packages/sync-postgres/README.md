@@ -48,7 +48,7 @@ npx workos-sync-postgres listen     # tail the Events API, forever
 | ---------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `init [--repair]`      | Create the schema. Idempotent; safe to run on every deploy. Fails if a generated `_live` view must be rebuilt; `--repair` rebuilds it and carries its grants over. |
 | `backfill [--resume]`  | Page the REST list endpoints for current state.                                                                 |
-| `listen`               | Poll the Events API and apply changes continuously.                                                             |
+| `listen [--health-port <n>]` | Poll the Events API and apply changes continuously. With a port, serve `GET /healthz` and `/metrics` on it.  |
 | `tick`                 | One poll, then exit — for a cron job instead of a process.                                                      |
 | `reconcile [--repair]` | Diff ids against the API; `--repair` tombstones and inserts. Exits 2 on drift unless repairing.                 |
 | `refresh`              | Re-list top-level streams to refresh fields that event payloads omit. Re-run `backfill` for per-parent streams. |
@@ -70,8 +70,20 @@ different label each; cursors are kept per label, so they never collide.
 | `WORKOS_SYNC_POLL_MS`             | `5000`                              | Idle wait between polls.                                           |
 | `WORKOS_SYNC_LAG_MS`              | `5000`                              | Hold back events younger than this.                                |
 | `WORKOS_SYNC_MAX_EVENTS_PER_TICK` | one page                            | Events to apply per poll.                                          |
+| `WORKOS_SYNC_HEALTH_PORT`         | off (`8080` in the image)           | `listen` only: serve `/healthz` and `/metrics` on this port.       |
+| `WORKOS_SYNC_HEALTH_HOST`         | `0.0.0.0`                           | Interface the health server binds.                                 |
+| `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` | `60000`                          | `/healthz` is 503 once the last successful poll is older than this. |
 | `WORKOS_API_URL`                  | `https://api.workos.com`            | API base URL.                                                      |
 | `LOG_LEVEL`                       | `info`                              | `debug`, `info`, `warn`, `error` or `silent`.                      |
+
+`listen` with a health port answers `GET /healthz` with `200` while the tail
+is polling (and while it is still starting) and `503` once a poll is overdue
+or the engine has stopped, and `GET /metrics` in Prometheus text format. Both
+are served from memory, with no database query, so a probe keeps working when
+the database does not. The container image turns this on and declares a
+`HEALTHCHECK` against it; see
+[Operations](https://github.com/workos/workos-pg-sync/blob/main/docs/operations.md)
+for the metric names and a Kubernetes probe snippet.
 
 ## Embed it
 

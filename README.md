@@ -102,6 +102,9 @@ the same setting, the flag wins.
 | `WORKOS_SYNC_POLL_MS`             | `5000`                              | Idle wait between polls, in ms, when the last poll returned nothing.                                                         |
 | `WORKOS_SYNC_LAG_MS`              | `5000`                              | Hold back events younger than this, in ms, before advancing the cursor.                                                      |
 | `WORKOS_SYNC_MAX_EVENTS_PER_TICK` | one page (100)                      | Events to apply per poll, fetched across as many pages as needed.                                                            |
+| `WORKOS_SYNC_HEALTH_PORT`         | off (`8080` in the container image) | `listen` only: serve `GET /healthz` and `GET /metrics` on this port, from in-memory state, with no database query.          |
+| `WORKOS_SYNC_HEALTH_HOST`         | `0.0.0.0`                           | Interface the health server binds.                                                                                           |
+| `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` | `60000`                          | `/healthz` returns 503 once any environment's last successful poll is older than this.                                       |
 | `LOG_LEVEL`                       | `info`                              | `debug`, `info`, `warn`, `error` or `silent`. Logs are JSON lines on stdout.                                                 |
 
 ### Commands
@@ -110,7 +113,7 @@ the same setting, the flag wins.
 | ----------- | ------------- | ------------------------------------------------------------------------------------------------------------ |
 | `init`      | `--repair`    | Create the schema and bookkeeping tables. Idempotent; safe on every deploy. Fails if a generated `_live` view must be rebuilt; `--repair` rebuilds it and carries its grants over. |
 | `backfill`  | `--resume`    | Load current state from the REST list endpoints. `--resume` continues from the last checkpoint.              |
-| `listen`    |               | Poll the Events API continuously. Finishes the current batch on `SIGINT` or `SIGTERM`.                       |
+| `listen`    | `--health-port <n>` | Poll the Events API continuously. Finishes the current batch on `SIGINT` or `SIGTERM`. With a port, serves `/healthz` and `/metrics`. |
 | `tick`      |               | One poll, then exit. For a cron job instead of a long-running process.                                       |
 | `reconcile` | `--repair`    | Diff ids against the API. Exits 2 on drift; `--repair` tombstones missed deletes and inserts missed creates. |
 | `refresh`   |               | Re-list top-level streams to refresh fields that event payloads omit.                                        |

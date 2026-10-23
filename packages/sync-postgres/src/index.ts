@@ -22,5 +22,7 @@ export { buildSchemaSql, createTableSql, columnExpression, parseIso8601Function 
 export { liveViewSql, liveViewName } from './schema/views.js'
 
 export { upsertRows, deleteRows, relinkRows, dedupeByKey, keyValues, buildUpsert } from './db/upsert.js'
+export { diffIdsInSql } from './db/reconcile.js'
+export type { SqlDiff } from './db/reconcile.js'
 export { connect, fromPgPool } from './db/client.js'
 export type { SqlClient } from './db/client.js'

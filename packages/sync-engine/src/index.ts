@@ -13,7 +13,18 @@
 export { SyncEngine } from './engine.js'
 export type { EngineDeps } from './engine.js'
 
-export type { Destination, FreshnessRow, Row, WriteMode } from './destination.js'
+export { startHealthServer, healthReport, renderMetrics, DEFAULT_MAX_POLL_AGE_MS } from './health.js'
+export type {
+  EngineHealth,
+  EnvironmentHealth,
+  HealthCounters,
+  HealthCheckOptions,
+  HealthReport,
+  HealthServer,
+  HealthServerOptions,
+} from './health.js'
+
+export type { Destination, FreshnessRow, IdDiff, Row, WriteMode } from './destination.js'
 export { StateStore } from './state.js'
 export { redactPayload, redactRows, RedactingDestination, redacting } from './redact.js'
 
@@ -41,6 +52,7 @@ export { verifyWebhook, parseSignatureHeader, WebhookVerificationError } from '.
 export { applyEvents } from './sync/apply.js'
 export { backfillStream } from './sync/backfill.js'
 export { diffStream, freshness, refreshStream } from './sync/reconcile.js'
+export { diffIdsInMemory } from './sync/diff.js'
 
 export { createLogger, silentLogger } from './logger.js'
 export type { LogLevel } from './logger.js'
