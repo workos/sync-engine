@@ -229,6 +229,18 @@ Reconciliation compares ids. With `--repair` it tombstones the `localOnly`
 rows and inserts the `remoteOnly` ones. It does not re-read rows that match,
 so it is not the tool for refreshing fields; see below.
 
+The comparison runs in the database, not in the sync process. The upstream
+list is streamed into a temporary table one page at a time and the set
+difference is a pair of anti-joins in SQL, so the memory `reconcile` needs is
+bounded by the size of the drift, not the size of the stream. A million-user
+directory with ten missed deletes costs ten ids, plus one page of the list at
+a time. The live ids are captured into a second temporary table before the
+first page is requested, so a row the tail writes while the list is in
+progress is never a deletion candidate: `--repair` only tombstones a row that
+was already in the mirror when the listing began and is absent from the list.
+Both tables live in a single transaction and are dropped when it commits, so
+nothing is left behind in the schema.
+
 Streams that cannot be reconciled say so explicitly rather than reporting a
 misleading zero:
 

@@ -14,7 +14,7 @@
  *
  * Not to be confused with `Destination.redact`, which erases one subject.
  */
-import type { Destination, FreshnessRow, Row, WriteMode } from './destination.js'
+import type { Destination, FreshnessRow, IdDiff, Row, WriteMode } from './destination.js'
 import type { Logger, StreamDef, WriteStats } from './types.js'
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -95,6 +95,23 @@ export class RedactingDestination implements Destination {
 
   rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]> {
     return this.inner.rawRows(stream, env)
+  }
+
+  /**
+   * Remote pages are stripped before they are staged, so a credential never
+   * reaches the database even transiently, and the `remoteOnly` payloads that
+   * come back are already clean when repair upserts them.
+   */
+  diffIds(
+    stream: StreamDef,
+    env: string,
+    remote: AsyncIterable<Record<string, unknown>[]>,
+  ): Promise<IdDiff> {
+    if (!stream.redact?.length) return this.inner.diffIds(stream, env, remote)
+    async function* stripped() {
+      for await (const page of remote) yield page.map((data) => redactPayload(stream, data))
+    }
+    return this.inner.diffIds(stream, env, stripped())
   }
 
   freshness(stream: StreamDef, env: string, lagWindowHours: number): Promise<FreshnessRow> {
