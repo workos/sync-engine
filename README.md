@@ -18,11 +18,13 @@ Against a mirror, it becomes one statement:
 
 ```sql
 SELECT o.name AS organization, u.email, m.role_slug
-   FROM workos.organization_memberships m
-      JOIN workos.users u ON u.id = m.user_id AND u._env = m._env
-      JOIN workos.organizations o ON o.id = m.organization_id AND o._env = m._env
-   WHERE u._deleted_at IS NULL AND m._deleted_at IS NULL;
+   FROM workos.organization_memberships_live m
+      JOIN workos.users_live u ON u.id = m.user_id AND u._env = m._env
+      JOIN workos.organizations_live o ON o.id = m.organization_id AND o._env = m._env;
 ```
+
+The `_live` views are generated next to the tables and hide deleted rows; the
+base tables keep them as tombstones for when you want to ask who left.
 
 ## Try it in 30 seconds
 
@@ -160,7 +162,9 @@ A field added upstream can never break ingest — it is queryable as
 `_raw->>'field'` immediately, and promoting it to a typed column is pure DDL
 computed from rows already present. There are **no foreign keys**: events
 routinely arrive with children before parents, and an FK turns that ordering
-artifact into a stuck stream.
+artifact into a stuck stream. Every mirror table also gets a `<table>_live`
+view (`workos.users_live`) that is the table minus its tombstoned rows, so the
+common query needs no `_deleted_at` filter.
 
 ## What it mirrors
 

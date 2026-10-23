@@ -12,20 +12,14 @@
  * and an FK would turn that ordering artifact into a hard write failure.
  */
 import type { ColumnDef, StreamDef } from '@workos/sync-engine'
+import { quoteIdent, safeIdentifier } from './identifiers.js'
+import { liveViewSql } from './views.js'
+
+// Re-exported so callers keep importing the identifier helpers from here.
+export { quoteIdent, safeIdentifier } from './identifiers.js'
 
 export const RAW = '_raw'
 export const ENV = '_env'
-
-/** Postgres identifiers are limited to 63 bytes. */
-export function safeIdentifier(name: string): string {
-  if (Buffer.byteLength(name) <= 63) return name
-  let hash = 5381
-  for (let i = 0; i < name.length; i++) hash = ((hash << 5) + hash + name.charCodeAt(i)) >>> 0
-  const suffix = `_${hash.toString(16).padStart(8, '0')}`
-  return name.slice(0, 63 - suffix.length) + suffix
-}
-
-export const quoteIdent = (name: string): string => `"${name.replace(/"/g, '""')}"`
 
 /** JSON path expression: `_raw->'a'->>'b'` for text, `->` for jsonb. */
 function jsonPath(path: string | string[], asText: boolean): string {
@@ -203,6 +197,8 @@ export function buildSchemaSql(streams: StreamDef[], schema: string): string[] {
     out.push(createTableSql(s, schema))
     out.push(...addColumnsSql(s, schema))
     out.push(...createIndexesSql(s, schema))
+    // Last, so the view's `select *` is expanded after any column was added.
+    out.push(...liveViewSql(s, schema))
   }
   return out
 }

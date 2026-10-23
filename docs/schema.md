@@ -18,9 +18,48 @@ Everything else is `GENERATED ALWAYS AS ... STORED`, projected out of `_raw`.
 
 Two consequences worth internalising:
 
-- **Filter `_deleted_at is null`** unless you specifically want deleted rows.
+- **Read the `_live` view** (next section) unless you specifically want
+  deleted rows. On a base table, that means filtering `_deleted_at is null`.
 - **Join on `_env` as well as the id.** Ids are unique within an environment,
   and one database can mirror several.
+
+## Live views
+
+Every table that has a `_deleted_at` column — every `mirror` and `poll`
+stream — also gets a view named `<table>_live`:
+
+```sql
+CREATE VIEW workos.users_live AS
+   SELECT * FROM workos.users WHERE _deleted_at IS NULL;
+```
+
+Forgetting the tombstone filter is the most common mistake made against the
+mirror, so the view exists to make the common query the safe one:
+`SELECT ... FROM workos.users_live` can only ever return live rows.
+
+Things to know:
+
+- **`select *` on the view omits nothing.** The view has exactly the columns of
+  its table, in the same order — `_env`, `_raw`, the timestamps, every
+  generated column, and `_deleted_at` itself (always `null` through the view).
+  A column promoted later with `extraColumns` appears in the view after the
+  next `init`, because the view is re-created every time the schema is applied.
+- **The base table is still there, and still the only place that distinguishes
+  "deleted" from "never seen".** A row absent from the view could be either;
+  the table answers which, with the payload the object had when it was
+  removed. The [Deleted objects](queries.md#deleted-objects) queries read the
+  table on purpose.
+- **The engine never reads or writes through the views.** Upserts, `redact`,
+  `reconcile`, `status` and freshness all use the base tables, so the views are
+  purely a convenience for your queries.
+- **Do not edit them.** They are generated from the catalog, carry a comment
+  saying so, and are re-created on every schema apply. If a view's shape can no
+  longer be replaced in place (for instance a column was dropped by hand), the
+  engine drops it and creates it afresh, with a warning in the log. Build your
+  own views on top of them if you want different names or a separate schema;
+  the engine never drops a view it did not create.
+- **Append-only streams have no view.** `events` and `auth_attempts` have no
+  `_deleted_at` column, so there is nothing to filter.
 
 ## Bookkeeping tables
 

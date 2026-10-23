@@ -1,9 +1,33 @@
+import { createHash } from 'node:crypto'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb } from './helpers/pg.js'
 import { migrate, fingerprint } from '../src/schema/migrate.js'
 import { buildSchemaSql, safeIdentifier, columnExpression, createTableSql } from '../src/schema/ddl.js'
+import { liveViewName, liveViewSql } from '../src/schema/views.js'
 import { STREAMS, streamByName } from '@workos/sync-engine'
+import type { Logger, StreamDef } from '@workos/sync-engine'
 import type { SqlClient } from '../src/db/client.js'
+
+/**
+ * The fingerprint formula from before `DDL_VERSION` existed, verbatim. A
+ * database migrated by that release must still pick up the live views, and
+ * keeping the old formula here means the test keeps checking that even after
+ * the formula moves on again.
+ */
+function legacyFingerprint(streams: StreamDef[], schema: string): string {
+  const canonical = JSON.stringify({
+    schema,
+    streams: streams
+      .map((s) => ({
+        n: s.name,
+        k: s.key,
+        m: s.mode,
+        c: s.columns.map((c) => [c.name, c.type, c.path, c.index ?? false]),
+      }))
+      .sort((a, b) => a.n.localeCompare(b.n)),
+  })
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
+}
 
 describe('DDL generation', () => {
   it('projects every typed column out of _raw, never writing them directly', () => {
@@ -53,6 +77,41 @@ describe('DDL generation', () => {
     expect(fingerprint(modified, 'workos')).not.toBe(a)
     expect(fingerprint(STREAMS, 'other_schema')).not.toBe(a)
     expect(fingerprint(STREAMS, 'workos')).toBe(a)
+  })
+
+  it('changes the fingerprint when only the generated DDL changes', () => {
+    // Otherwise a database whose catalog did not change would never run the
+    // view DDL on upgrade.
+    expect(fingerprint(STREAMS, 'workos')).not.toBe(legacyFingerprint(STREAMS, 'workos'))
+  })
+
+  it('generates a live view for every stream that has tombstones, and no other', () => {
+    for (const s of STREAMS) {
+      const sql = liveViewSql(s, 'workos').join('\n')
+      if (s.mode === 'append') {
+        expect(sql).toBe('')
+      } else {
+        expect(sql).toContain(`create or replace view "workos"."${s.name}_live" as select * from "workos"."${s.name}"`)
+        expect(sql).toContain(`where "_deleted_at" is null`)
+        expect(sql).toContain(`comment on view "workos"."${s.name}_live"`)
+      }
+    }
+  })
+
+  it('emits each live view after the column DDL for its table', () => {
+    // `select *` is expanded when the view is created, so a view created
+    // before `add column` would not carry the new column.
+    const all = buildSchemaSql(STREAMS, 'workos')
+    const lastAlter = all.map((s) => s.startsWith('alter table "workos"."users" ')).lastIndexOf(true)
+    const view = all.findIndex((s) => s.startsWith('create or replace view "workos"."users_live"'))
+    expect(lastAlter).toBeGreaterThan(-1)
+    expect(view).toBeGreaterThan(lastAlter)
+  })
+
+  it('truncates a live view name the same way as a table name', () => {
+    const long = { ...streamByName('users')!, name: 'a'.repeat(80) }
+    expect(Buffer.byteLength(liveViewName(long))).toBeLessThanOrEqual(63)
+    expect(liveViewName(streamByName('users')!)).toBe('users_live')
   })
 })
 
@@ -132,5 +191,147 @@ describe('migrations against real Postgres', () => {
     expect(names).toContain('users_email_idx')
     expect(names).toContain('users_external_id_idx')
     expect(names).toContain('users_synced_at_idx')
+  })
+})
+
+describe('live views against real Postgres', () => {
+  let db: SqlClient
+
+  beforeEach(async () => {
+    db = await createTestDb()
+  })
+  afterEach(async () => {
+    await db.close()
+  })
+
+  const viewNames = async () => {
+    const r = await db.query<{ table_name: string }>(
+      `select table_name from information_schema.views where table_schema = 'workos' order by table_name`,
+    )
+    return r.rows.map((x) => x.table_name)
+  }
+
+  // `information_schema.columns` covers views too, in declared order.
+  const columnsOf = async (relation: string) => {
+    const r = await db.query<{ column_name: string; data_type: string }>(
+      `select column_name, data_type from information_schema.columns
+       where table_schema = 'workos' and table_name = $1 order by ordinal_position`,
+      [relation],
+    )
+    return r.rows.map((x) => `${x.column_name}:${x.data_type}`)
+  }
+
+  it('creates a view for every mirror stream and none for the append-only logs', async () => {
+    await migrate(db, STREAMS, 'workos')
+    const views = await viewNames()
+    for (const s of STREAMS) {
+      if (s.mode === 'append') expect(views).not.toContain(`${s.name}_live`)
+      else expect(views).toContain(`${s.name}_live`)
+    }
+    expect(views).not.toContain('events_live')
+    expect(views).not.toContain('auth_attempts_live')
+  })
+
+  it('exposes exactly the columns of the table it covers', async () => {
+    await migrate(db, STREAMS, 'workos')
+    for (const s of STREAMS) {
+      if (s.mode === 'append') continue
+      expect(await columnsOf(`${s.name}_live`)).toEqual(await columnsOf(s.name))
+    }
+  })
+
+  it('excludes tombstoned rows and nothing else', async () => {
+    await migrate(db, [streamByName('users')!], 'workos')
+    await db.query(
+      `insert into workos.users ("_env","_raw","_updated_at","_deleted_at")
+       values ('prod', '{"id":"user_live"}', now(), null),
+              ('prod', '{"id":"user_gone"}', now(), now())`,
+    )
+    const live = await db.query<{ id: string }>(`select id from workos.users_live`)
+    expect(live.rows.map((r) => r.id)).toEqual(['user_live'])
+    const all = await db.query<{ n: string }>(`select count(*)::text as n from workos.users`)
+    expect(all.rows[0]!.n).toBe('2')
+  })
+
+  it('says what it is in the view comment', async () => {
+    await migrate(db, [streamByName('users')!], 'workos')
+    const r = await db.query<{ c: string }>(
+      `select obj_description('workos.users_live'::regclass, 'pg_class') as c`,
+    )
+    expect(r.rows[0]!.c).toContain('@workos/sync-postgres')
+    expect(r.rows[0]!.c).toContain('Do not edit')
+  })
+
+  it('picks up a column promoted after the view was first created', async () => {
+    const users = streamByName('users')!
+    await migrate(db, [users], 'workos')
+    expect(await columnsOf('users_live')).not.toContain('nickname:text')
+
+    const extended = { ...users, columns: [...users.columns, { name: 'nickname', type: 'text' as const, path: 'nickname' }] }
+    await migrate(db, [extended], 'workos')
+    expect(await columnsOf('users_live')).toEqual(await columnsOf('users'))
+    expect(await columnsOf('users_live')).toContain('nickname:text')
+  })
+
+  it('is idempotent when the DDL is applied twice', async () => {
+    await migrate(db, STREAMS, 'workos')
+    const before = await viewNames()
+    // Force the DDL to run again rather than short-circuit on the fingerprint.
+    await db.exec(`delete from workos."_migrations"`)
+    const second = await migrate(db, STREAMS, 'workos')
+    expect(second.applied).toBe(true)
+    expect(await viewNames()).toEqual(before)
+  })
+
+  it('re-creates a view that was dropped once the schema is applied again', async () => {
+    await migrate(db, STREAMS, 'workos')
+    await db.exec(`drop view workos.users_live; drop view workos.organizations_live;`)
+    await db.exec(`delete from workos."_migrations"`)
+    expect(await viewNames()).not.toContain('users_live')
+
+    const r = await migrate(db, STREAMS, 'workos')
+    expect(r.applied).toBe(true)
+    expect(await viewNames()).toContain('users_live')
+    expect(await viewNames()).toContain('organizations_live')
+  })
+
+  it('reaches a database that was migrated before live views existed', async () => {
+    await migrate(db, STREAMS, 'workos')
+    // Rewind to what the previous release left behind: the tables, no views,
+    // and a _migrations row stamped with the fingerprint it computed.
+    for (const s of STREAMS) if (s.mode !== 'append') await db.exec(`drop view workos.${s.name}_live`)
+    await db.exec(`delete from workos."_migrations"`)
+    await db.query(`insert into workos."_migrations" (fingerprint) values ($1)`, [legacyFingerprint(STREAMS, 'workos')])
+
+    const r = await migrate(db, STREAMS, 'workos')
+    expect(r.applied).toBe(true)
+    expect(await viewNames()).toContain('users_live')
+  })
+
+  it('drops and re-creates a view whose shape cannot be replaced in place', async () => {
+    const users = streamByName('users')!
+    await migrate(db, [users], 'workos')
+    // Someone (or an older definition) left a view under our name whose column
+    // list does not match. `create or replace view` refuses to rename or
+    // reorder columns, so this is the case the fallback exists for.
+    await db.exec(`drop view workos.users_live`)
+    await db.exec(`create view workos.users_live as select email, id from workos.users`)
+    await db.exec(`delete from workos."_migrations"`)
+
+    const warnings: Record<string, unknown>[] = []
+    const logger: Logger = {
+      debug() {},
+      info() {},
+      warn(_msg, fields) {
+        warnings.push(fields ?? {})
+      },
+      error() {},
+    }
+    await migrate(db, [users], 'workos', logger)
+
+    expect(await columnsOf('users_live')).toEqual(await columnsOf('users'))
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatchObject({ view: '"workos"."users_live"' })
+    expect(String(warnings[0]!['reason'])).toMatch(/view column/)
   })
 })

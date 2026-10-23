@@ -154,8 +154,20 @@ A field added upstream can never break ingest — it is queryable as
 `_raw->>'field'` immediately, and promoting it to a typed column is pure DDL.
 There are no foreign keys: events routinely arrive with children before
 parents, and a constraint would turn that ordering artifact into a stuck
-stream. Deletes are tombstones (`_deleted_at`), never row removals, so filter on
-`_deleted_at is null` for live rows.
+stream. Deletes are tombstones (`_deleted_at`), never row removals.
+
+Every mirror table also gets a generated `<table>_live` view —
+`workos.users_live`, `workos.organizations_live`, and so on — that is the table
+without its tombstoned rows:
+
+```sql
+CREATE VIEW workos.users_live AS SELECT * FROM workos.users WHERE _deleted_at IS NULL;
+```
+
+Query the view for live data and the base table when you want deleted rows too.
+The views are re-created whenever the schema is applied, so they pick up any
+column you promote later. The append-only logs (`events`, `auth_attempts`) have
+no tombstones and no view.
 
 ## What it is not
 
