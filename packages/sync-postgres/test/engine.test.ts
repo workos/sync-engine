@@ -237,6 +237,25 @@ describe('sync engine', () => {
     expect(await count('users')).toBe(1)
   })
 
+  it('drops a deleted user from the live view while the base table keeps the tombstone', async () => {
+    const gone = fake.createUser({ email: 'gone@example.com' })
+    fake.createUser({ email: 'stays@example.com' })
+    const engine = makeEngine(db, fake)
+    await engine.backfill()
+    await engine.tick()
+    expect(await count('users')).toBe(2)
+    expect(await count('users_live')).toBe(2)
+
+    fake.deleteUser(gone['id'] as string)
+    await engine.tick()
+
+    // No `where _deleted_at is null` needed: that is the point of the view.
+    expect(await count('users')).toBe(2)
+    expect(await count('users_live')).toBe(1)
+    const live = await db.query<{ email: string }>(`select email from workos.users_live`)
+    expect(live.rows.map((r) => r.email)).toEqual(['stays@example.com'])
+  })
+
   it('archives subscribed events that have no mirror table, instead of throwing', async () => {
     fake.createUser()
     fake.emitUnknown()

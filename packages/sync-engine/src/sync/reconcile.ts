@@ -21,6 +21,7 @@ import { streamByName } from '../catalog.js'
 import type { WorkOSClient } from '../workos/client.js'
 import type { Logger, StreamDef } from '../types.js'
 import { redacting } from '../redact.js'
+import { remoteKey } from './diff.js'
 
 export async function freshness(
   destination: Destination,
@@ -51,6 +52,11 @@ export interface DiffResult {
  * always missed deletes, `remoteOnly` rows are missed creates. They have
  * different causes and different fixes, so they are reported separately rather
  * than as a single drift number.
+ *
+ * The difference itself is the destination's job (`Destination.diffIds`): the
+ * remote pages are streamed to it and it diffs them against the live rows in
+ * the database, so this function never holds more than one page. Holding the
+ * whole stream here is what made a million-user directory a memory problem.
  */
 export async function diffStream(
   destination: Destination,
@@ -72,56 +78,71 @@ export async function diffStream(
     }
   }
 
-  const local = new Set(await destination.liveIds(stream, env))
-  const remote = new Map<string, Record<string, unknown>>()
+  const list = stream.list
   const keyCol = stream.key[0]!
 
   const rateKey =
-    stream.list.rateKey === 'directory'
+    list.rateKey === 'directory'
       ? 'directory'
-      : stream.list.rateKey === 'user_management'
+      : list.rateKey === 'user_management'
         ? 'user_management'
         : 'global'
 
-  if (stream.list.parent) {
-    const parentDef = streamByName(stream.list.parent.stream)!
-    const parents = await destination.liveIds(parentDef, env)
-    for (const pid of parents) {
-      const usePath = stream.list.parent.from === 'path'
-      const path = usePath
-        ? stream.list.path.replace(`{${stream.list.parent.param}}`, pid)
-        : stream.list.path
-      const params: Record<string, string> = { ...(stream.list.params ?? {}) }
-      if (!usePath) params[stream.list.parent.param] = pid
-      const key = rateKey === 'directory' ? `directory:${pid}` : rateKey
-      for await (const page of api.paginate(path, params, key, stream.list.shape ?? 'list')) {
-        for (const row of page.rows) {
-          const id = (row as Record<string, unknown>)[keyCol]
-          if (typeof id === 'string') remote.set(id, row as Record<string, unknown>)
+  // The parent ids are read here, before the diff starts, never from inside
+  // the generator below. The destination drains the pages while holding one
+  // pinned connection (its staging table is per session), so a read that
+  // went through the pool from inside the generator would wait for a free
+  // connection while the diff waited for the next page. With a pool of one
+  // that is a deadlock, and the reconcile never finishes.
+  //
+  // The cost of reading them here, rather than after the destination has
+  // captured its live set, is a window of a few statements in which the tail
+  // can land a new parent and its first child: the child is then in the live
+  // set, the parent is not in this list, and the child reports `localOnly`.
+  // The window is milliseconds against a listing that takes minutes; closing
+  // it needs a parent read on the diff's own connection, which the interface
+  // does not offer.
+  const parent = list.parent
+  const parents = parent ? await destination.liveIds(streamByName(parent.stream)!, env) : []
+
+  /**
+   * The remote side, one page at a time. The pagination — the per-parent
+   * loop, the rate keys — is exactly what it was when the diff ran here in
+   * memory; it is a generator so the destination can consume each page as it
+   * arrives instead of this function collecting them all first. It talks to
+   * the API only, for the reason above.
+   */
+  async function* remotePages(): AsyncGenerator<Record<string, unknown>[]> {
+    if (parent) {
+      for (const pid of parents) {
+        const usePath = parent.from === 'path'
+        const path = usePath ? list.path.replace(`{${parent.param}}`, pid) : list.path
+        const params: Record<string, string> = { ...(list.params ?? {}) }
+        if (!usePath) params[parent.param] = pid
+        const key = rateKey === 'directory' ? `directory:${pid}` : rateKey
+        for await (const page of api.paginate(path, params, key, list.shape ?? 'list')) {
+          yield page.rows as Record<string, unknown>[]
         }
       }
-    }
-  } else {
-    for await (const page of api.paginate(
-      stream.list.path,
-      stream.list.params ?? {},
-      rateKey,
-      stream.list.shape ?? 'list',
-    )) {
-      for (const row of page.rows) {
-        const id = (row as Record<string, unknown>)[keyCol]
-        if (typeof id === 'string') remote.set(id, row as Record<string, unknown>)
+    } else {
+      for await (const page of api.paginate(list.path, list.params ?? {}, rateKey, list.shape ?? 'list')) {
+        yield page.rows as Record<string, unknown>[]
       }
     }
   }
 
-  const localOnly = [...local].filter((id) => !remote.has(id))
-  const remoteOnly = [...remote.keys()].filter((id) => !local.has(id))
-  const matched = local.size - localOnly.length
+  // A tombstoned row is not live, so one that still exists upstream reports
+  // as `remoteOnly`, and repair upserts it without clearing the tombstone
+  // (deletion is terminal). The in-memory diff behaved the same way; this
+  // moves the diff, it does not decide that question.
+  const diff = await destination.diffIds(stream, env, remotePages())
+  const { matched, localOnly } = diff
+  // A destination never returns an unkeyed payload; the filter is belt and braces.
+  const remoteOnly = diff.remoteOnly.flatMap((data) => remoteKey(stream, data) ?? [])
 
   const result: DiffResult = { stream: stream.name, matched, localOnly, remoteOnly }
 
-  if (opts.repair && (localOnly.length > 0 || remoteOnly.length > 0)) {
+  if (opts.repair && (localOnly.length > 0 || diff.remoteOnly.length > 0)) {
     const now = new Date().toISOString()
     let deleted = 0
     let inserted = 0
@@ -133,17 +154,14 @@ export async function diffStream(
       )
       deleted = s.deleted
     }
-    if (remoteOnly.length > 0) {
-      const rows = remoteOnly.map((id) => {
-        const data = remote.get(id)!
-        return {
-          data,
-          updatedAt:
-            (typeof data['updated_at'] === 'string' && data['updated_at']) ||
-            (typeof data['created_at'] === 'string' && data['created_at']) ||
-            now,
-        }
-      })
+    if (diff.remoteOnly.length > 0) {
+      const rows = diff.remoteOnly.map((data) => ({
+        data,
+        updatedAt:
+          (typeof data['updated_at'] === 'string' && data['updated_at']) ||
+          (typeof data['created_at'] === 'string' && data['created_at']) ||
+          now,
+      }))
       const s = await destination.upsert(stream, env, rows, 'replace')
       inserted = s.created + s.updated
     }

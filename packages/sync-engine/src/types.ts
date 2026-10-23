@@ -141,7 +141,10 @@ export interface SyncEngineConfig {
    * Additional typed columns to project out of `_raw`, keyed by stream name.
    * Each becomes a `GENERATED ALWAYS AS ... STORED` column on the next
    * `init()`, computed from rows already present. Adding a column never
-   * rewrites data; changing or removing one you added before is manual DDL.
+   * rewrites data. Changing one you added before (its path or type) is
+   * detected on the next `init()` as column drift and can be rebuilt from
+   * `_raw` with `init --repair` (`repairColumns` on the Postgres destination);
+   * removing one leaves the column in place and reports it as an orphan.
    */
   extraColumns?: Record<string, ColumnDef[]>
   /**

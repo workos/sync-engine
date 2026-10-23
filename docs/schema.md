@@ -18,9 +18,68 @@ Everything else is `GENERATED ALWAYS AS ... STORED`, projected out of `_raw`.
 
 Two consequences worth internalising:
 
-- **Filter `_deleted_at is null`** unless you specifically want deleted rows.
+- **Read the `_live` view** (next section) unless you specifically want
+  deleted rows. On a base table, that means filtering `_deleted_at is null`.
 - **Join on `_env` as well as the id.** Ids are unique within an environment,
   and one database can mirror several.
+
+## Live views
+
+Every table that has a `_deleted_at` column — every `mirror` and `poll`
+stream — also gets a view named `<table>_live`:
+
+```sql
+CREATE VIEW workos.users_live AS
+   SELECT * FROM workos.users WHERE _deleted_at IS NULL;
+```
+
+Forgetting the tombstone filter is the most common mistake made against the
+mirror, so the view exists to make the common query the safe one:
+`SELECT ... FROM workos.users_live` can only ever return live rows.
+
+Things to know:
+
+- **`select *` on the view omits nothing.** The view has exactly the columns of
+  its table, in the same order — `_env`, `_raw`, the timestamps, every
+  generated column, and `_deleted_at` itself (always `null` through the view).
+  A column promoted later with `extraColumns` appears in the view after the
+  next `init`, because the view is re-created every time the schema is applied.
+- **The base table is still there, and still the only place that distinguishes
+  "deleted" from "never seen".** A row absent from the view could be either;
+  the table answers which, with the payload the object had when it was
+  removed. The [Deleted objects](queries.md#deleted-objects) queries read the
+  table on purpose.
+- **The engine never reads or writes through the views.** Upserts, `redact`,
+  `reconcile`, `status` and freshness all use the base tables, so the views are
+  purely a convenience for your queries.
+- **Do not edit them.** They are generated from the catalog, carry a comment
+  saying so, and are re-created on every schema apply. A generated view you
+  edited by hand while keeping its comment and its shape is simply overwritten
+  on the next apply. Build your own views on top of the generated ones if you
+  want different names or a separate schema; the engine never drops a view it
+  did not create.
+- **Rebuilding a view needs `--repair`.** If a generated view's shape can no
+  longer be replaced in place (for instance it changed between releases), the
+  engine does not rebuild it on its own: `create or replace view` keeps a
+  view's grants, a drop and re-create does not, and re-granting a reader on a
+  different definition is an authorization decision, not a repair. Instead
+  `init` fails, names the view, and lists the grants it would have to carry
+  over. Run `init --repair` (`repairViews: true` on `PostgresDestination`) to
+  consent: the view is dropped and re-created in one transaction, those grants
+  are re-applied and each is logged, and a re-create that fails leaves the old
+  view where it was. Or drop the view by hand and grant selectively. Two kinds
+  of view are never rebuilt, with or without `--repair`, and `init` fails
+  asking you to rename or drop them: one without the generated comment, which
+  is yours — even with the same shape, where Postgres itself would have
+  overwritten it in place — and one with the comment but not the shape of
+  `select *` over its table, which was rebuilt by hand. A view and its comment
+  are created in one transaction, so an interrupted `init` cannot leave one
+  without the other; should a view with exactly the generated definition and
+  no comment at all exist anyway, `init` recognises it as its own and finishes
+  it. One carrying another tool's comment is never adopted, whatever its
+  definition: that comment is the other tool's claim on it.
+- **Append-only streams have no view.** `events` and `auth_attempts` have no
+  `_deleted_at` column, so there is nothing to filter.
 
 ## Bookkeeping tables
 
@@ -164,10 +223,79 @@ new SyncEngine({
 Column types are `text`, `boolean`, `bigint`, `numeric`, `jsonb` and
 `timestamptz`. The `path` is a top-level key or a list of keys to walk.
 
-This is add-only. Changing a column's path or type, or removing one, is manual
-DDL on your side: the engine never drops or alters a column that already
-exists. Until a column exists, query the field directly:
+Until a column exists, query the field directly:
 
 ```sql
 SELECT _raw->'custom_attributes'->>'department' AS department FROM workos.directory_users;
 ```
+
+Changing or removing a column you added is covered next.
+
+## Changing a column
+
+The DDL is additive: `ADD COLUMN IF NOT EXISTS` does nothing for a column that
+is already there. So when a release changes an existing catalog column's path
+or type, or you edit an `extraColumns` entry, a database that already has the
+column keeps the old projection, and nothing fails, because the engine only
+ever writes `_raw`. That is **column drift**: a generated column that no longer
+matches the catalog.
+
+`init` (and every engine method, since each applies the schema first) checks
+for it whenever the catalog fingerprint is new. It builds the catalog's columns
+on a temp table, reads that and the live table back through `pg_get_expr`, and
+compares. Three kinds are reported:
+
+| Kind         | Meaning                                                                | With `--repair`                              |
+| ------------ | ---------------------------------------------------------------------- | -------------------------------------------- |
+| `expression` | The stored expression differs from the catalog's: a path changed.      | Rebuilt from `_raw`.                         |
+| `type`       | The column type differs from the catalog's.                            | Rebuilt from `_raw`.                         |
+| `orphan`     | A generated column the catalog no longer declares: an entry was removed. | Left alone. The `DROP COLUMN` DDL is printed. |
+
+Without `--repair`, `init` logs every item at `error` with the exact repair
+DDL, prints the report as JSON, exits 2, and **does not record the
+fingerprint**, so every start keeps reporting it until it is fixed. Ingest
+carries on meanwhile: `_raw` is still right, only the projection is stale.
+
+```bash
+npx workos-sync-postgres init            # report; exits 2 on drift
+npx workos-sync-postgres init --repair   # rebuild drifted columns from _raw
+```
+
+`--repair` drops each drifted column and adds it back from the catalog, each
+in its own transaction, then recreates its index. `STORED` recomputes the new
+expression for every row already present, so this is also the backfill, and
+nothing is lost because `_raw` holds all of it. As a library, pass
+`repairColumns: true` to `PostgresDestination`.
+
+Rebuilding a column also forgets every fingerprint recorded before it. A
+fingerprint says the live columns were checked against that catalog, and that
+is no longer true of any catalog checked before the rebuild. Rolling back to
+an earlier release therefore runs the check again and reports the columns it
+would need back, instead of trusting a fingerprint the table no longer
+satisfies. Several processes sharing a database can start with `--repair` at
+once: each column is rebuilt under a lock, and a process that arrives second
+finds it already done and leaves it alone.
+
+Four things are never repaired automatically. The DDL is printed and the
+fingerprint stays withheld until an operator acts:
+
+- **Key columns.** Dropping one drops the primary key, and between the drop
+  and the re-add the table accepts duplicates. Run the printed DDL, which
+  re-adds the key, in a maintenance window with ingest stopped.
+- **A column with your own index or constraint on it.** `DROP COLUMN` takes
+  a `UNIQUE`, a `CHECK`, or an index you added with it, silently, and the
+  engine only knows how to put back the index the catalog declares. The
+  report lists them under `dependents`. Drop them, repair, recreate them.
+- **A column a view of yours depends on.** `DROP COLUMN` fails rather than
+  cascades, because cascading would silently remove the view. Drop the view,
+  repair, recreate the view. The stream's own `_live` view is not in the way:
+  the repair sets it aside and puts it back, grants included, inside the same
+  transaction, because the definition that comes back shows its readers
+  exactly what they saw before.
+- **A plain column with a catalog column's name.** Reported as `expression`
+  drift with `actual: null`. It may hold data that is not in `_raw`, so
+  dropping it is your call.
+
+Orphans are only ever reported: a column the catalog does not know about is
+one it cannot vouch for. They do not hold back the fingerprint, so they are
+reported once per catalog change rather than on every start.

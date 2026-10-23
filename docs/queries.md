@@ -5,7 +5,10 @@ than one, add `_env = 'production'` or join on `_env`.
 
 There are two conventions throughout:
 
-- Filter `_deleted_at is null` for live rows.
+- Read the `_live` views (`workos.users_live`, `workos.organizations_live`,
+  ...) for live rows. Each is its table minus the tombstoned rows, so no
+  `_deleted_at is null` filter is needed. Read the base table when you want
+  deleted rows too; see [Live views](schema.md#live-views).
 - Join on `_env` as well as the id.
 
 ## Seats and adoption
@@ -17,10 +20,10 @@ SELECT o.name AS organization,
        COUNT(*) AS seats,
        COUNT(*) FILTER (WHERE u.last_sign_in_at IS NULL
                            OR u.last_sign_in_at < NOW() - INTERVAL '30 days') AS dormant
-   FROM workos.organization_memberships m
-      JOIN workos.users u ON u.id = m.user_id AND u._env = m._env
-      JOIN workos.organizations o ON o.id = m.organization_id AND o._env = m._env
-   WHERE u._deleted_at IS NULL AND m._deleted_at IS NULL AND m.status = 'active'
+   FROM workos.organization_memberships_live m
+      JOIN workos.users_live u ON u.id = m.user_id AND u._env = m._env
+      JOIN workos.organizations_live o ON o.id = m.organization_id AND o._env = m._env
+   WHERE m.status = 'active'
    GROUP BY o.name
    HAVING COUNT(*) FILTER (WHERE u.last_sign_in_at IS NULL
                               OR u.last_sign_in_at < NOW() - INTERVAL '30 days') > 0
@@ -36,14 +39,17 @@ seats counted either way.
 
 ```sql
 SELECT u.email, u.created_at, NOW() - u.created_at AS age
-   FROM workos.users u
-      LEFT JOIN workos.organization_memberships m
-         ON m.user_id = u.id AND m._env = u._env AND m._deleted_at IS NULL
-   WHERE u._deleted_at IS NULL
-      AND m.id IS NULL
+   FROM workos.users_live u
+      LEFT JOIN workos.organization_memberships_live m
+         ON m.user_id = u.id AND m._env = u._env
+   WHERE m.id IS NULL
       AND u.created_at < NOW() - INTERVAL '7 days'
    ORDER BY u.created_at;
 ```
+
+Note that the `_live` view on the outer side of the `LEFT JOIN` does the work
+that `m._deleted_at IS NULL` in the `ON` clause would otherwise have to: a user
+whose only membership was revoked still shows up here.
 
 ## Enterprise readiness
 
@@ -51,12 +57,12 @@ SELECT u.email, u.created_at, NOW() - u.created_at AS age
 
 ```sql
 SELECT o.name AS organization, d.domain, o.created_at
-   FROM workos.organizations o
-      JOIN workos.organization_domains d
+   FROM workos.organizations_live o
+      JOIN workos.organization_domains_live d
          ON d.organization_id = o.id AND d._env = o._env AND d.state = 'verified'
-      LEFT JOIN workos.directories dir
-         ON dir.organization_id = o.id AND dir._env = o._env AND dir._deleted_at IS NULL
-   WHERE o._deleted_at IS NULL AND dir.id IS NULL
+      LEFT JOIN workos.directories_live dir
+         ON dir.organization_id = o.id AND dir._env = o._env
+   WHERE dir.id IS NULL
    ORDER BY o.created_at;
 ```
 
@@ -66,9 +72,9 @@ mirror kept fresh by `reconcile` — is how you find them.
 
 ```sql
 SELECT o.name AS organization, d.name AS directory, d.type, d.state, d.updated_at
-   FROM workos.directories d
-      JOIN workos.organizations o ON o.id = d.organization_id AND o._env = d._env
-   WHERE d._deleted_at IS NULL AND d.state <> 'linked'
+   FROM workos.directories_live d
+      JOIN workos.organizations_live o ON o.id = d.organization_id AND o._env = d._env
+   WHERE d.state <> 'linked'
    ORDER BY d.updated_at;
 ```
 
@@ -76,8 +82,7 @@ SELECT o.name AS organization, d.name AS directory, d.type, d.state, d.updated_a
 
 ```sql
 SELECT connection_type, state, COUNT(*) AS connections
-   FROM workos.connections
-   WHERE _deleted_at IS NULL
+   FROM workos.connections_live
    GROUP BY connection_type, state
    ORDER BY connections DESC;
 ```
@@ -85,7 +90,8 @@ SELECT connection_type, state, COUNT(*) AS connections
 ## Authentication
 
 These read `auth_attempts`, which exists only because the mirror captured it —
-there is no endpoint to ask for this history.
+there is no endpoint to ask for this history. It is append-only, so it has no
+`_live` view and nothing to filter.
 
 **Failed sign-ins by user, last hour.**
 
@@ -101,6 +107,10 @@ SELECT COALESCE(u.email, a.email) AS email,
    HAVING COUNT(*) >= 5
    ORDER BY failures DESC;
 ```
+
+This one joins the base `workos.users` table on purpose: an attempt against an
+account that has since been deleted should still be reported under its email,
+and the tombstone is where that email lives.
 
 **Sign-in success rate by method.** The `type` column is the method
 (`password`, `sso`, `oauth`, `magic_auth`, ...); `status` is derived from
@@ -147,10 +157,9 @@ SELECT u.email,
        u.metadata->>'plan' AS plan,
        COUNT(s.id) AS sessions_30d,
        MAX(s.created_at) AS last_active
-   FROM workos.users u
+   FROM workos.users_live u
       JOIN app.accounts a ON a.id = u.external_id
       LEFT JOIN app.sessions s ON s.account_id = a.id AND s.created_at > NOW() - INTERVAL '30 days'
-   WHERE u._deleted_at IS NULL
    GROUP BY u.email, u.metadata->>'plan'
    ORDER BY sessions_30d DESC;
 ```
@@ -160,11 +169,10 @@ already on the organization object:
 
 ```sql
 SELECT o.name, s.status AS subscription, COUNT(m.id) AS seats
-   FROM workos.organizations o
+   FROM workos.organizations_live o
       JOIN billing.subscriptions s ON s.customer = o.stripe_customer_id
-      LEFT JOIN workos.organization_memberships m
-         ON m.organization_id = o.id AND m._env = o._env AND m._deleted_at IS NULL
-   WHERE o._deleted_at IS NULL
+      LEFT JOIN workos.organization_memberships_live m
+         ON m.organization_id = o.id AND m._env = o._env
    GROUP BY o.name, s.status;
 ```
 
@@ -194,7 +202,8 @@ SELECT DATE_TRUNC('day', created_at) AS day,
 
 ## Deleted objects
 
-Tombstones mean you can still ask who left.
+Tombstones mean you can still ask who left. This is the one kind of question
+the `_live` views cannot answer, so these read the base table.
 
 ```sql
 SELECT email, _deleted_at AS deleted_at, last_sign_in_at
@@ -203,24 +212,29 @@ SELECT email, _deleted_at AS deleted_at, last_sign_in_at
    ORDER BY _deleted_at DESC;
 ```
 
+The base table is also the only place that tells "deleted" apart from "never
+synced": a row with `_deleted_at` set was seen and then removed upstream; no row
+at all means the mirror never saw it.
+
 ## Convenience views
 
-If filtering tombstones on every query is tedious, create views once:
+The `_live` views are generated for you, one per mirror table, and re-created
+every time the schema is applied, so they always carry the table's current
+columns. If you want them under different names or in a separate schema, build
+your own views on top of them rather than editing them: the engine never drops
+a view it did not create.
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS workos_live;
 
-CREATE VIEW workos_live.users AS
-   SELECT * FROM workos.users WHERE _deleted_at IS NULL;
-
-CREATE VIEW workos_live.organizations AS
-   SELECT * FROM workos.organizations WHERE _deleted_at IS NULL;
+CREATE VIEW workos_live.users AS SELECT * FROM workos.users_live;
 ```
 
 ## Giving an agent read access
 
 A read-only role over the mirror is a far better-scoped grant than an API key,
-and one SQL tool replaces a pile of per-endpoint tools:
+and one SQL tool replaces a pile of per-endpoint tools. `ALL TABLES` covers the
+`_live` views as well:
 
 ```sql
 CREATE ROLE analytics_reader LOGIN PASSWORD '...';
@@ -238,11 +252,10 @@ CREATE SCHEMA IF NOT EXISTS workos_safe;
 
 CREATE VIEW workos_safe.users AS
    SELECT u.id, u._env, u.created_at, u.last_sign_in_at,
-          COUNT(m.id) FILTER (WHERE m._deleted_at IS NULL) AS organizations
-      FROM workos.users u
-         LEFT JOIN workos.organization_memberships m
+          COUNT(m.id) AS organizations
+      FROM workos.users_live u
+         LEFT JOIN workos.organization_memberships_live m
             ON m.user_id = u.id AND m._env = u._env
-      WHERE u._deleted_at IS NULL
       GROUP BY u.id, u._env, u.created_at, u.last_sign_in_at;
 
 GRANT USAGE ON SCHEMA workos_safe TO analytics_reader;

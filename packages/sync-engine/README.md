@@ -71,9 +71,9 @@ and the staleness gate decides which version wins.
 | `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                               |
 
 Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
-`reconcile({ repair, streams })`, `refresh()`, `status()`, `redact(userId)`,
-`processWebhook()`, `close()`. Every method applies the schema first, so
-`init()` is optional.
+`reconcile({ repair, streams })`, `refresh()`, `status()`, `health()`,
+`redact(userId)`, `processWebhook()`, `close()`. Every method except
+`health()` applies the schema first, so `init()` is optional.
 
 The tail has one writer per environment. `listen()` takes a lease in the
 destination before polling and renews it while it runs; if another process
@@ -97,6 +97,24 @@ event applied; distance from the 90-day retention cliff, not liveness),
 `lease` (who is tailing it now, or `null`), and per-stream row counts,
 tombstones, staleness and lag.
 
+`health()` is the same liveness picture without the database: a synchronous
+snapshot of in-memory state (`starting` / `listening` / `stopped`, any fatal
+error, and per environment the last poll, last event, cursor, last error and
+running counters). `startHealthServer(engine, { port, host?, maxPollAgeMs? })`
+serves it on `GET /healthz` (`200` or `503`) and `GET /metrics` (Prometheus
+text), which is what the `listen` command does when given a port. To mount
+the same endpoints on a server you already run, `healthReport(engine.health(),
+{ maxPollAgeMs })` gives the JSON body and verdict, and
+`renderMetrics(engine.health())` the exposition text.
+
+```ts
+import { startHealthServer } from "@workos/sync-engine";
+
+const health = await startHealthServer(engine, { port: 8080 });
+await engine.listen();
+await health.close();
+```
+
 A rejected credential (401 or 403) and a cursor that pages backwards are
 fatal: the engine stops rather than retrying. Everything else is retried or
 isolated by stream.
@@ -111,6 +129,7 @@ entirely yours.
 import type {
   Destination,
   FreshnessRow,
+  IdDiff,
   Lease,
   LeaseResult,
   Logger,
@@ -135,6 +154,11 @@ class MyDestination implements Destination {
 
   liveIds(stream: StreamDef, env: string): Promise<string[]>;
   rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>;
+  diffIds(
+    stream: StreamDef,
+    env: string,
+    remote: AsyncIterable<Record<string, unknown>[]>,
+  ): Promise<IdDiff>;
   freshness(
     stream: StreamDef,
     env: string,
@@ -193,6 +217,20 @@ because of a documented failure in a comparable sync engine.
 the engine logs but never branches on; a database that cannot tell an insert
 from an update may approximate the split. `liveIds` means non-tombstoned rows,
 in a stable order. `rawRows` returns stored payloads, tombstoned or not.
+
+`diffIds` is the reconcile set difference. The engine streams the stream's
+list endpoint to it one page at a time; the destination must stage those pages
+in the database and diff them there against the live rows, so memory is
+bounded by the drift rather than the stream. It returns `matched`, the
+`localOnly` ids (only ever tombstoned) and the `remoteOnly` payloads (only
+ever re-inserted). The live set must be captured before the first page is
+consumed: listing takes time and the tail keeps writing, so a row inserted
+mid-listing must not become `localOnly` and be tombstoned by repair. The
+engine reads nothing from the destination while `diffIds` runs, so an
+implementation may hold one pinned connection for the duration. A destination
+with nothing to stage into can delegate to the exported `diffIdsInMemory`,
+which is the old in-process algorithm, and accept that its memory grows with
+the stream.
 
 The reference implementation is
 [`PostgresDestination`](https://github.com/workos/workos-pg-sync/blob/main/packages/sync-postgres/src/destination.ts)
