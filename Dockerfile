@@ -76,6 +76,7 @@ RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 --ingroup
 COPY --from=build /deploy/package.json ./
 COPY --from=build /deploy/node_modules ./node_modules
 COPY --from=build /deploy/dist ./dist
+COPY docker/healthcheck.mjs ./healthcheck.mjs
 USER workos
 ENV NODE_ENV=production
 # `listen` serves GET /healthz and /metrics on this port, from in-memory state,
@@ -85,11 +86,11 @@ ENV NODE_ENV=production
 # run, so the HEALTHCHECK is only meaningful for a long-running `listen`.
 ENV WORKOS_SYNC_HEALTH_PORT=8080
 EXPOSE 8080
-# No curl or wget in the image; Node's global fetch is enough. The loopback
-# address is used rather than the bind host so the check works whatever
-# WORKOS_SYNC_HEALTH_HOST is set to, as long as it includes this interface.
+# The check resolves the port the way `listen` does, so `listen --health-port
+# <n>` keeps the container healthy just as `-e WORKOS_SYNC_HEALTH_PORT=<n>`
+# does. healthcheck.mjs explains how it finds the flag.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:' + process.env.WORKOS_SYNC_HEALTH_PORT + '/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+  CMD ["node", "healthcheck.mjs"]
 # --use-env-proxy makes fetch honor HTTP_PROXY, HTTPS_PROXY and NO_PROXY, which
 # is how the sync reaches the WorkOS API from inside a locked-down network.
 ENTRYPOINT ["node", "--use-env-proxy", "dist/cli.js"]

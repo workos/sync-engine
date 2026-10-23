@@ -177,7 +177,7 @@ Every per-environment series carries an `env` label.
 | Metric                         | Type    | What it is                                                                                            |
 | ------------------------------ | ------- | ----------------------------------------------------------------------------------------------------- |
 | `workos_sync_up`               | gauge   | `1` while the engine is running; `0` once it has stopped or hit a fatal error.                        |
-| `workos_sync_poll_age_seconds` | gauge   | Seconds since the last successful poll. **Alert on this.** Absent until the first successful poll.    |
+| `workos_sync_poll_age_seconds` | gauge   | Seconds since the last successful poll. **Alert on this.** Absent until the first successful poll, so a listener that has never succeeded needs the `WorkOSSyncNeverPolled` rule below. |
 | `workos_sync_cursor_age_days`  | gauge   | Age of the newest event applied: distance from the 90-day cliff, not liveness. Absent until the first event. |
 | `workos_sync_ticks_total`      | counter | Polls attempted, successful or not.                                                                   |
 | `workos_sync_events_total`     | counter | Events applied.                                                                                       |
@@ -189,6 +189,12 @@ Every per-environment series carries an `env` label.
 - alert: WorkOSSyncStalled
   expr: workos_sync_poll_age_seconds > 300 or workos_sync_up == 0
   for: 2m
+# An environment with a ticks series but no poll-age series has never polled
+# successfully: every request since startup failed, `/healthz` is 503, and
+# nothing above matches. The `for` is the startup grace period.
+- alert: WorkOSSyncNeverPolled
+  expr: workos_sync_ticks_total unless workos_sync_poll_age_seconds
+  for: 5m
 - alert: WorkOSSyncCursorNearRetention
   expr: workos_sync_cursor_age_days > 60
 ```
@@ -379,9 +385,11 @@ The image sets `WORKOS_SYNC_HEALTH_PORT=8080`, exposes that port, and
 declares a `HEALTHCHECK` that fetches `/healthz` every 30 seconds after a
 30-second start period, so `docker ps` and Compose's `depends_on:
 condition: service_healthy` reflect whether the tail is actually polling.
-The check only means something for `listen`: one-shot commands exit before
-it would ever run. Publish the port (`-p 8080:8080`) to scrape `/metrics`
-from outside the container.
+The check follows the port `listen` resolved, so changing it with either
+`-e WORKOS_SYNC_HEALTH_PORT=<n>` or `listen --health-port <n>` keeps the
+container healthy. The check only means something for `listen`: one-shot
+commands exit before it would ever run. Publish the port (`-p 8080:8080`)
+to scrape `/metrics` from outside the container.
 
 **On Kubernetes**, point both probes at `/healthz`. The engine answers `200`
 while it is still starting, so the liveness probe does not need a long
