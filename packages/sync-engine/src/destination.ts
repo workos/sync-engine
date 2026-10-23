@@ -22,6 +22,13 @@
  *   and an older link or unlink must not undo what a newer one established.
  * - **Durable on return.** The engine checkpoints its cursor as soon as a
  *   write resolves, so a write must not be buffered past its own call.
+ * - **One writer per cursor.** `acquireLease` is atomic: of two processes
+ *   asking at once, exactly one is told it holds the lease. The tail runs
+ *   under it so a rolling deploy cannot have both the old and the new process
+ *   advancing the same cursor. `setStateIfHeld` makes the cursor write itself
+ *   conditional on still holding it, in the same statement, so a process that
+ *   stalled past its lease is refused by the database rather than by a check
+ *   made a moment earlier.
  *
  * The `created`/`updated`/`skipped` split in `WriteStats` is a health metric
  * the engine logs but never branches on; an engine that cannot tell an insert
@@ -64,6 +71,34 @@ export interface FreshnessRow {
   lagSampleSize: number
 }
 
+/** The reconcile set difference for one stream. See `Destination.diffIds`. */
+export interface IdDiff {
+  /** Live rows whose id is also upstream. */
+  matched: number
+  /** Ids of live rows absent upstream. Ids suffice: they are only ever tombstoned. */
+  localOnly: string[]
+  /** Upstream payloads with no live row. Whole payloads: they are re-inserted. */
+  remoteOnly: Record<string, unknown>[]
+}
+
+/** Who holds the events-tail lease for one environment, and until when (ISO-8601). */
+export interface Lease {
+  holder: string
+  expiresAt: string
+}
+
+export interface LeaseResult {
+  /** True when `holder` now holds the lease, whether freshly taken or renewed. */
+  acquired: boolean
+  /**
+   * The current holder. When `acquired` is false this names the process to
+   * wait for; it is null if the lease was released between the attempt and
+   * the read, in which case the next attempt will succeed.
+   */
+  holder: string | null
+  expiresAt: string | null
+}
+
 /** One quarantined event, as `rejected` reports it. */
 export interface RejectedEvent {
   eventId: string
@@ -103,6 +138,29 @@ export interface Destination {
   liveIds(stream: StreamDef, env: string): Promise<string[]>
   /** Stored payloads of every row, tombstoned or not. */
   rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>
+  /**
+   * The set difference between the live rows and the stream's list endpoint,
+   * for reconciliation. `remote` yields the endpoint one page at a time. The
+   * implementation must stage those pages in the database and compute the
+   * difference there, so memory is bounded by the size of the drift and not
+   * by the size of the stream; a million-row stream with ten missed deletes
+   * must cost ten ids. "Live" means non-tombstoned. `localOnly` are ids,
+   * because they are only ever tombstoned; `remoteOnly` are whole payloads,
+   * because they are re-inserted. A destination with nothing to stage into
+   * may delegate to `diffIdsInMemory` and accept the memory cost.
+   *
+   * The live set must be captured before the first page is consumed. Listing
+   * takes time and the tail keeps writing throughout, so a row inserted
+   * mid-listing that the pages never show must not become `localOnly`: repair
+   * would tombstone an object that exists upstream, and deletion is terminal.
+   * The engine reads nothing from the destination while this runs, so an
+   * implementation may hold one pinned connection for the duration.
+   */
+  diffIds(
+    stream: StreamDef,
+    env: string,
+    remote: AsyncIterable<Record<string, unknown>[]>,
+  ): Promise<IdDiff>
   freshness(stream: StreamDef, env: string, lagWindowHours: number): Promise<FreshnessRow>
   /**
    * Erase every trace of one subject from the given streams and from the
@@ -113,6 +171,31 @@ export interface Destination {
   /** Cursor and run state, keyed by `(env, stream)`. */
   getState<T>(env: string, stream: string): Promise<T | null>
   setState(env: string, stream: string, state: unknown): Promise<void>
+  /**
+   * Write `state` only if `holder` holds the unexpired lease for `env` and
+   * the stored state for `(env, stream)` still equals `expected` (`null` for
+   * no row), with both conditions checked in the same atomic statement as
+   * the write. Returns whether it was written. The engine checkpoints the
+   * tail through this, so a former holder saving an older cursor, or a poll
+   * racing a backfill that re-captured the position, is refused by the
+   * database itself: there is no window between the check and the write.
+   */
+  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean>
+
+  /**
+   * Take or renew the single-writer lease for `env`, atomically. Succeeds when
+   * the lease is free, expired, or already held by `holder`; otherwise it is
+   * left alone and the result names who holds it. A lease is scoped to this
+   * destination's sync identifier, so two syncs sharing a database never
+   * contend. It is held in the database, not the connection, so it survives
+   * pool churn and needs no pinned session.
+   */
+  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult>
+  /** Give the lease back, only if `holder` holds it. A no-op for anyone else. */
+  releaseLease(env: string, holder: string): Promise<void>
+  /** The current, unexpired lease for `env`, or null when it is free. Read-only. */
+  getLease(env: string): Promise<Lease | null>
+
 
   /**
    * Set aside events the tail could not apply, so the cursor can move past

@@ -97,6 +97,7 @@ describe('RedactingDestination', () => {
       unlink: (_s, _e, rows) => stats('unlink', rows),
       liveIds: async () => ['invitation_1'],
       rawRows: async () => [invite()],
+      diffIds: async () => ({ matched: 0, localOnly: [], remoteOnly: [] }),
       freshness: async (s) => ({
         stream: s.name,
         rows: 1,
@@ -109,6 +110,10 @@ describe('RedactingDestination', () => {
       redact: async () => [],
       getState: async () => null,
       setState: async () => {},
+      setStateIfHeld: async () => true,
+      acquireLease: async (_e, holder) => ({ acquired: true, holder, expiresAt: null }),
+      releaseLease: async () => {},
+      getLease: async () => null,
       reject: async () => {},
       rejected: async () => [],
       rejectedCount: async () => 0,
@@ -140,6 +145,51 @@ describe('RedactingDestination', () => {
     // Reads are not the engine's concern here: what is stored is already clean.
     expect(await dest.liveIds(invitations, 'prod')).toEqual(['invitation_1'])
     expect((await dest.freshness(invitations, 'prod', 24)).rows).toBe(1)
+  })
+
+  it('strips declared paths from every remote page before it is staged', async () => {
+    const { inner } = recording()
+    const staged: Record<string, unknown>[][] = []
+    inner.diffIds = async (_s, _e, remote) => {
+      for await (const page of remote) staged.push(page)
+      return { matched: 0, localOnly: [], remoteOnly: [] }
+    }
+    const pages = [[invite(), invite({ id: 'invitation_2' })], [invite({ id: 'invitation_3' })]]
+    async function* remote() {
+      for (const page of pages) yield page
+    }
+
+    await new RedactingDestination(inner).diffIds(invitations, 'prod', remote())
+
+    expect(staged.map((page) => page.map((d) => d['id']))).toEqual([
+      ['invitation_1', 'invitation_2'],
+      ['invitation_3'],
+    ])
+    expect(JSON.stringify(staged)).not.toContain(TOKEN)
+    for (const data of staged.flat()) {
+      expect(data['token']).toBeUndefined()
+      expect(data['accept_invitation_url']).toBeUndefined()
+      expect(data['email']).toBe('ada@example.com')
+    }
+    // The caller's pages are untouched.
+    for (const data of pages.flat()) expect(data['token']).toBe(TOKEN)
+  })
+
+  it('hands the remote pages through as-is for streams with nothing to redact', async () => {
+    const { inner } = recording()
+    let received: unknown
+    inner.diffIds = async (_s, _e, remote) => {
+      received = remote
+      return { matched: 0, localOnly: [], remoteOnly: [] }
+    }
+    async function* remote() {
+      yield [{ id: 'user_1' }]
+    }
+    const pages = remote()
+
+    await new RedactingDestination(inner).diffIds(users, 'prod', pages)
+
+    expect(received).toBe(pages)
   })
 
   it('hands rows through unchanged for streams with nothing to redact', async () => {

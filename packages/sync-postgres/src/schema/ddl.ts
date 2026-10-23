@@ -12,20 +12,14 @@
  * and an FK would turn that ordering artifact into a hard write failure.
  */
 import type { ColumnDef, StreamDef } from '@workos/sync-engine'
+import { quoteIdent, safeIdentifier } from './identifiers.js'
+import { liveViewSql } from './views.js'
+
+// Re-exported so callers keep importing the identifier helpers from here.
+export { quoteIdent, safeIdentifier } from './identifiers.js'
 
 export const RAW = '_raw'
 export const ENV = '_env'
-
-/** Postgres identifiers are limited to 63 bytes. */
-export function safeIdentifier(name: string): string {
-  if (Buffer.byteLength(name) <= 63) return name
-  let hash = 5381
-  for (let i = 0; i < name.length; i++) hash = ((hash << 5) + hash + name.charCodeAt(i)) >>> 0
-  const suffix = `_${hash.toString(16).padStart(8, '0')}`
-  return name.slice(0, 63 - suffix.length) + suffix
-}
-
-export const quoteIdent = (name: string): string => `"${name.replace(/"/g, '""')}"`
 
 /** JSON path expression: `_raw->'a'->>'b'` for text, `->` for jsonb. */
 function jsonPath(path: string | string[], asText: boolean): string {
@@ -71,6 +65,19 @@ const PG_TYPE: Record<ColumnDef['type'], string> = {
   numeric: 'numeric',
   jsonb: 'jsonb',
   timestamptz: 'timestamptz',
+}
+
+/**
+ * One `"name" type generated always as (...) stored` clause. Every path that
+ * creates a projected column — table creation, the additive upgrade, drift
+ * detection and repair — goes through here, so they cannot disagree about
+ * what a column should look like.
+ */
+export function generatedColumnSql(col: ColumnDef, schema: string): string {
+  return `${quoteIdent(safeIdentifier(col.name))} ${PG_TYPE[col.type]} generated always as ${columnExpression(
+    col,
+    schema,
+  )} stored`
 }
 
 /**
@@ -121,8 +128,9 @@ export function createSchemaSql(schema: string): string {
 
 /**
  * Engine bookkeeping: cursors, applied-schema fingerprints, and the
- * quarantine. These run on every `migrate` before the fingerprint check, so a
- * table added here reaches existing deployments without a new fingerprint.
+ * single-writer lease for the events tail, and the quarantine. These run on
+ * every `migrate` before the fingerprint check, so a table added here reaches
+ * existing deployments without a new fingerprint.
  *
  * `_rejected` holds events the tail set aside after they failed
  * deterministically on two consecutive polls (see the engine's
@@ -147,6 +155,15 @@ create table if not exists ${s}."_migrations" (
   fingerprint text primary key,
   applied_at  timestamptz not null default now(),
   detail      jsonb
+);
+
+create table if not exists ${s}."_sync_lease" (
+  sync_id     text not null,
+  env         text not null,
+  holder      text not null,
+  acquired_at timestamptz not null default now(),
+  expires_at  timestamptz not null,
+  primary key (sync_id, env)
 );
 
 create table if not exists ${s}."_rejected" (
@@ -177,14 +194,7 @@ export function createTableSql(stream: StreamDef, schema: string): string {
   // Append-only streams are immutable logs: no tombstones.
   if (stream.mode !== 'append') cols.push(`"_deleted_at" timestamptz`)
 
-  for (const c of stream.columns) {
-    cols.push(
-      `${quoteIdent(safeIdentifier(c.name))} ${PG_TYPE[c.type]} generated always as ${columnExpression(
-        c,
-        schema,
-      )} stored`,
-    )
-  }
+  for (const c of stream.columns) cols.push(generatedColumnSql(c, schema))
   const pk = [ENV, ...stream.key].map((k) => quoteIdent(safeIdentifier(k))).join(', ')
   cols.push(`primary key (${pk})`)
 
@@ -226,10 +236,7 @@ export function addColumnsSql(stream: StreamDef, schema: string): string[] {
   const s = quoteIdent(schema)
   const table = quoteIdent(safeIdentifier(stream.name))
   return stream.columns.map(
-    (c) =>
-      `alter table ${s}.${table} add column if not exists ${quoteIdent(
-        safeIdentifier(c.name),
-      )} ${PG_TYPE[c.type]} generated always as ${columnExpression(c, schema)} stored;`,
+    (c) => `alter table ${s}.${table} add column if not exists ${generatedColumnSql(c, schema)};`,
   )
 }
 
@@ -240,6 +247,8 @@ export function buildSchemaSql(streams: StreamDef[], schema: string): string[] {
     out.push(createTableSql(s, schema))
     out.push(...addColumnsSql(s, schema))
     out.push(...createIndexesSql(s, schema))
+    // Last, so the view's `select *` is expanded after any column was added.
+    out.push(...liveViewSql(s, schema))
   }
   return out
 }

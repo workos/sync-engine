@@ -10,10 +10,21 @@
  * seconds. Read from it for joins, lists, dashboards, analytics and agents;
  * keep writes and authoritative post-signup checks on the WorkOS API.
  */
-export { SyncEngine } from './engine.js'
-export type { EngineDeps } from './engine.js'
+export { SyncEngine, LeaseHeldError } from './engine.js'
+export type { EngineDeps, EnvironmentStatus } from './engine.js'
 
-export type { Destination, FreshnessRow, RejectedEvent, Row, WriteMode } from './destination.js'
+export { startHealthServer, healthReport, renderMetrics, DEFAULT_MAX_POLL_AGE_MS } from './health.js'
+export type {
+  EngineHealth,
+  EnvironmentHealth,
+  HealthCounters,
+  HealthCheckOptions,
+  HealthReport,
+  HealthServer,
+  HealthServerOptions,
+} from './health.js'
+
+export type { Destination, FreshnessRow, IdDiff, Lease, LeaseResult, RejectedEvent, Row, WriteMode } from './destination.js'
 export { StateStore } from './state.js'
 export { redactPayload, redactRows, RedactingDestination, redacting } from './redact.js'
 
@@ -48,6 +59,7 @@ export {
 export type { QuarantineResult, RejectedRow, Suspect, SuspectMap } from './sync/quarantine.js'
 export { backfillStream } from './sync/backfill.js'
 export { diffStream, freshness, refreshStream } from './sync/reconcile.js'
+export { diffIdsInMemory } from './sync/diff.js'
 
 export { createLogger, silentLogger } from './logger.js'
 export type { LogLevel } from './logger.js'

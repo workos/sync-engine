@@ -10,9 +10,17 @@
  *
  * Steps 2 and 3 overlap on purpose. Anything that changes mid-backfill is
  * replayed in step 3, and the staleness gate decides which version wins.
+ *
+ * Step 4 runs under a single-writer lease held in the destination. Without
+ * it, a rolling deploy has the old and the new process both advancing the
+ * same cursor for as long as they overlap. Everything else — backfill,
+ * reconcile, refresh, status, redact — is idempotent and runs alongside the
+ * tail without taking it.
  */
-import type { Destination, FreshnessRow, RejectedEvent } from './destination.js'
-import { StateStore } from './state.js'
+import os from 'node:os'
+import { randomBytes } from 'node:crypto'
+import type { Destination, FreshnessRow, Lease, RejectedEvent } from './destination.js'
+import { StateStore, type TailState, type TailUpdate } from './state.js'
 import { STREAMS, streamByName, defaultStreams, subscribedEventTypes } from './catalog.js'
 import { WorkOSClient, WorkOSApiError } from './workos/client.js'
 import {
@@ -28,6 +36,7 @@ import { backfillStream, type BackfillStreamResult } from './sync/backfill.js'
 import { diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
 import { createLogger } from './logger.js'
 import { redacting } from './redact.js'
+import { HealthTracker, type EngineHealth } from './health.js'
 import type {
   EnvironmentConfig,
   HydrateMode,
@@ -56,6 +65,8 @@ export interface EnvironmentStatus {
   lastPolledAt: string | null
   /** Seconds since `lastPolledAt`. This is the number to alert on for a stalled sync. */
   pollAgeSeconds: number | null
+  /** Which process is tailing this environment right now. Null when nothing is. */
+  lease: Lease | null
   /**
    * Events the tail set aside because they failed deterministically. The
    * cursor has moved past them, so nothing else is stalled, but they are not
@@ -70,6 +81,37 @@ export interface EngineDeps {
   clientFor?: (env: EnvironmentConfig) => WorkOSClient
 }
 
+/**
+ * Thrown by `tick()` when another process holds the events-tail lease. A
+ * cron-driven tick must not wait — the next run is minutes away anyway — so
+ * it fails fast and names the holder, which is usually a `listen` that
+ * someone forgot was running.
+ */
+export class LeaseHeldError extends Error {
+  constructor(
+    readonly env: string,
+    readonly holder: string | null,
+    readonly expiresAt: string | null,
+  ) {
+    super(
+      `events tail lease for environment "${env}" is held by ${holder ?? 'another process'}` +
+        (expiresAt ? ` until ${expiresAt}` : ''),
+    )
+    this.name = 'LeaseHeldError'
+  }
+}
+
+const DEFAULT_LEASE_TTL_MS = 60_000
+/** Waiting on a lease is the normal state during a deploy, not an incident; one line a minute is plenty. */
+const LEASE_WARN_INTERVAL_MS = 60_000
+
+/** Why an acquisition pass stopped: the environment refused, and who has it. */
+interface LeaseRefusal {
+  env: string
+  holder: string | null
+  expiresAt: string | null
+}
+
 export class SyncEngine {
   readonly streams: StreamDef[]
   private destination: Destination
@@ -77,6 +119,31 @@ export class SyncEngine {
   private logger: Logger
   private clients = new Map<string, WorkOSClient>()
   private stopping = false
+  /** In-memory bookkeeping behind `health()`; see health.ts. */
+  private healthTracker: HealthTracker
+  /**
+   * The identity leases are held under. Host and pid make it recognisable in
+   * logs; the random suffix keeps two engines in one process (or a recycled
+   * pid on a restarted host) from passing as the same holder.
+   */
+  private readonly holder = `${os.hostname()}:${process.pid}:${randomBytes(3).toString('hex')}`
+  /**
+   * Environments whose lease this engine currently holds, through `listen()`
+   * or a standalone `tick()`. The heartbeat renews exactly these.
+   */
+  private held = new Set<string>()
+  private heartbeat: NodeJS.Timeout | undefined
+  /** The heartbeat renewal in flight, so a release can wait for it rather than race it. */
+  private renewal: Promise<void> | undefined
+  /**
+   * Serialises everything in this engine that takes, polls under, or gives
+   * back a lease. `tick()` and `listen()` share one `holder`, so the database
+   * cannot tell their claims apart: without this, a `tick()` overlapping
+   * `listen()`'s startup would acquire the same lease, poll alongside the
+   * listener, and then release the listener's claim on return.
+   */
+  private leaseWork: Promise<unknown> = Promise.resolve()
+  private lastLeaseWarn = 0
   /**
    * Events that failed on the previous poll, per environment. In memory on
    * purpose: a restart forgets them, and the worst that costs is one more
@@ -130,6 +197,14 @@ export class SyncEngine {
     for (const env of config.environments) {
       if (seen.has(env.name)) throw new Error(`duplicate environment name: ${env.name}`)
       seen.add(env.name)
+    }
+    this.healthTracker = new HealthTracker([...seen])
+    // A zero TTL expires on arrival, so every acquire would succeed and the
+    // lease would exclude nobody; NaN fails in SQL on the first poll instead.
+    // Both are caught here, before anything runs, rather than at either end.
+    const ttl = config.leaseTtlMs
+    if (ttl !== undefined && !(Number.isFinite(ttl) && Math.floor(ttl) >= 1)) {
+      throw new Error(`leaseTtlMs must be a number of milliseconds of at least 1, got ${String(ttl)}`)
     }
   }
 
@@ -237,9 +312,52 @@ export class SyncEngine {
     return m
   }
 
-  /** One poll of the events tail across every environment. */
+  /**
+   * One poll of the events tail across every environment, under the lease.
+   * Throws `LeaseHeldError` rather than waiting when another process has it.
+   * The lease is released on return unless `listen()` in this engine already
+   * holds it, so a webhook nudge never drops the tail's own lease. A tick
+   * that overlaps the listener runs after its current poll, never alongside.
+   */
   async tick(): Promise<{ processed: number; stats: WriteStats; rejected: number }> {
     await this.init()
+    return this.serialized(async () => {
+      const taken: string[] = []
+      // A standalone tick has no loop renewing for it, and the checkpoint is
+      // refused once the lease lapses, so it runs the heartbeat itself: a
+      // cron tick slower than the TTL would otherwise replay the same batch
+      // forever. One running under the listener is covered by the listener's.
+      const own = this.heartbeat ? undefined : this.startHeartbeat()
+      try {
+        for (const env of this.config.environments) {
+          if (this.held.has(env.name)) continue
+          const r = await this.destination.acquireLease(env.name, this.holder, this.leaseTtlMs)
+          if (!r.acquired) throw new LeaseHeldError(env.name, r.holder, r.expiresAt)
+          taken.push(env.name)
+          this.held.add(env.name)
+        }
+        return await this.poll()
+      } finally {
+        if (own) this.stopHeartbeat(own)
+        await this.release(taken)
+      }
+    })
+  }
+
+  /** Run `fn` after every lease-holding section queued before it. See `leaseWork`. */
+  private serialized<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.leaseWork.then(fn, fn)
+    // The chain itself must never reject, or every later section would be skipped.
+    this.leaseWork = run.catch(() => undefined)
+    return run
+  }
+
+  private get leaseTtlMs(): number {
+    return this.config.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS
+  }
+
+  /** The poll itself, with no lease handling: the caller guarantees exclusivity. */
+  private async poll(): Promise<{ processed: number; stats: WriteStats; rejected: number }> {
     let processed = 0
     let stats = emptyStats()
     let rejected = 0
@@ -281,12 +399,22 @@ export class SyncEngine {
         if (events.length === 0) {
           // Nothing to apply, but the poll succeeded: record that, so a quiet
           // upstream is distinguishable from a stalled sync.
-          await this.state.setTail(env.name, {
+          const polledAt = new Date().toISOString()
+          const saved = await this.checkpoint(env.name, tail, {
             cursor: tail?.cursor ?? null,
             lastEventAt: tail?.lastEventAt ?? null,
             rangeStart: tail?.rangeStart ?? null,
-            lastPolledAt: new Date().toISOString(),
+            lastPolledAt: polledAt,
           })
+          // A refused checkpoint means this process is no longer the writer,
+          // which is not a successful poll of its own.
+          if (saved) {
+            this.healthTracker.polled(env.name, {
+              polledAt,
+              cursor: tail?.cursor ?? null,
+              lastEventAt: tail?.lastEventAt ?? null,
+            })
+          }
           continue
         }
 
@@ -311,13 +439,24 @@ export class SyncEngine {
         }
         rejected += result.rejected.length
 
-        // Checkpoint only after the writes above are durable.
+        // Checkpoint only after the writes above are durable. A batch whose
+        // checkpoint was refused is not counted: its rows are written, but
+        // the replacement that now owns the cursor will apply them again.
         const last = events[events.length - 1]!
-        await this.state.setTail(env.name, {
+        const polledAt = new Date().toISOString()
+        const saved = await this.checkpoint(env.name, tail, {
           cursor,
           lastEventAt: last.created_at,
           rangeStart: tail?.rangeStart ?? null,
-          lastPolledAt: new Date().toISOString(),
+          lastPolledAt: polledAt,
+        })
+        if (!saved) continue
+        this.healthTracker.polled(env.name, {
+          polledAt,
+          cursor,
+          lastEventAt: last.created_at,
+          events: events.length,
+          stats: result.stats,
         })
 
         processed += events.length
@@ -332,40 +471,229 @@ export class SyncEngine {
       } catch (err) {
         if (err instanceof CursorDirectionError) {
           // Loud and fatal: continuing would rewrite the mirror with history.
+          this.healthTracker.fatalError(err)
           this.logger.error('cursor direction check failed; stopping', { error: String(err) })
           throw err
         }
         if (isFatal(err)) {
           // A rejected credential will not fix itself; retrying every poll
           // interval would only hide the problem behind a healthy-looking process.
+          this.healthTracker.fatalError(err)
           this.logger.error('authentication failed; stopping', { env: env.name, error: String(err) })
           throw err
         }
+        this.healthTracker.failed(env.name, err)
         this.logger.error('tick failed', { env: env.name, error: String(err) })
       }
     }
+    this.healthTracker.tickCompleted()
     return { processed, stats, rejected }
   }
 
-  /** Poll until `stop()`. */
+  /**
+   * Save the tail position, unless this process stopped being the writer
+   * while the poll ran. Mirror writes are idempotent and staleness-gated, so
+   * a former holder re-applying a batch is harmless; a former holder saving
+   * its older cursor is not, because it rewinds the replacement and makes it
+   * apply the same events again. The destination refuses the write, in the
+   * same statement that makes it, unless this process holds the lease and the
+   * stored position is still the one this poll started from. The second
+   * condition catches a replacement that advanced the cursor and has since
+   * let go, and a backfill that re-captured the position. Nothing is acquired
+   * here: taking a lease is the loop's job, and the heartbeat's. Returns
+   * false when nothing was written.
+   */
+  private async checkpoint(env: string, before: TailState | null, next: TailUpdate): Promise<boolean> {
+    if (await this.state.setTailIfHeld(env, next, this.holder, before)) return true
+    // Refused. The two reasons mean different things to an operator, so look
+    // up which it was; this path is rare enough that one extra read is fine.
+    const lease = await this.destination.getLease(env)
+    if (lease?.holder === this.holder) {
+      this.logger.warn('events cursor moved during this poll; not checkpointing', {
+        env,
+        cursor: before?.cursor ?? null,
+      })
+    } else {
+      this.lostLease(env, lease?.holder ?? null)
+    }
+    return false
+  }
+
+  /**
+   * Poll until `stop()`, as the sole writer. While another process holds the
+   * lease this waits rather than failing: that is the rolling-deploy case,
+   * where the new process must idle until the old one stops.
+   */
   async listen(): Promise<void> {
+    this.healthTracker.listening()
+    try {
+      await this.run()
+    } finally {
+      // However the loop ended, nothing will move the poll timestamps again,
+      // and a probe has to say so rather than report the last good poll.
+      this.healthTracker.stopped()
+    }
+  }
+
+  /** The listen loop: take the lease, poll, idle, until `stop()`. */
+  private async run(): Promise<void> {
     await this.init()
     this.stopping = false
     const interval = this.config.pollIntervalMs ?? 5_000
+    const ttl = this.leaseTtlMs
     this.logger.info('listening', {
       environments: this.config.environments.map((e) => e.name),
       streams: this.streams.length,
       pollIntervalMs: interval,
+      holder: this.holder,
+      leaseTtlMs: ttl,
     })
-    while (!this.stopping) {
-      const { processed } = await this.tick()
-      // Drain fast when there is a backlog; idle politely when there is not.
-      if (!this.stopping && processed === 0) await sleep(interval)
+    // The loop renews before every poll, but a single poll can run longer
+    // than the TTL (a backlog, a slow database), so a background heartbeat
+    // keeps the lease alive mid-tick as well. It is not cleared by `stop()`
+    // on purpose: the final batch after a SIGTERM must stay covered until it
+    // is written.
+    const own = this.startHeartbeat()
+    try {
+      while (!this.stopping) {
+        // Waiting happens outside the serialised section so a webhook nudge
+        // is not held up by a listener that is itself waiting on a lease.
+        const outcome = await this.serialized(async () => {
+          if (this.stopping) return { refused: undefined, processed: 0 }
+          const refused = await this.acquirePass()
+          if (refused) return { refused, processed: 0 }
+          return { refused: undefined, processed: (await this.poll()).processed }
+        })
+        if (outcome.refused) {
+          this.warnRefused(outcome.refused)
+          await sleep(interval)
+          continue
+        }
+        // Drain fast when there is a backlog; idle politely when there is not.
+        if (!this.stopping && outcome.processed === 0) await sleep(interval)
+      }
+    } finally {
+      // Inside the serialised section, so a `tick()` queued while the loop
+      // slept — it borrowed this heartbeat rather than starting its own —
+      // finishes under a live lease before the timer stops. Then hand over
+      // immediately: without the release a replacement waits a full TTL.
+      await this.serialized(async () => {
+        this.stopHeartbeat(own)
+        await this.releaseHeld()
+      })
     }
   }
 
   stop(): void {
     this.stopping = true
+  }
+
+  /**
+   * The in-memory view of this engine: state, counters, last poll and last
+   * error per environment. Synchronous and free of I/O, unlike `status()`,
+   * so it is what a liveness probe or a metrics scrape should read. Serve it
+   * with `startHealthServer`.
+   */
+  health(): EngineHealth {
+    return this.healthTracker.snapshot()
+  }
+
+  /**
+   * Renew everything in `held` every third of the TTL, in the background.
+   * Unref'd so it never keeps a finished process alive. One renewal at a
+   * time: a slow database must not pile them up behind itself. Returns the
+   * timer so the caller stops only the one it started: a listener starting
+   * while a standalone tick runs replaces the tick's timer and must outlive it.
+   */
+  private startHeartbeat(): NodeJS.Timeout {
+    clearInterval(this.heartbeat)
+    const timer = setInterval(
+      () => {
+        this.renewal ??= this.renewHeld().finally(() => {
+          this.renewal = undefined
+        })
+      },
+      Math.max(1, Math.floor(this.leaseTtlMs / 3)),
+    )
+    timer.unref()
+    this.heartbeat = timer
+    return timer
+  }
+
+  private stopHeartbeat(timer: NodeJS.Timeout): void {
+    clearInterval(timer)
+    if (this.heartbeat === timer) this.heartbeat = undefined
+  }
+
+  /**
+   * One attempt to take or renew every environment's lease. Returns the first
+   * refusal, or undefined once all are held. Renewing the ones already held
+   * on every pass means nothing we hold lapses while we wait for the rest.
+   *
+   * Environments are claimed in name order, and a pass stops at the first
+   * refusal and gives back whatever it holds. Two embedded engines whose
+   * environment lists overlap could otherwise each hold the lease the other
+   * is waiting for, with the heartbeat keeping both half-claims alive forever.
+   */
+  private async acquirePass(): Promise<LeaseRefusal | undefined> {
+    const ordered = this.config.environments.map((e) => e.name).sort()
+    for (const env of ordered) {
+      const r = await this.destination.acquireLease(env, this.holder, this.leaseTtlMs)
+      if (r.acquired) {
+        this.held.add(env)
+        continue
+      }
+      // We had it and it lapsed: this process stalled for longer than the
+      // TTL. The other process is now the writer; fall back to waiting.
+      if (this.held.has(env)) this.lostLease(env, r.holder)
+      await this.releaseHeld()
+      return { env, holder: r.holder, expiresAt: r.expiresAt }
+    }
+    return undefined
+  }
+
+  private warnRefused(refusal: LeaseRefusal): void {
+    if (Date.now() - this.lastLeaseWarn < LEASE_WARN_INTERVAL_MS) return
+    this.lastLeaseWarn = Date.now()
+    this.logger.warn('events tail lease is held by another process; waiting', { ...refusal })
+  }
+
+  /** Heartbeat body. Failures are logged, not thrown: the next loop pass renews again. */
+  private async renewHeld(): Promise<void> {
+    for (const env of [...this.held]) {
+      try {
+        const r = await this.destination.acquireLease(env, this.holder, this.leaseTtlMs)
+        if (!r.acquired) this.lostLease(env, r.holder)
+      } catch (err) {
+        this.logger.warn('lease renewal failed', { env, error: String(err) })
+      }
+    }
+  }
+
+  private lostLease(env: string, holder: string | null): void {
+    this.held.delete(env)
+    this.logger.error('lost the events tail lease; another process took over', { env, holder })
+  }
+
+  private releaseHeld(): Promise<void> {
+    return this.release([...this.held])
+  }
+
+  private async release(envs: string[]): Promise<void> {
+    // Acquiring is an upsert, so a renewal still in flight would put back a
+    // row deleted here and the replacement would wait a full TTL after a
+    // clean stop. Let it finish first. Then forget everything before the
+    // first release, so a heartbeat firing mid-release finds nothing to renew.
+    await this.renewal
+    for (const env of envs) this.held.delete(env)
+    for (const env of envs) {
+      try {
+        await this.destination.releaseLease(env, this.holder)
+      } catch (err) {
+        // Not worth failing a shutdown over: the lease expires by itself.
+        this.logger.warn('lease release failed; it will expire on its own', { env, error: String(err) })
+      }
+    }
   }
 
   async reconcile(options: { repair?: boolean; streams?: string[] } = {}): Promise<{
@@ -430,6 +758,7 @@ export class SyncEngine {
         cursorAgeDays: cursorAgeDays(tail?.lastEventAt),
         lastPolledAt: tail?.lastPolledAt ?? null,
         pollAgeSeconds: Number.isFinite(polled) ? (Date.now() - polled) / 1000 : null,
+        lease: await this.destination.getLease(env.name),
         // A count, not a listing: `status` runs on every monitoring poll, and
         // each rejected row carries a whole event payload.
         rejected: await this.destination.rejectedCount(env.name),
@@ -519,6 +848,7 @@ export class SyncEngine {
 
   async close(): Promise<void> {
     this.stop()
+    await this.serialized(() => this.releaseHeld())
     await this.destination.close()
   }
 }

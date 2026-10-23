@@ -109,3 +109,19 @@ jobs:
         run: |
           docker run --rm "$IMAGE" | grep -q '^Usage'
           docker run --rm "$IMAGE" streams | jq -e 'any(.[]; .stream == "users")'
+
+      # The HEALTHCHECK has to find the listener on the port `listen` resolved,
+      # whether that came from the variable or from a `--health-port` flag on
+      # the entrypoint's command line. A stand-in server plays the listener,
+      # so no database or credentials are involved.
+      - name: Health check finds the listener's port
+        env:
+          IMAGE: sync-${{ matrix.destination }}:ci
+          SERVER: require('node:http').createServer((_, res) => res.end()).listen(9000)
+        run: |
+          flag=$(docker run -d --entrypoint node "$IMAGE" -e "$SERVER" -- listen --health-port 9000)
+          var=$(docker run -d --entrypoint node -e WORKOS_SYNC_HEALTH_PORT=9000 "$IMAGE" -e "$SERVER" -- listen)
+          sleep 2
+          docker exec "$flag" node healthcheck.mjs
+          docker exec "$var" node healthcheck.mjs
+          docker rm -f "$flag" "$var" >/dev/null

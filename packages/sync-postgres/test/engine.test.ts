@@ -3,7 +3,14 @@
  * fake WorkOS API and a real Postgres.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
+import {
+  SyncEngine,
+  WorkOSClient,
+  LeaseHeldError,
+  StateStore,
+  silentLogger,
+  type Destination,
+} from '@workos/sync-engine'
 import { createTestDb } from './helpers/pg.js'
 import { FakeWorkOS, resetIds, id } from '../../sync-engine/test/helpers/fake-workos.js'
 import { PostgresDestination } from '../src/destination.js'
@@ -20,7 +27,20 @@ const TIER1 = [
   'auth_attempts',
 ]
 
-function makeEngine(db: SqlClient, fake: FakeWorkOS, streams = TIER1, extra = {}) {
+function makeEngine(
+  db: SqlClient,
+  fake: FakeWorkOS,
+  streams = TIER1,
+  extra = {},
+  /** Runs before every API call, so a test can make something happen mid-poll. */
+  beforeFetch?: () => Promise<void>,
+) {
+  const fetchImpl: typeof fetch = beforeFetch
+    ? async (input, init) => {
+        await beforeFetch()
+        return fake.fetchImpl(input, init)
+      }
+    : fake.fetchImpl
   return new SyncEngine(
     {
       destination: new PostgresDestination({ db, schema: 'workos' }),
@@ -35,7 +55,7 @@ function makeEngine(db: SqlClient, fake: FakeWorkOS, streams = TIER1, extra = {}
         new WorkOSClient({
           apiKey: 'sk_test_1',
           apiUrl: 'http://fake.workos.local',
-          fetchImpl: fake.fetchImpl,
+          fetchImpl,
           pageSize: 100,
         }),
     },
@@ -216,6 +236,25 @@ describe('sync engine', () => {
     )
     expect(Number(live.rows[0]!.n)).toBe(0)
     expect(await count('users')).toBe(1)
+  })
+
+  it('drops a deleted user from the live view while the base table keeps the tombstone', async () => {
+    const gone = fake.createUser({ email: 'gone@example.com' })
+    fake.createUser({ email: 'stays@example.com' })
+    const engine = makeEngine(db, fake)
+    await engine.backfill()
+    await engine.tick()
+    expect(await count('users')).toBe(2)
+    expect(await count('users_live')).toBe(2)
+
+    fake.deleteUser(gone['id'] as string)
+    await engine.tick()
+
+    // No `where _deleted_at is null` needed: that is the point of the view.
+    expect(await count('users')).toBe(2)
+    expect(await count('users_live')).toBe(1)
+    const live = await db.query<{ email: string }>(`select email from workos.users_live`)
+    expect(live.rows.map((r) => r.email)).toEqual(['stays@example.com'])
   })
 
   it('archives subscribed events that have no mirror table, instead of throwing', async () => {
@@ -706,6 +745,310 @@ describe('reconciliation', () => {
     row = await db.query<{ external_id: string | null }>(`select external_id from workos.users`)
     expect(row.rows[0]!.external_id).toMatch(/^ext_/)
     expect(user['id']).toBeTruthy()
+  })
+})
+
+describe('single-writer lease', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+  })
+  afterEach(async () => {
+    await db.close()
+  })
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const until = async (ok: () => Promise<boolean>, timeoutMs = 5_000) => {
+    const deadline = Date.now() + timeoutMs
+    while (!(await ok())) {
+      if (Date.now() > deadline) throw new Error('condition not met in time')
+      await sleep(10)
+    }
+  }
+  const count = async (table: string) => {
+    const r = await db.query<{ n: string }>(`select count(*)::text as n from workos.${table}`)
+    return Number(r.rows[0]!.n)
+  }
+  const deferred = () => {
+    let resolve!: () => void
+    const promise = new Promise<void>((r) => {
+      resolve = r
+    })
+    return { promise, resolve }
+  }
+  /**
+   * A destination whose lease calls the test can slow down or watch: a
+   * database that answers late at exactly the wrong moment.
+   */
+  const instrumented = (
+    dest: PostgresDestination,
+    hooks: { beforeAcquire?: () => Promise<void>; onRelease?: () => void },
+  ): Destination =>
+    new Proxy(dest, {
+      get(target, prop) {
+        if (prop === 'acquireLease') {
+          return async (...args: Parameters<Destination['acquireLease']>) => {
+            await hooks.beforeAcquire?.()
+            return target.acquireLease(...args)
+          }
+        }
+        if (prop === 'releaseLease') {
+          return async (...args: Parameters<Destination['releaseLease']>) => {
+            hooks.onRelease?.()
+            return target.releaseLease(...args)
+          }
+        }
+        const v = Reflect.get(target, prop, target)
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    })
+
+  it('tick() refuses to run while another process holds the lease', async () => {
+    fake.createUser()
+    const engine = makeEngine(db, fake)
+    await engine.init()
+    // Another process, as far as the database can tell.
+    const other = new PostgresDestination({ db, schema: 'workos' })
+    const theirs = await other.acquireLease('prod', 'other-host:42:abc', 60_000)
+
+    const err = await engine.tick().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LeaseHeldError)
+    expect((err as LeaseHeldError).holder).toBe('other-host:42:abc')
+    expect((err as LeaseHeldError).expiresAt).toBe(theirs.expiresAt)
+    expect((err as LeaseHeldError).message).toContain('other-host:42:abc')
+    // Nothing was applied, and the other process still holds the lease.
+    expect(await count('users')).toBe(0)
+    expect(await other.getLease('prod')).toMatchObject({ holder: 'other-host:42:abc' })
+
+    // Once it lets go, a cron tick runs and leaves the lease free behind it.
+    await other.releaseLease('prod', 'other-host:42:abc')
+    expect((await engine.tick()).processed).toBe(1)
+    expect(await other.getLease('prod')).toBeNull()
+  })
+
+  it('listen() waits for the lease, takes over when it is released, and gives it back on stop', async () => {
+    fake.createUser()
+    const warnings: Record<string, unknown>[] = []
+    const engine = makeEngine(db, fake, TIER1, {
+      pollIntervalMs: 20,
+      leaseTtlMs: 2_000,
+      logger: { ...silentLogger, warn: (_m: string, f?: Record<string, unknown>) => warnings.push(f ?? {}) },
+    })
+    await engine.init()
+    const other = new PostgresDestination({ db, schema: 'workos' })
+    await other.acquireLease('prod', 'old-process', 60_000)
+
+    // The rolling-deploy case: the new process starts while the old one is
+    // still tailing. It must idle, not fail and not write.
+    const listening = engine.listen()
+    await sleep(150)
+    expect(await count('users')).toBe(0)
+    expect(warnings).toContainEqual(expect.objectContaining({ env: 'prod', holder: 'old-process' }))
+    // Waiting is logged once, not once per poll.
+    expect(warnings.filter((w) => w['holder'] === 'old-process')).toHaveLength(1)
+
+    // The old process stops and releases; the new one picks up within a poll.
+    await other.releaseLease('prod', 'old-process')
+    await until(async () => (await count('users')) === 1)
+    const mine = await other.getLease('prod')
+    expect(mine?.holder).toMatch(/^.+:\d+:[0-9a-f]{6}$/)
+    expect((await engine.status())['prod']!.lease).toEqual(mine)
+
+    // While it is tailing, a cron tick elsewhere is refused.
+    expect((await other.acquireLease('prod', 'cron', 60_000)).holder).toBe(mine!.holder)
+
+    engine.stop()
+    await listening
+    // Released immediately, not left to expire: the replacement need not wait.
+    expect(await other.getLease('prod')).toBeNull()
+    expect((await engine.status())['prod']!.lease).toBeNull()
+  })
+
+  it('refuses a lease TTL that would expire on arrival', () => {
+    // A zero or NaN TTL makes every acquire succeed, which is no lease at all.
+    for (const leaseTtlMs of [0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => makeEngine(db, fake, TIER1, { leaseTtlMs })).toThrow(/leaseTtlMs/)
+    }
+    expect(() => makeEngine(db, fake, TIER1, { leaseTtlMs: 1 })).not.toThrow()
+  })
+
+  it('does not checkpoint after losing the lease mid-poll', async () => {
+    fake.createUser()
+    const other = new PostgresDestination({ db, schema: 'workos' })
+    let stalled = false
+    // The poll stalls past the TTL while fetching and a replacement takes
+    // over in the meantime. The database clock is moved rather than the test.
+    const engine = makeEngine(db, fake, TIER1, {}, async () => {
+      if (stalled) return
+      stalled = true
+      await db.query(`update workos."_sync_lease" set expires_at = now() - interval '1 second'`)
+      await other.acquireLease('prod', 'replacement', 60_000)
+    })
+    await engine.init()
+    const r = await engine.tick()
+
+    // The batch it had already fetched is applied, which is idempotent, but
+    // the cursor is left where the replacement will look for it.
+    expect(await count('users')).toBe(1)
+    expect(r.processed).toBe(0)
+    const status = await engine.status()
+    expect(status['prod']!.cursor).toBeNull()
+    expect(status['prod']!.lastPolledAt).toBeNull()
+    expect(await other.getLease('prod')).toMatchObject({ holder: 'replacement' })
+  })
+
+  it('keeps a slow standalone tick covered so it can still checkpoint', async () => {
+    fake.createUser()
+    const other = new PostgresDestination({ db, schema: 'workos' })
+    let slowed = false
+    // A cron tick with no listener: nothing else renews for it. The fetch
+    // outlasts the TTL, which must not cost it the lease and its checkpoint.
+    const engine = makeEngine(db, fake, TIER1, { leaseTtlMs: 150 }, async () => {
+      if (slowed) return
+      slowed = true
+      await sleep(400)
+    })
+    await engine.init()
+    const r = await engine.tick()
+
+    expect(r.processed).toBe(1)
+    expect((await engine.status())['prod']!.cursor).not.toBeNull()
+    // And it gives the lease back when it is done, as any tick does.
+    expect(await other.getLease('prod')).toBeNull()
+  })
+
+  it('does not overwrite a position that moved under it, even while it holds the lease', async () => {
+    fake.createUser()
+    const other = new PostgresDestination({ db, schema: 'workos' })
+    let moved = false
+    // The lease is intact throughout, so it cannot be the guard. A backfill
+    // re-capturing the position mid-poll, or a replacement that advanced the
+    // cursor and let go before this process woke, both look like this.
+    const engine = makeEngine(db, fake, TIER1, {}, async () => {
+      if (moved) return
+      moved = true
+      await new StateStore(other).setTail('prod', { cursor: 'event_from_elsewhere' })
+    })
+    await engine.init()
+    const r = await engine.tick()
+
+    expect(r.processed).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBe('event_from_elsewhere')
+    expect(await other.getLease('prod')).toBeNull()
+  })
+
+  it('two listeners with the same environments in different orders do not block each other', async () => {
+    fake.createUser()
+    const engineFor = (environments: { name: string; apiKey: string }[]) =>
+      new SyncEngine(
+        {
+          destination: new PostgresDestination({ db, schema: 'workos' }),
+          environments,
+          streams: TIER1,
+          logger: silentLogger,
+          lagWindowMs: 0,
+          pollIntervalMs: 20,
+        },
+        {
+          clientFor: () =>
+            new WorkOSClient({ apiKey: 'k', apiUrl: 'http://fake.workos.local', fetchImpl: fake.fetchImpl }),
+        },
+      )
+    const ab = engineFor([
+      { name: 'a', apiKey: 'k' },
+      { name: 'b', apiKey: 'k' },
+    ])
+    const ba = engineFor([
+      { name: 'b', apiKey: 'k' },
+      { name: 'a', apiKey: 'k' },
+    ])
+    await ab.init()
+    const runs = [ab.listen(), ba.listen()]
+
+    // Claimed in list order, each would take its first environment and wait
+    // for the other's forever. In one shared order, one of them gets both.
+    await until(async () => (await count('users')) === 2)
+    const other = new PostgresDestination({ db, schema: 'workos' })
+    const [a, b] = await Promise.all([other.getLease('a'), other.getLease('b')])
+    expect(a).not.toBeNull()
+    expect(b?.holder).toBe(a!.holder)
+
+    ab.stop()
+    ba.stop()
+    await Promise.all(runs)
+    expect(await other.getLease('a')).toBeNull()
+    expect(await other.getLease('b')).toBeNull()
+  })
+
+  it("a tick overlapping listen() startup does not release the listener's lease", async () => {
+    fake.createUser()
+    let acquires = 0
+    const listenerAcquiring = deferred()
+    const dest = instrumented(new PostgresDestination({ db, schema: 'workos' }), {
+      // Every acquire answers late, so the listener and the nudge would
+      // otherwise both be mid-acquire at once, under the same holder.
+      beforeAcquire: async () => {
+        if (++acquires === 1) listenerAcquiring.resolve()
+        await sleep(30)
+      },
+    })
+    const engine = makeEngine(db, fake, TIER1, { destination: dest, pollIntervalMs: 500 })
+    await engine.init()
+    const other = new PostgresDestination({ db, schema: 'workos' })
+
+    const listening = engine.listen()
+    await listenerAcquiring.promise
+    // A webhook nudge arriving as the listener starts.
+    await engine.processWebhook()
+    // It ran under the listener's claim and left it in place.
+    expect(await other.getLease('prod')).not.toBeNull()
+    expect(await count('users')).toBe(1)
+
+    engine.stop()
+    await listening
+    expect(await other.getLease('prod')).toBeNull()
+  })
+
+  it('stop() waits for a renewal in flight rather than leaving a lease behind', async () => {
+    fake.createUser()
+    let gate: Promise<void> | undefined
+    let acquires = 0
+    let releases = 0
+    const dest = instrumented(new PostgresDestination({ db, schema: 'workos' }), {
+      beforeAcquire: async () => {
+        acquires++
+        await gate
+      },
+      onRelease: () => {
+        releases++
+      },
+    })
+    const engine = makeEngine(db, fake, TIER1, { destination: dest, pollIntervalMs: 300, leaseTtlMs: 150 })
+    await engine.init()
+    const other = new PostgresDestination({ db, schema: 'workos' })
+
+    const listening = engine.listen()
+    await until(async () => (await engine.status())['prod']!.lastPolledAt !== null)
+    // The loop is idle for a poll interval, so the next acquire is the
+    // heartbeat's. It hangs, as on a database that answers late.
+    const slow = deferred()
+    gate = slow.promise
+    const before = acquires
+    await until(async () => acquires > before)
+
+    engine.stop()
+    // Long enough for the loop to wake and reach its release. Acquiring is an
+    // upsert, so releasing while a renewal is pending would put the row back.
+    await sleep(400)
+    expect(releases).toBe(0)
+
+    slow.resolve()
+    await listening
+    expect(await other.getLease('prod')).toBeNull()
   })
 })
 

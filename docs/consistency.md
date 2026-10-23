@@ -119,9 +119,12 @@ Deleted objects are marked, not removed:
 - `_deleted_at IS NOT NULL`: deleted upstream, payload retained
 - no row at all: never synced, or hard-deleted by `redact`
 
-Filter on `_deleted_at IS NULL` for live data. The distinction between "deleted"
-and "never seen" is usually worth having, and the retained payload is the only
-record of what an object looked like when it was removed.
+Filter on `_deleted_at IS NULL` for live data, or read the generated
+`<table>_live` view, which is the table with that filter built in
+([Live views](schema.md#live-views)). The distinction between "deleted" and
+"never seen" is only visible on the base table, and is usually worth having:
+the retained payload is the only record of what an object looked like when it
+was removed.
 
 Once set, `_deleted_at` is never cleared on a mirror object. A late `updated`
 event refreshes the payload but does not resurrect the row, because WorkOS ids

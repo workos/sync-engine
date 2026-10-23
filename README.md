@@ -18,11 +18,13 @@ Against a mirror, it becomes one statement:
 
 ```sql
 SELECT o.name AS organization, u.email, m.role_slug
-   FROM workos.organization_memberships m
-      JOIN workos.users u ON u.id = m.user_id AND u._env = m._env
-      JOIN workos.organizations o ON o.id = m.organization_id AND o._env = m._env
-   WHERE u._deleted_at IS NULL AND m._deleted_at IS NULL;
+   FROM workos.organization_memberships_live m
+      JOIN workos.users_live u ON u.id = m.user_id AND u._env = m._env
+      JOIN workos.organizations_live o ON o.id = m.organization_id AND o._env = m._env;
 ```
+
+The `_live` views are generated next to the tables and hide deleted rows; the
+base tables keep them as tombstones for when you want to ask who left.
 
 ## Try it in 30 seconds
 
@@ -100,16 +102,20 @@ the same setting, the flag wins.
 | `WORKOS_SYNC_POLL_MS`             | `5000`                              | Idle wait between polls, in ms, when the last poll returned nothing.                                                         |
 | `WORKOS_SYNC_LAG_MS`              | `5000`                              | Hold back events younger than this, in ms, before advancing the cursor.                                                      |
 | `WORKOS_SYNC_MAX_EVENTS_PER_TICK` | one page (100)                      | Events to apply per poll, fetched across as many pages as needed.                                                            |
+| `WORKOS_SYNC_HEALTH_PORT`         | off (`8080` in the container image) | `listen` only: serve `GET /healthz` and `GET /metrics` on this port, from in-memory state, with no database query.          |
+| `WORKOS_SYNC_HEALTH_HOST`         | `0.0.0.0`                           | Interface the health server binds.                                                                                           |
+| `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` | `60000`                          | `/healthz` returns 503 once any environment's last successful poll is older than this.                                       |
+| `WORKOS_SYNC_LEASE_TTL_MS`        | `60000`                             | How long the tail lease outlives a crashed listener, in ms; at least 1. The most lag a crash can add before a replacement takes over. |
 | `LOG_LEVEL`                       | `info`                              | `debug`, `info`, `warn`, `error` or `silent`. Logs are JSON lines on stdout.                                                 |
 
 ### Commands
 
 | Command     | Flags         | What it does                                                                                                 |
 | ----------- | ------------- | ------------------------------------------------------------------------------------------------------------ |
-| `init`      |               | Create the schema and bookkeeping tables. Idempotent; safe on every deploy.                                  |
+| `init`      | `--repair`    | Create the schema and bookkeeping tables. Idempotent; safe on every deploy. Exits 2 if a generated column has drifted from the catalog, and fails if a generated `_live` view must be rebuilt; `--repair` rebuilds columns from `_raw` and views with their grants carried over. |
 | `backfill`  | `--resume`    | Load current state from the REST list endpoints. `--resume` continues from the last checkpoint.              |
-| `listen`    |               | Poll the Events API continuously. Finishes the current batch on `SIGINT` or `SIGTERM`.                       |
-| `tick`      |               | One poll, then exit. For a cron job instead of a long-running process.                                       |
+| `listen`    | `--health-port <n>` | Poll the Events API continuously as the sole writer; waits if another listener holds the lease. Finishes the current batch on `SIGINT` or `SIGTERM`. With a port, serves `/healthz` and `/metrics`. |
+| `tick`      |               | One poll, then exit. For a cron job instead of a long-running process. Exits 3 if a listener holds the lease. |
 | `reconcile` | `--repair`    | Diff ids against the API. Exits 2 on drift; `--repair` tombstones missed deletes and inserts missed creates. |
 | `refresh`   |               | Re-list top-level streams to refresh fields that event payloads omit.                                        |
 | `status`    |               | Cursor, time since the last successful poll, and per-stream row counts, tombstones and lag.                  |
@@ -161,7 +167,9 @@ A field added upstream can never break ingest — it is queryable as
 `_raw->>'field'` immediately, and promoting it to a typed column is pure DDL
 computed from rows already present. There are **no foreign keys**: events
 routinely arrive with children before parents, and an FK turns that ordering
-artifact into a stuck stream.
+artifact into a stuck stream. Every mirror table also gets a `<table>_live`
+view (`workos.users_live`) that is the table minus its tombstoned rows, so the
+common query needs no `_deleted_at` filter.
 
 ## What it mirrors
 

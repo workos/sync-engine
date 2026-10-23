@@ -141,7 +141,10 @@ export interface SyncEngineConfig {
    * Additional typed columns to project out of `_raw`, keyed by stream name.
    * Each becomes a `GENERATED ALWAYS AS ... STORED` column on the next
    * `init()`, computed from rows already present. Adding a column never
-   * rewrites data; changing or removing one you added before is manual DDL.
+   * rewrites data. Changing one you added before (its path or type) is
+   * detected on the next `init()` as column drift and can be rebuilt from
+   * `_raw` with `init --repair` (`repairColumns` on the Postgres destination);
+   * removing one leaves the column in place and reports it as an orphan.
    */
   extraColumns?: Record<string, ColumnDef[]>
   /**
@@ -176,6 +179,16 @@ export interface SyncEngineConfig {
    * after a mid-tick crash.
    */
   maxEventsPerTick?: number
+  /**
+   * How long the events-tail lease lasts without renewal, in ms. Defaults to
+   * 60 000 and must be at least 1. The engine renews it every third of this
+   * while it polls, in `listen` and `tick` alike, so it only expires when the
+   * holder has crashed or stalled; that makes it the worst-case delay before
+   * a replacement process takes over after a crash. A clean stop releases
+   * the lease immediately. A process that stalls past it loses the lease to
+   * its replacement, and the batch it was applying is not checkpointed.
+   */
+  leaseTtlMs?: number
   logger?: Logger
 }
 

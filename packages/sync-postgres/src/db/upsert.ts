@@ -31,7 +31,7 @@ import { emptyStats, type Row, type StreamDef, type WriteMode, type WriteStats }
 import type { SqlClient } from './client.js'
 import { quoteIdent, safeIdentifier, ENV, RAW } from '../schema/ddl.js'
 
-function readPath(data: Record<string, unknown>, path: string | string[]): unknown {
+export function readPath(data: Record<string, unknown>, path: string | string[]): unknown {
   const parts = Array.isArray(path) ? path : [path]
   let cur: unknown = data
   for (const p of parts) {
@@ -142,7 +142,7 @@ async function runBatch(
   return { created, updated, skipped: attempted - res.rows.length }
 }
 
-const chunk = <T>(items: T[], size: number): T[][] => {
+export const chunk = <T>(items: T[], size: number): T[][] => {
   const out: T[][] = []
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
   return out

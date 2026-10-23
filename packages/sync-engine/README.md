@@ -71,18 +71,55 @@ and the staleness gate decides which version wins.
 | `lagWindowMs`      | `5000`                              | Never advance the cursor past events younger than this.                                                                                       |
 | `pageSize`         | `100`                               | Page size for list and event calls.                                                                                                           |
 | `maxEventsPerTick` | one page                            | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive.                       |
+| `leaseTtlMs`       | `60000`                             | How long the events-tail lease outlives a crashed process; at least 1. Renewed every third of this while polling; a clean stop releases it immediately. |
 | `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                               |
 
 Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
-`reconcile({ repair, streams })`, `refresh()`, `status()`, `redact(userId)`,
-`rejected({ ids })`, `replayRejected({ ids })`, `processWebhook()`, `close()`.
-Every method applies the schema first, so `init()` is optional.
+`reconcile({ repair, streams })`, `refresh()`, `status()`, `health()`,
+`redact(userId)`, `rejected({ ids })`, `replayRejected({ ids })`,
+`processWebhook()`, `close()`. Every method except `health()` applies the
+schema first, so `init()` is optional.
+
+The tail has one writer per environment. `listen()` takes a lease in the
+destination before polling and renews it while it runs; if another process
+holds it, `listen()` waits, which is what a rolling deploy needs. `tick()`
+takes the lease for one poll, renewing it while the poll runs, and throws
+`LeaseHeldError` (with `holder` and `expiresAt`) instead of waiting; on an
+engine that is also listening, it runs
+after the listener's current poll, under the listener's lease. With several
+environments, `listen()` claims all of them, in name order, before polling,
+and gives partial claims back while it waits for the rest, so two engines
+whose lists overlap cannot block each other. A process that stalls past the
+TTL loses the lease to its replacement: it still applies the batch it had
+fetched, which is idempotent, but the destination refuses its checkpoint, so
+the replacement's cursor is never rewound. `backfill`, `reconcile`, `refresh`, `status` and
+`redact` do not take the lease; they are idempotent and run safely alongside
+a tail.
 
 `status()` reports, per environment, the cursor, `pollAgeSeconds` (time since
 the last successful poll; alert on this), `cursorAgeDays` (age of the newest
 event applied; distance from the 90-day retention cliff, not liveness),
-`rejected` (events quarantined by the tail; alert on this too), and per-stream
-row counts, tombstones, staleness and lag.
+`lease` (who is tailing it now, or `null`), `rejected` (events quarantined by
+the tail; alert on this too), and per-stream row counts, tombstones,
+staleness and lag.
+
+`health()` is the same liveness picture without the database: a synchronous
+snapshot of in-memory state (`starting` / `listening` / `stopped`, any fatal
+error, and per environment the last poll, last event, cursor, last error and
+running counters). `startHealthServer(engine, { port, host?, maxPollAgeMs? })`
+serves it on `GET /healthz` (`200` or `503`) and `GET /metrics` (Prometheus
+text), which is what the `listen` command does when given a port. To mount
+the same endpoints on a server you already run, `healthReport(engine.health(),
+{ maxPollAgeMs })` gives the JSON body and verdict, and
+`renderMetrics(engine.health())` the exposition text.
+
+```ts
+import { startHealthServer } from "@workos/sync-engine";
+
+const health = await startHealthServer(engine, { port: 8080 });
+await engine.listen();
+await health.close();
+```
 
 A rejected credential (401 or 403) and a cursor that pages backwards are
 fatal: the engine stops rather than retrying. Everything else is retried or
@@ -105,6 +142,9 @@ entirely yours.
 import type {
   Destination,
   FreshnessRow,
+  IdDiff,
+  Lease,
+  LeaseResult,
   Logger,
   RejectedEvent,
   Row,
@@ -130,6 +170,11 @@ class MyDestination implements Destination {
 
   liveIds(stream: StreamDef, env: string): Promise<string[]>;
   rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>;
+  diffIds(
+    stream: StreamDef,
+    env: string,
+    remote: AsyncIterable<Record<string, unknown>[]>,
+  ): Promise<IdDiff>;
   freshness(
     stream: StreamDef,
     env: string,
@@ -143,6 +188,12 @@ class MyDestination implements Destination {
 
   getState<T>(env: string, stream: string): Promise<T | null>;
   setState(env: string, stream: string, state: unknown): Promise<void>;
+  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean>;
+
+  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult>;
+  releaseLease(env: string, holder: string): Promise<void>;
+  getLease(env: string): Promise<Lease | null>;
+
 
   reject(
     env: string,
@@ -155,7 +206,7 @@ class MyDestination implements Destination {
 }
 ```
 
-The engine relies on five properties of your implementation. Each one exists
+The engine relies on seven properties of your implementation. Each one exists
 because of a documented failure in a comparable sync engine.
 
 1. **Staleness gate, `>=` not `>`.** `upsert` rejects a row whose `updatedAt`
@@ -175,11 +226,41 @@ because of a documented failure in a comparable sync engine.
    resolves. A write must not be buffered past its own call.
 5. **`init` is called before every operation.** It must be idempotent and
    cheap once the schema is current — cache that, rather than re-querying.
+6. **`acquireLease` is atomic.** Of two processes asking for the same
+   `(env)` at once, exactly one gets `acquired: true`; the other is told the
+   holder. It succeeds when the lease is free, expired by the _database's_
+   clock, or already held by `holder` (a renewal). `releaseLease` is a no-op
+   for anyone but the holder, and `getLease` returns `null` for an expired
+   row. Without this, a rolling deploy has two processes advancing one cursor.
+   In SQL it is one `INSERT ... ON CONFLICT DO UPDATE ... WHERE` on a row
+   keyed by `(syncId, env)`; see `db/lease.ts` in the Postgres destination.
+7. **The checkpoint is fenced by the lease.** `setStateIfHeld` writes only
+   if `holder` holds the unexpired lease for `env` _and_ the stored state
+   still equals `expected` (`null` for no row), with both checked in the same
+   statement as the write. The engine saves the tail cursor through it, so a
+   process that stalled past its lease, or whose position a backfill
+   re-captured meanwhile, is refused by the database rather than by a check
+   made a moment earlier. In SQL it is an `INSERT ... SELECT ... WHERE EXISTS
+   (lease) ... ON CONFLICT DO UPDATE ... WHERE`; also in `db/lease.ts`.
 
 `WriteStats` (`created` / `updated` / `skipped` / `deleted`) is a health metric
 the engine logs but never branches on; a database that cannot tell an insert
 from an update may approximate the split. `liveIds` means non-tombstoned rows,
 in a stable order. `rawRows` returns stored payloads, tombstoned or not.
+
+`diffIds` is the reconcile set difference. The engine streams the stream's
+list endpoint to it one page at a time; the destination must stage those pages
+in the database and diff them there against the live rows, so memory is
+bounded by the drift rather than the stream. It returns `matched`, the
+`localOnly` ids (only ever tombstoned) and the `remoteOnly` payloads (only
+ever re-inserted). The live set must be captured before the first page is
+consumed: listing takes time and the tail keeps writing, so a row inserted
+mid-listing must not become `localOnly` and be tombstoned by repair. The
+engine reads nothing from the destination while `diffIds` runs, so an
+implementation may hold one pinned connection for the duration. A destination
+with nothing to stage into can delegate to the exported `diffIdsInMemory`,
+which is the old in-process algorithm, and accept that its memory grows with
+the stream.
 
 The last five methods are the **quarantine store**, separate from the mirror.
 `reject` stores whole raw events keyed by `(env, eventId)` — the archive write

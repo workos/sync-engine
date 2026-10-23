@@ -25,6 +25,10 @@ npx workos-sync-postgres status
     "cursorAgeDays": 0.0004,
     "lastPolledAt": "2026-10-22T18:04:11.902Z",
     "pollAgeSeconds": 3.1,
+    "lease": {
+      "holder": "sync-7f9c4:1:a3f1b2",
+      "expiresAt": "2026-10-22T18:05:11.902Z"
+    },
     "rejected": 0,
     "streams": [
       {
@@ -55,6 +59,48 @@ Two of these numbers look similar but mean different things:
   deterministically. The tail kept going, so poll age looks healthy, but the
   objects those events describe are missing or stale until you replay them.
   **Alert on this too.** See [Rejected events](#rejected-events).
+
+`lease` names the process currently tailing this environment, as
+`hostname:pid:suffix`, and when its claim lapses if it stops renewing. It is
+`null` when nothing is listening, which alongside a climbing `pollAgeSeconds`
+tells you the poller is gone rather than stuck.
+
+`status` opens a database connection and queries every stream, which is the
+wrong shape for something that runs every few seconds. The same poll age is
+also served by `listen` itself, from memory, when `WORKOS_SYNC_HEALTH_PORT`
+is set (the container image sets it to `8080`):
+
+```bash
+curl -s localhost:8080/healthz
+```
+
+```json
+{
+  "state": "listening",
+  "fatal": null,
+  "startedAt": "2026-10-22T17:58:02.114Z",
+  "healthy": true,
+  "environments": {
+    "production": {
+      "lastPolledAt": "2026-10-22T18:04:11.902Z",
+      "pollAgeSeconds": 3.1,
+      "lastEventAt": "2026-10-22T18:04:09.471Z",
+      "cursor": "event_01HXXXXXXXXXXXXXXXXXXXXXX",
+      "lastError": null,
+      "counters": { "ticks": 71, "events": 42, "created": 3, "updated": 38, "skipped": 1, "deleted": 0, "errors": 0 }
+    }
+  }
+}
+```
+
+The status code is the verdict: `200` while `state` is `starting` (the
+process is up, the first poll has not finished) and while every environment
+has polled successfully within `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` (default
+60 seconds); `503` once any environment's poll is older than that, once the
+engine has stopped on a fatal error, or once `listen` has returned. No
+request to it touches the database, so it keeps answering when the database
+is the thing that is down, and the answer is then a `503` from a climbing
+poll age rather than a timeout.
 
 ## What to monitor
 
@@ -108,13 +154,15 @@ SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS events
 
 | Alert                  | Condition                                                      | Why                                                                                            |
 | ---------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Sync stalled           | `pollAgeSeconds > 300`, or `null` long after deploy            | The poller has stopped.                                                                        |
+| Sync stalled           | `pollAgeSeconds > 300`, or `null` long after deploy; `/healthz` returns 503 | The poller has stopped.                                                           |
 | Cursor near retention  | `cursorAgeDays > 60`                                           | Replay is still possible, but the window is closing.                                           |
 | Stream not writing     | `max(_synced_at) < now() - interval '1 hour'` on a busy stream | One stream failing while others continue.                                                      |
 | Skipped writes spiking | `skipped` in the logs                                          | Out-of-order delivery or a backfill colliding with the tail. Usually benign, occasionally not. |
 | Drift detected         | `reconcile` exits 2                                            | Missed creates or deletes.                                                                     |
+| Column drift           | `init` exits 2 after a deploy                                  | A generated column no longer matches the catalog; the projection is stale until repaired.      |
 | Events quarantined     | `rejected > 0` in `status`, or `rejected` exits 2              | One payload the mirror cannot apply. The tail kept going; the object waits on a replay.        |
 | Process exited         | `listen` returned or crashed                                   | A rejected credential or a backwards-paging cursor stops the engine on purpose.                |
+| Lease lost             | `lost the events tail lease` in the logs                       | The process stalled for longer than the lease TTL and another one took over. Check for a hung tick or an undersized `WORKOS_SYNC_LEASE_TTL_MS`. |
 
 The engine emits structured JSON logs with per-batch counts:
 
@@ -136,6 +184,37 @@ The engine emits structured JSON logs with per-batch counts:
 `skipped` is the health metric to graph. A steady trickle is normal: it is the
 staleness gate doing its job. A sudden spike means something changed about
 delivery ordering.
+
+### Prometheus metrics
+
+With `WORKOS_SYNC_HEALTH_PORT` set, `listen` also serves `GET /metrics` in
+the Prometheus text format, from the same in-memory state as `/healthz`.
+Every per-environment series carries an `env` label.
+
+| Metric                         | Type    | What it is                                                                                            |
+| ------------------------------ | ------- | ----------------------------------------------------------------------------------------------------- |
+| `workos_sync_up`               | gauge   | `1` while the engine is running; `0` once it has stopped or hit a fatal error.                        |
+| `workos_sync_poll_age_seconds` | gauge   | Seconds since the last successful poll. **Alert on this.** Absent until the first successful poll, so a listener that has never succeeded needs the `WorkOSSyncNeverPolled` rule below. |
+| `workos_sync_cursor_age_days`  | gauge   | Age of the newest event applied: distance from the 90-day cliff, not liveness. Absent until the first event. |
+| `workos_sync_ticks_total`      | counter | Polls attempted, successful or not.                                                                   |
+| `workos_sync_events_total`     | counter | Events applied.                                                                                       |
+| `workos_sync_writes_total`     | counter | Rows written, with a `kind` label of `created`, `updated`, `skipped` or `deleted`. Graph `skipped`.   |
+| `workos_sync_errors_total`     | counter | Polls that failed with a retryable error. Fatal errors stop the process instead.                      |
+
+```yaml
+# prometheus.rules.yml
+- alert: WorkOSSyncStalled
+  expr: workos_sync_poll_age_seconds > 300 or workos_sync_up == 0
+  for: 2m
+# An environment with a ticks series but no poll-age series has never polled
+# successfully: every request since startup failed, `/healthz` is 503, and
+# nothing above matches. The `for` is the startup grace period.
+- alert: WorkOSSyncNeverPolled
+  expr: workos_sync_ticks_total unless workos_sync_poll_age_seconds
+  for: 5m
+- alert: WorkOSSyncCursorNearRetention
+  expr: workos_sync_cursor_age_days > 60
+```
 
 ## Reconciliation schedule
 
@@ -166,6 +245,18 @@ Reconciliation reports two numbers per stream, and they mean different things:
 Reconciliation compares ids. With `--repair` it tombstones the `localOnly`
 rows and inserts the `remoteOnly` ones. It does not re-read rows that match,
 so it is not the tool for refreshing fields; see below.
+
+The comparison runs in the database, not in the sync process. The upstream
+list is streamed into a temporary table one page at a time and the set
+difference is a pair of anti-joins in SQL, so the memory `reconcile` needs is
+bounded by the size of the drift, not the size of the stream. A million-user
+directory with ten missed deletes costs ten ids, plus one page of the list at
+a time. The live ids are captured into a second temporary table before the
+first page is requested, so a row the tail writes while the list is in
+progress is never a deletion candidate: `--repair` only tombstones a row that
+was already in the mirror when the listing began and is absent from the list.
+Both tables live in a single transaction and are dropped when it commits, so
+nothing is left behind in the schema.
 
 Streams that cannot be reconciled say so explicitly rather than reporting a
 misleading zero:
@@ -342,6 +433,14 @@ scrubs it along with the `events` archive.
     ORDER BY created_at;
   ```
 
+* **`init` exits 2 after a deploy.** A catalog column changed its path or type
+  and the database still has the old projection; the rows are right in `_raw`,
+  the typed column is stale. The log and the printed report carry the exact
+  DDL. `init --repair` rebuilds non-key columns from `_raw`; key columns,
+  columns a view depends on, and columns carrying an index or constraint of
+  your own are left for you, with the DDL to run. See
+  [Changing a column](schema.md#changing-a-column).
+
 ## Deletion requests
 
 The mirror inherits the deletion obligations of any other copy of the data.
@@ -391,21 +490,77 @@ environment as the CLI. It honors `HTTPS_PROXY` and `NO_PROXY` for calls to
 the WorkOS API. To run the schema creation on each deploy,
 run `init` as a one-shot container before starting `listen`.
 
-Run **one listener per environment**, each with its own `WORKOS_API_KEY` and
-`WORKOS_ENVIRONMENT_NAME`; they can share a database. Two processes tailing the
-same environment with the same `syncId` will both advance the same cursor and
-duplicate work. If you genuinely need that, give each its own `WORKOS_SYNC_ID`.
-The library form is the exception: one embedded engine can hold several
-environments in its `environments` array.
+The image sets `WORKOS_SYNC_HEALTH_PORT=8080`, exposes that port, and
+declares a `HEALTHCHECK` that fetches `/healthz` every 30 seconds after a
+30-second start period, so `docker ps` and Compose's `depends_on:
+condition: service_healthy` reflect whether the tail is actually polling.
+The check follows the port `listen` resolved, so changing it with either
+`-e WORKOS_SYNC_HEALTH_PORT=<n>` or `listen --health-port <n>` keeps the
+container healthy. The check only means something for `listen`: one-shot
+commands exit before it would ever run. Publish the port (`-p 8080:8080`)
+to scrape `/metrics` from outside the container.
 
-`listen` handles `SIGINT` and `SIGTERM` by finishing the current batch and
-stopping, so a rolling deploy does not interrupt a write mid-flight.
+**On Kubernetes**, point both probes at `/healthz`. The engine answers `200`
+while it is still starting, so the liveness probe does not need a long
+initial delay; what it needs is a `failureThreshold` and `periodSeconds` that
+together exceed `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS`, or a transient API
+outage restarts a pod that would have recovered on its own.
+
+```yaml
+containers:
+  - name: sync
+    image: ghcr.io/workos/sync-postgres:0.2.0
+    args: ["listen"]
+    ports:
+      - name: health
+        containerPort: 8080
+    readinessProbe:
+      httpGet: { path: /healthz, port: health }
+      periodSeconds: 10
+    livenessProbe:
+      httpGet: { path: /healthz, port: health }
+      periodSeconds: 30
+      failureThreshold: 4
+```
+
+Add a `prometheus.io/scrape: "true"` annotation (or a `ServiceMonitor`) on
+port `health` to collect `/metrics`.
+
+Run **one listener per environment**, each with its own `WORKOS_API_KEY` and
+`WORKOS_ENVIRONMENT_NAME`; they can share a database. The library form is the
+exception: one embedded engine can hold several environments in its
+`environments` array.
+
+Only one process tails a given environment and `WORKOS_SYNC_ID` at a time. The
+tail runs under a **single-writer lease** held in the database
+(`_sync_lease`), so a rolling deploy is safe: the new process starts, finds
+the lease held, logs a warning once a minute and waits; the old one receives
+`SIGTERM`, finishes its current batch, releases the lease and exits; the new
+one takes over on its next poll. Nothing is double-applied and the cursor has
+one writer throughout. If the old process crashes instead, the lease expires
+after `WORKOS_SYNC_LEASE_TTL_MS` (default 60 s) and the replacement takes
+over then, which is the most lag a crash can add. Set the TTL comfortably
+above the longest tick you expect: a process that stalls past it loses the
+lease to its replacement and logs `lost the events tail lease` when it
+notices. It still applies the batch it had already fetched, which is
+idempotent, but it does not checkpoint it, so the replacement's cursor is
+never rewound; it then waits for the lease like any other process. Two syncs
+that genuinely must tail the same environment take different
+`WORKOS_SYNC_ID`s, which gives each its own cursor and its own lease.
+
+`backfill`, `reconcile`, `refresh`, `status` and `redact` do not take the
+lease. They are idempotent and safe to run while a listener is tailing.
 
 **As a scheduled job**, if a few minutes of lag is acceptable:
 
 ```bash
 */5 * * * * workos-sync-postgres tick
 ```
+
+`tick` takes the lease for the duration of the poll, renews it while the poll
+runs, and releases it on exit.
+If a listener holds it, `tick` exits 3 without polling and names the holder
+on stderr; that usually means both deployment styles are running at once.
 
 ## Database sizing
 
