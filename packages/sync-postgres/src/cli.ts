@@ -2,7 +2,7 @@
 /**
  * workos-sync-postgres — command line interface.
  *
- *   workos-sync-postgres init                 create the schema
+ *   workos-sync-postgres init [--repair]      create the schema; --repair rebuilds generated views
  *   workos-sync-postgres backfill [--resume]  page the list endpoints
  *   workos-sync-postgres listen               tail the Events API
  *   workos-sync-postgres tick                 one poll, then exit (for cron)
@@ -96,7 +96,16 @@ export function parseHydrate(value: string | undefined): SyncEngineConfig['hydra
   return out
 }
 
-function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfig & { logger: Logger } {
+/**
+ * `--repair` means rebuilding generated views for `init` and rebuilding rows
+ * for `reconcile`. Sharing the flag name is deliberate — it is "fix what you
+ * found" in both — but each command reads only its own meaning.
+ */
+export function repairViewsRequested(command: string, flags: Record<string, string | boolean>): boolean {
+  return command === 'init' && Boolean(flags['repair'])
+}
+
+function configFromEnv(command: string, flags: Record<string, string | boolean>): SyncEngineConfig & { logger: Logger } {
   const databaseUrl = (flags['database-url'] as string) ?? process.env['DATABASE_URL']
   if (!databaseUrl) throw new Error('set DATABASE_URL (or pass --database-url)')
   const streams = typeof flags['streams'] === 'string' ? flags['streams'].split(',') : undefined
@@ -105,6 +114,7 @@ function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfi
       databaseUrl,
       schema: (flags['schema'] as string) ?? process.env['WORKOS_SYNC_SCHEMA'] ?? 'workos',
       syncId: process.env['WORKOS_SYNC_ID'] ?? 'default',
+      repairViews: repairViewsRequested(command, flags),
     }),
     environments: environmentsFromEnv(),
     streams,
@@ -124,7 +134,8 @@ Usage
   workos-sync-postgres <command> [flags]
 
 Commands
-  init                 Create the schema and bookkeeping tables
+  init [--repair]      Create the schema and bookkeeping tables. Fails if a generated _live
+                       view must be rebuilt; --repair rebuilds it and carries its grants over
   backfill [--resume]  Load current state from the REST list endpoints
   listen [--health-port <n>]
                        Tail the Events API and apply changes continuously;
@@ -183,7 +194,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0
   }
 
-  const config = configFromEnv(flags)
+  const config = configFromEnv(command, flags)
   const engine = new SyncEngine(config)
   try {
     switch (command) {

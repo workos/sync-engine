@@ -95,18 +95,17 @@ the library) to turn it off.
 
 ```sql
 SELECT o.name AS organization, u.email, m.role_slug
-   FROM workos.organization_memberships m
-      JOIN workos.users u ON u.id = m.user_id AND u._env = m._env
-      JOIN workos.organizations o ON o.id = m.organization_id AND o._env = m._env
-   WHERE u._deleted_at IS NULL AND m._deleted_at IS NULL
+   FROM workos.organization_memberships_live m
+      JOIN workos.users_live u ON u.id = m.user_id AND u._env = m._env
+      JOIN workos.organizations_live o ON o.id = m.organization_id AND o._env = m._env
    ORDER BY o.name, u.email;
 ```
 
 Two conventions to know:
 
-- **Always filter `_deleted_at is null`** for live rows. Deleted objects are
-  tombstoned rather than removed, so you can still see what was deleted and
-  when.
+- **Read the `_live` views for live rows.** Deleted objects are tombstoned in
+  the base table (`_deleted_at`) rather than removed, so you can still see what
+  was deleted and when by querying `workos.users` directly.
 - **Always join on `_env` as well as the id.** Object ids are unique within an
   environment, and the mirror can hold several environments at once.
 

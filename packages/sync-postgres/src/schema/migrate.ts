@@ -12,10 +12,22 @@
 import { createHash } from 'node:crypto'
 import type { SqlClient } from '../db/client.js'
 import { buildSchemaSql, createSchemaSql, bookkeepingSql, parseIso8601Function, quoteIdent } from './ddl.js'
+import { applyViewStatement, isViewStatement, type ApplyViewOptions } from './views.js'
 import type { Logger, StreamDef } from '@workos/sync-engine'
+
+/**
+ * Bumped whenever the DDL generated for an unchanged catalog changes: a new
+ * kind of object, a reworked index, a view. The fingerprint otherwise hashes
+ * only the catalog, so without this a database whose streams did not change
+ * would never run the new statements on upgrade.
+ *
+ *   2: `<stream>_live` views (views.ts)
+ */
+export const DDL_VERSION = 2
 
 export function fingerprint(streams: StreamDef[], schema: string): string {
   const canonical = JSON.stringify({
+    ddl: DDL_VERSION,
     schema,
     streams: streams
       .map((s) => ({
@@ -35,11 +47,15 @@ export interface MigrateResult {
   statements: number
 }
 
+/** See `PostgresDestinationOptions.repairViews`. */
+export type MigrateOptions = ApplyViewOptions
+
 export async function migrate(
   db: SqlClient,
   streams: StreamDef[],
   schema: string,
   logger?: Logger,
+  options: MigrateOptions = {},
 ): Promise<MigrateResult> {
   const fp = fingerprint(streams, schema)
 
@@ -60,7 +76,10 @@ export async function migrate(
 
   const statements = buildSchemaSql(streams, schema)
   for (const sql of statements) {
-    await db.exec(sql)
+    // A view is the one statement that can legitimately fail on an existing
+    // database; everything else is `if not exists`. See applyViewStatement.
+    if (isViewStatement(sql)) await applyViewStatement(db, sql, logger, options)
+    else await db.exec(sql)
   }
 
   await db.query(
