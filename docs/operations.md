@@ -436,10 +436,13 @@ scrubs it along with the `events` archive.
 * **`init` exits 2 after a deploy.** A catalog column changed its path or type
   and the database still has the old projection; the rows are right in `_raw`,
   the typed column is stale. The log and the printed report carry the exact
-  DDL. `init --repair` rebuilds non-key columns from `_raw`; key columns,
-  columns a view depends on, and columns carrying an index or constraint of
-  your own are left for you, with the DDL to run. See
-  [Changing a column](schema.md#changing-a-column).
+  DDL. `init --repair` rebuilds non-key columns from `_raw`, setting the
+  table's own `_live` view aside and restoring it with its grants; key
+  columns, columns a view of yours depends on, and columns carrying an index
+  or constraint of your own are left for you, with the DDL to run. The same
+  flag rebuilds a generated view whose shape changed between releases. See
+  [Changing a column](schema.md#changing-a-column) and
+  [Live views](schema.md#live-views).
 
 ## Deletion requests
 
