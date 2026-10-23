@@ -27,6 +27,7 @@ import { backfillStream, type BackfillStreamResult } from './sync/backfill.js'
 import { diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
 import { createLogger } from './logger.js'
 import { redacting } from './redact.js'
+import { HealthTracker, type EngineHealth } from './health.js'
 import type {
   EnvironmentConfig,
   HydrateMode,
@@ -70,6 +71,8 @@ export class SyncEngine {
   private logger: Logger
   private clients = new Map<string, WorkOSClient>()
   private stopping = false
+  /** In-memory bookkeeping behind `health()`; see health.ts. */
+  private healthTracker: HealthTracker
   /** Event types passed to `GET /events`, which requires them. */
   readonly eventTypes: string[]
   /** Effective hydration setting, after defaults. */
@@ -118,6 +121,7 @@ export class SyncEngine {
       if (seen.has(env.name)) throw new Error(`duplicate environment name: ${env.name}`)
       seen.add(env.name)
     }
+    this.healthTracker = new HealthTracker([...seen])
   }
 
   private clientFor(env: EnvironmentConfig): WorkOSClient {
@@ -258,11 +262,17 @@ export class SyncEngine {
         if (events.length === 0) {
           // Nothing to apply, but the poll succeeded: record that, so a quiet
           // upstream is distinguishable from a stalled sync.
+          const polledAt = new Date().toISOString()
           await this.state.setTail(env.name, {
             cursor: tail?.cursor ?? null,
             lastEventAt: tail?.lastEventAt ?? null,
             rangeStart: tail?.rangeStart ?? null,
-            lastPolledAt: new Date().toISOString(),
+            lastPolledAt: polledAt,
+          })
+          this.healthTracker.polled(env.name, {
+            polledAt,
+            cursor: tail?.cursor ?? null,
+            lastEventAt: tail?.lastEventAt ?? null,
           })
           continue
         }
@@ -276,11 +286,19 @@ export class SyncEngine {
 
         // Checkpoint only after the writes above are durable.
         const last = events[events.length - 1]!
+        const polledAt = new Date().toISOString()
         await this.state.setTail(env.name, {
           cursor,
           lastEventAt: last.created_at,
           rangeStart: tail?.rangeStart ?? null,
-          lastPolledAt: new Date().toISOString(),
+          lastPolledAt: polledAt,
+        })
+        this.healthTracker.polled(env.name, {
+          polledAt,
+          cursor,
+          lastEventAt: last.created_at,
+          events: events.length,
+          stats: result.stats,
         })
 
         processed += events.length
@@ -295,23 +313,38 @@ export class SyncEngine {
       } catch (err) {
         if (err instanceof CursorDirectionError) {
           // Loud and fatal: continuing would rewrite the mirror with history.
+          this.healthTracker.fatalError(err)
           this.logger.error('cursor direction check failed; stopping', { error: String(err) })
           throw err
         }
         if (isFatal(err)) {
           // A rejected credential will not fix itself; retrying every poll
           // interval would only hide the problem behind a healthy-looking process.
+          this.healthTracker.fatalError(err)
           this.logger.error('authentication failed; stopping', { env: env.name, error: String(err) })
           throw err
         }
+        this.healthTracker.failed(env.name, err)
         this.logger.error('tick failed', { env: env.name, error: String(err) })
       }
     }
+    this.healthTracker.tickCompleted()
     return { processed, stats }
   }
 
   /** Poll until `stop()`. */
   async listen(): Promise<void> {
+    this.healthTracker.listening()
+    try {
+      await this.poll()
+    } finally {
+      // However the loop ended, nothing will move the poll timestamps again,
+      // and a probe has to say so rather than report the last good poll.
+      this.healthTracker.stopped()
+    }
+  }
+
+  private async poll(): Promise<void> {
     await this.init()
     this.stopping = false
     const interval = this.config.pollIntervalMs ?? 5_000
@@ -329,6 +362,16 @@ export class SyncEngine {
 
   stop(): void {
     this.stopping = true
+  }
+
+  /**
+   * The in-memory view of this engine: state, counters, last poll and last
+   * error per environment. Synchronous and free of I/O, unlike `status()`,
+   * so it is what a liveness probe or a metrics scrape should read. Serve it
+   * with `startHealthServer`.
+   */
+  health(): EngineHealth {
+    return this.healthTracker.snapshot()
   }
 
   async reconcile(options: { repair?: boolean; streams?: string[] } = {}): Promise<{
