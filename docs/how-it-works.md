@@ -31,7 +31,7 @@ A mirror needs all three of these functions:
 1. capture    record the current position in the event stream
 2. backfill   page the list endpoints for everything that exists
 3. drain      replay events from the captured cursor
-4. tail       poll forever, checkpointing after each durable write
+4. tail       poll forever as the sole writer, checkpointing after each durable write
 ```
 
 Steps 2 and 3 overlap deliberately. Anything that changes mid-backfill is
@@ -119,7 +119,11 @@ Two further mechanisms close the gap:
   default for those two streams, which are the only ones with a get-by-id
   endpoint. Creates are low-volume, which makes this cheap. `hydrate: 'off'`
   disables it; `'always'` re-fetches on every event, which is rarely worth
-  the requests.
+  the requests. The snapshot is written with its own `updated_at`, not the
+  event's: it is the object as it is now, which may be newer than the event
+  that prompted the fetch. That is what lets a quarantined create, replayed
+  after a later update has already made the row, still land the fields only
+  the snapshot carries instead of losing to the staleness gate.
 - **Backfill and `refresh`** re-list from the REST endpoints and replace every
   row, which repairs any field an event left behind. Reconciliation does not:
   it compares ids and only writes the rows that are missing on one side.
@@ -201,6 +205,34 @@ per stream.
 
 Event ids are ULIDs, so lexicographic order is creation order, which makes the
 id a safe monotonic watermark.
+
+### One writer per environment
+
+The tail has a single writer. `listen` takes a lease on each environment in
+`workos._sync_lease` before it polls and renews it on a heartbeat while it
+runs; a second listener for the same environment and sync id waits rather
+than failing, which is what a rolling deploy needs, and takes over the moment
+the first releases on `SIGTERM` or stops renewing after a crash (at most
+`WORKOS_SYNC_LEASE_TTL_MS` later). A cron `tick` takes the lease for one poll
+and exits 3 if a listener holds it.
+
+The lease is a claim, and a claim can lapse mid-poll: a process that stalls
+past the TTL is replaced while its batch is still in flight. Its writes are
+harmless, because they are idempotent and staleness-gated, but its cursor is
+not: saving an older position would rewind the replacement and make it apply
+the same events again. So the checkpoint is **fenced in the database**: one
+statement that writes the new position only if this process still holds the
+lease and the stored position is still the one the poll started from. A
+former holder's checkpoint is simply refused, and the batch is counted as not
+done. `backfill`, `reconcile`, `refresh` and `status` take no lease: their
+writes are idempotent and staleness-gated, so they run beside a tail. The one
+thing to keep apart is `reconcile --repair` on a stream listed through its
+parent (memberships, directory users and groups) while that tail is busy:
+the parent ids are read a few statements before the live snapshot is taken,
+and a parent plus its first child landing in that gap leaves the child in
+the snapshot with no parent to list it under, so repair tombstones a live
+row that no later update will revive. Run that repair in a quiet moment, or
+`reconcile` without `--repair` first and read the report.
 
 ### The stream is always oldest-first
 

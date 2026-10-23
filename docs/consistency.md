@@ -162,8 +162,9 @@ an event is permanent and reprocessing one is free:
 
 - **Only deterministic failures.** A hydration failure, any WorkOS API error,
   and any database error the destination calls transient (for Postgres:
-  SQLSTATE classes `08`, `40`, `53`, `57`, `58` and `XX`, and socket errors)
-  fail the tick and retry exactly as before. Nothing is set aside.
+  SQLSTATE classes `08`, `40`, `53`, `57`, `58` and `XX`, the lock-timeout
+  code `55P03`, and socket errors) fail the tick and retry exactly as before.
+  Nothing is set aside.
 - **Only after two sightings.** When a batch fails for a reason that could be
   deterministic, the events are applied one at a time to find the one at
   fault. The first time it fails, the tick still fails and the cursor stays

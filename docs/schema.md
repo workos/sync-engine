@@ -64,10 +64,10 @@ Things to know:
   view's grants, a drop and re-create does not, and re-granting a reader on a
   different definition is an authorization decision, not a repair. Instead
   `init` fails, names the view, and lists the grants it would have to carry
-  over. Run `init --repair` (`repairViews: true` on `PostgresDestination`) to
-  consent: the view is dropped and re-created in one transaction, those grants
-  are re-applied and each is logged, and a re-create that fails leaves the old
-  view where it was. Or drop the view by hand and grant selectively. Two kinds
+  over. Run `init --repair` (`repairViews: true` on `PostgresDestination`;
+  the same flag also repairs drifted columns) to consent: the view is dropped
+  and re-created in one transaction, those grants are re-applied and each is
+  logged, and a re-create that fails leaves the old view where it was. Or drop the view by hand and grant selectively. Two kinds
   of view are never rebuilt, with or without `--repair`, and `init` fails
   asking you to rename or drop them: one without the generated comment, which
   is yours — even with the same shape, where Postgres itself would have
@@ -87,6 +87,7 @@ Things to know:
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `_sync_state` | Cursors and checkpoints, keyed by `(sync_id, env, stream)`. The tail position is the row with `stream = '__tail__'`; backfill progress is one row per stream. |
 | `_migrations` | Fingerprints of the schema versions that have been applied, so `init` is a single `SELECT` when nothing changed.                                              |
+| `_sync_lease` | The single-writer lease for the events tail: one row per `(sync_id, env)` naming the holder and when its claim expires. `listen` and `tick` take it; the cursor checkpoint is refused unless the writer still holds it. See [Operations](operations.md#deployment). |
 | `_rejected`   | Events the tail could not apply: one row per event that failed deterministically on two consecutive polls, with the error and the whole event in `_raw`. Keyed by `(sync_id, env, event_id)`; `rejected --replay` drains it. |
 
 ## Stream modes
@@ -261,6 +262,10 @@ carries on meanwhile: `_raw` is still right, only the projection is stale.
 npx workos-sync-postgres init            # report; exits 2 on drift
 npx workos-sync-postgres init --repair   # rebuild drifted columns from _raw
 ```
+
+The same flag also rebuilds a generated `_live` view that can no longer be
+replaced in place (see [Live views](#live-views)); as a library the two are
+separate options, `repairColumns` and `repairViews`.
 
 `--repair` drops each drifted column and adds it back from the catalog, each
 in its own transaction, then recreates its index. `STORED` recomputes the new

@@ -34,11 +34,12 @@ export WORKOS_API_KEY="sk_live_..."
 npx workos-sync-postgres init
 ```
 
-This creates a `workos` schema, one table per synced object, and three
-bookkeeping tables: `_sync_state` (cursors and backfill checkpoints),
-`_migrations` (which version of the schema has been applied) and `_rejected`
-(events the tail could not apply, kept whole for replay). It is safe to run
-repeatedly. The schema is fingerprinted, so a second run with no changes does
+This creates a `workos` schema, one table per synced object, a `_live` view
+beside every mirror table, and four bookkeeping tables: `_sync_state` (cursors
+and backfill checkpoints), `_migrations` (which version of the schema has been
+applied), `_sync_lease` (which process is tailing each environment) and
+`_rejected` (events the tail could not apply, kept whole for replay). It is
+safe to run repeatedly. The schema is fingerprinted, so a second run with no changes does
 nothing.
 
 To use a different schema name, set `WORKOS_SYNC_SCHEMA` or pass `--schema`.

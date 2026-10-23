@@ -256,7 +256,13 @@ first page is requested, so a row the tail writes while the list is in
 progress is never a deletion candidate: `--repair` only tombstones a row that
 was already in the mirror when the listing began and is absent from the list.
 Both tables live in a single transaction and are dropped when it commits, so
-nothing is left behind in the schema.
+nothing is left behind in the schema. One gap remains, for streams listed
+through a parent (memberships, directory users and groups): the parent ids
+are read a few statements before the live snapshot, so a parent and its first
+child that the tail writes in that gap put the child in the snapshot with no
+parent to list it under, and `--repair` tombstones it. Run `--repair` for
+those streams in a quiet moment, or run `reconcile` without it first and read
+the report.
 
 Streams that cannot be reconciled say so explicitly rather than reporting a
 misleading zero:
@@ -436,10 +442,13 @@ scrubs it along with the `events` archive.
 * **`init` exits 2 after a deploy.** A catalog column changed its path or type
   and the database still has the old projection; the rows are right in `_raw`,
   the typed column is stale. The log and the printed report carry the exact
-  DDL. `init --repair` rebuilds non-key columns from `_raw`; key columns,
-  columns a view depends on, and columns carrying an index or constraint of
-  your own are left for you, with the DDL to run. See
-  [Changing a column](schema.md#changing-a-column).
+  DDL. `init --repair` rebuilds non-key columns from `_raw`, setting the
+  table's own `_live` view aside and restoring it with its grants; key
+  columns, columns a view of yours depends on, and columns carrying an index
+  or constraint of your own are left for you, with the DDL to run. The same
+  flag rebuilds a generated view whose shape changed between releases. See
+  [Changing a column](schema.md#changing-a-column) and
+  [Live views](schema.md#live-views).
 
 ## Deletion requests
 
