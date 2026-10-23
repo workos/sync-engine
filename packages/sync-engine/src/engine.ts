@@ -536,9 +536,14 @@ export class SyncEngine {
         if (!this.stopping && outcome.processed === 0) await sleep(interval)
       }
     } finally {
-      this.stopHeartbeat(own)
-      // Hand over immediately. Without this a replacement waits a full TTL.
-      await this.serialized(() => this.releaseHeld())
+      // Inside the serialised section, so a `tick()` queued while the loop
+      // slept — it borrowed this heartbeat rather than starting its own —
+      // finishes under a live lease before the timer stops. Then hand over
+      // immediately: without the release a replacement waits a full TTL.
+      await this.serialized(async () => {
+        this.stopHeartbeat(own)
+        await this.releaseHeld()
+      })
     }
   }
 
