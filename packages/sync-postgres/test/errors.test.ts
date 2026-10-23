@@ -43,6 +43,14 @@ describe('isTransientPgError', () => {
     for (const code of codes) expect(isTransientPgError(pgError(code)), code).toBe(false)
   })
 
+  it('calls a lock timeout transient even though its class is not', () => {
+    // 55P03 lock_not_available: a write that ran past lock_timeout behind
+    // another transaction. Waiting fixes it; quarantining would not.
+    expect(isTransientPgError(Object.assign(new Error('lock timeout'), { code: '55P03' }))).toBe(true)
+    // The rest of class 55 (object_not_in_prerequisite_state) stays deterministic.
+    expect(isTransientPgError(Object.assign(new Error('not in prerequisite state'), { code: '55000' }))).toBe(false)
+  })
+
   it('recognises the socket errors node-postgres surfaces unwrapped', () => {
     for (const code of ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE']) {
       expect(isTransientPgError(socketError(code)), code).toBe(true)

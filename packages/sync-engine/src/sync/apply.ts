@@ -103,7 +103,7 @@ export async function applyEvents(
       continue
     }
     let data = action.data
-    const updatedAt = sourceUpdatedAt(event, data)
+    let updatedAt = sourceUpdatedAt(event, data)
 
     // Optional hydration: re-fetch the object so fields the event payload
     // omits (external_id, metadata, ...) are correct immediately rather than
@@ -124,6 +124,12 @@ export async function applyEvents(
         }
         if (fresh) {
           data = fresh
+          // The snapshot is the object as it is now, which may be newer than
+          // the event that prompted the fetch: a replay of a quarantined
+          // `created` after a later `updated` already made the row, for one.
+          // Stamped with the event's time it would lose to the staleness
+          // gate and the fields only the snapshot carries would never land.
+          updatedAt = sourceUpdatedAt(event, fresh)
           result.hydrated++
         } else {
           // A 404 during hydration is itself a delete signal: the object is

@@ -1213,6 +1213,36 @@ describe('poison events', () => {
     expect(await emails()).toEqual(['bad@example.com', 'good@example.com'])
   })
 
+  it('replays a quarantined create after a later update, restoring the fields only hydration carries', async () => {
+    const user = fake.createUser({ email: 'late@example.com' })
+    const { engine, destination } = makeFaulty({ hydrate: 'on_create' })
+    destination.poison = user['id'] as string
+    await engine.tick()
+    await engine.tick()
+    expect((await engine.status())['prod']!.rejected).toBe(1)
+
+    // The cause is gone, and the object moves on before anyone replays: the
+    // update creates the row from the event payload alone, which carries
+    // neither external_id nor metadata.
+    destination.poison = null
+    fake.updateUser(user['id'] as string, { first_name: 'Late' })
+    await engine.tick()
+    const before = await db.query<{ external_id: string | null; metadata: unknown }>(
+      `select external_id, metadata from workos.users where id = $1`,
+      [user['id']],
+    )
+    expect(before.rows[0]).toEqual({ external_id: null, metadata: null })
+
+    // The replayed create hydrates, and the snapshot it writes must win over
+    // the row the update made, or clearing the rejection would be a lie.
+    expect(await engine.replayRejected()).toEqual({ replayed: 1, stillRejected: [] })
+    const after = await db.query<{ first_name: string; external_id: string | null; metadata: unknown }>(
+      `select first_name, external_id, metadata from workos.users where id = $1`,
+      [user['id']],
+    )
+    expect(after.rows[0]).toEqual({ first_name: 'Late', external_id: user['external_id'], metadata: { plan: 'pro' } })
+  })
+
   it('never quarantines on an error the destination classifies as transient', async () => {
     const u1 = fake.createUser()
     fake.createUser()

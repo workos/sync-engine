@@ -28,6 +28,14 @@
  */
 const TRANSIENT_SQLSTATE_CLASSES = new Set(['08', '40', '53', '57', '58', 'XX'])
 
+/**
+ * Individual codes outside those classes that are still about timing, not
+ * the row. `55P03` (lock_not_available) is what a write gets when it runs
+ * past `lock_timeout` behind another transaction's lock; waiting fixes it,
+ * so quarantining the row would set aside a valid event.
+ */
+const TRANSIENT_SQLSTATE_CODES = new Set(['55P03'])
+
 /** Node socket errors `pg` surfaces as-is, with the errno name in `code`. */
 const TRANSIENT_SOCKET_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE'])
 
@@ -40,6 +48,7 @@ export function isTransientPgError(err: unknown): boolean {
   const code = codeOf(err)
   if (!code) return false
   if (TRANSIENT_SOCKET_CODES.has(code)) return true
+  if (TRANSIENT_SQLSTATE_CODES.has(code)) return true
   return code.length === 5 && TRANSIENT_SQLSTATE_CLASSES.has(code.slice(0, 2))
 }
 
