@@ -58,11 +58,14 @@ Things to know:
   releases), the engine drops it and creates it afresh, with a warning in the
   log. That happens in one transaction and carries the view's grants over, so
   a read-only role keeps its access and a re-create that fails leaves the old
-  view where it was. Build your own views on top of them if you want different
-  names or a separate schema; the engine never drops a view it did not create.
-  A view of your own that already has a `_live` name is left alone too: `init`
-  fails and asks you to rename or drop it, because replacing it with
-  `select *` could expose columns it was written to hide.
+  view where it was. The engine repairs only a view it generated whose columns
+  are still the table's — possibly minus columns promoted since — and reads
+  nothing else. It never widens a narrower one: a view of your own under a
+  `_live` name, or a generated view that was narrowed by hand, is left alone
+  and `init` fails asking you to rename or drop it, because replacing it with
+  `select *` could expose columns it was written to hide. Build your own views
+  on top of them if you want different names or a separate schema; the engine
+  never drops a view it did not create.
 - **Append-only streams have no view.** `events` and `auth_attempts` have no
   `_deleted_at` column, so there is nothing to filter.
 

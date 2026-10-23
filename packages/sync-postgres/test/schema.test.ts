@@ -311,12 +311,7 @@ describe('live views against real Postgres', () => {
   it('drops and re-creates a view whose shape cannot be replaced in place', async () => {
     const users = streamByName('users')!
     await migrate(db, [users], 'workos')
-    // An older release's definition, still carrying our comment, whose column
-    // list does not match. `create or replace view` refuses to rename or
-    // reorder columns, so this is the case the fallback exists for.
-    await db.exec(`drop view workos.users_live`)
-    await db.exec(`create view workos.users_live as select email, id from workos.users`)
-    await db.exec(`comment on view workos.users_live is '${GENERATED_BY}: an older definition'`)
+    await leaveReorderedGeneratedView()
     await db.exec(`delete from workos."_migrations"`)
 
     const warnings: Record<string, unknown>[] = []
@@ -357,17 +352,29 @@ describe('live views against real Postgres', () => {
     }
   }
 
+  const columnNamesOf = async (relation: string) => (await columnsOf(relation)).map((c) => c.split(':')[0]!)
+
+  // Replace users_live with an older release's definition: our comment, every
+  // column of the table, but in another order. `create or replace view`
+  // refuses to move a column, so this is the one way to reach the fallback
+  // with a view that is still, by content, `select *`.
+  const leaveReorderedGeneratedView = async () => {
+    const reordered = (await columnNamesOf('users'))
+      .reverse()
+      .map((n) => `"${n}"`)
+      .join(', ')
+    await db.exec(`drop view workos.users_live`)
+    await db.exec(`create view workos.users_live as select ${reordered} from workos.users where "_deleted_at" is null`)
+    await db.exec(`comment on view workos.users_live is '${GENERATED_BY}: an older definition'`)
+  }
+
   it('carries grants over when it has to drop and re-create a view', async () => {
     const users = streamByName('users')!
     await migrate(db, [users], 'workos')
-    // An older release's definition of our view, with a different column
-    // list, which is what forces the drop-and-recreate path; the read-only
-    // role docs/queries.md sets up; and a grant to public and one with grant
-    // option, so every kind of ACL entry is exercised.
+    await leaveReorderedGeneratedView()
+    // The read-only role docs/queries.md sets up, plus a grant to public and
+    // one with grant option, so every kind of ACL entry is exercised.
     await db.exec(`
-      drop view workos.users_live;
-      create view workos.users_live as select email, id from workos.users;
-      comment on view workos.users_live is '${GENERATED_BY}: an older definition';
       create role reader; create role lead;
       grant usage on schema workos to reader;
       grant select on workos.users_live to reader;
@@ -415,6 +422,54 @@ describe('live views against real Postgres', () => {
     expect(await countAsReader()).toBe('0')
   })
 
+  it('refuses to widen a generated view that was narrowed by hand', async () => {
+    const users = streamByName('users')!
+    await migrate(db, [users], 'workos')
+    // Our comment survives on a view somebody rebuilt narrower. Its reader was
+    // granted two columns; re-creating it as `select *` and carrying that
+    // grant over would hand them `_raw` and everything else.
+    await db.exec(`
+      drop view workos.users_live;
+      create view workos.users_live as select email, id from workos.users;
+      comment on view workos.users_live is '${GENERATED_BY}: narrowed by hand';
+      create role reader;
+      grant usage on schema workos to reader;
+      grant select on workos.users_live to reader;
+      delete from workos."_migrations";
+    `)
+
+    await expect(migrate(db, [users], 'workos')).rejects.toThrow(/not the generated definition/)
+
+    expect(await columnNamesOf('users_live')).toEqual(['email', 'id'])
+    expect(await countAsReader()).toBe('0')
+  })
+
+  it('refuses to repair a commented view that reads another table', async () => {
+    const users = streamByName('users')!
+    await migrate(db, [users], 'workos')
+    // Same columns as the table, so a column check alone would pass, but the
+    // view reads a different relation: replacing it would grant its reader
+    // the real one. Reordered, so that `create or replace` refuses on
+    // position and the fallback is what decides.
+    const reordered = (await columnNamesOf('users'))
+      .reverse()
+      .map((n) => `"${n}"`)
+      .join(', ')
+    await db.exec(`
+      create table workos.decoy as select * from workos.users with no data;
+      drop view workos.users_live;
+      create view workos.users_live as select ${reordered} from workos.decoy;
+      comment on view workos.users_live is '${GENERATED_BY}: over a decoy';
+      create role reader;
+      grant usage on schema workos to reader;
+      grant select on workos.users_live to reader;
+      delete from workos."_migrations";
+    `)
+
+    await expect(migrate(db, [users], 'workos')).rejects.toThrow(/not the generated definition/)
+    expect(await countAsReader()).toBe('0')
+  })
+
   it('refuses to replace a view under its name that it did not generate', async () => {
     const users = streamByName('users')!
     await migrate(db, [users], 'workos')
@@ -432,8 +487,7 @@ describe('live views against real Postgres', () => {
 
     await expect(migrate(db, [users], 'workos')).rejects.toThrow(/not generated by @workos\/sync-postgres/)
 
-    const names = (await columnsOf('users_live')).map((c) => c.split(':')[0])
-    expect(names).toEqual(['email', 'id'])
+    expect(await columnNamesOf('users_live')).toEqual(['email', 'id'])
     expect(await countAsReader()).toBe('0')
   })
 })
