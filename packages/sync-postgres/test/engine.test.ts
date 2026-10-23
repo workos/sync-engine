@@ -8,6 +8,7 @@ import { createTestDb } from './helpers/pg.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
 import { PostgresDestination } from '../src/destination.js'
 import type { SqlClient } from '../src/db/client.js'
+import { FaultyDestination, captureLogger } from './helpers/faulty.js'
 
 const TIER1 = [
   'users',
@@ -740,5 +741,268 @@ describe('redaction', () => {
       [`%${user['id']}%`],
     )
     expect(Number(events.rows[0]!.n)).toBe(0)
+  })
+})
+
+describe('poison events', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+  })
+  afterEach(async () => {
+    await db.close()
+  })
+
+  const count = async (table: string) => {
+    const r = await db.query<{ n: string }>(`select count(*)::text as n from workos."${table}"`)
+    return Number(r.rows[0]!.n)
+  }
+  const emails = async () => {
+    const r = await db.query<{ email: string }>(`select email from workos.users order by email`)
+    return r.rows.map((x) => x.email)
+  }
+  const eventFor = (objectId: string) => fake.events.find((e) => e.data['id'] === objectId)!
+
+  /** The engine over a FaultyDestination, with a capturing logger and no client retries. */
+  function makeFaulty(extra: Record<string, unknown> = {}, fetchImpl = fake.fetchImpl) {
+    const destination = new FaultyDestination({ db, schema: 'workos' })
+    const { logger, lines } = captureLogger()
+    const engine = new SyncEngine(
+      {
+        destination,
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: TIER1,
+        hydrate: 'off',
+        logger,
+        lagWindowMs: 0,
+        ...extra,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({
+            apiKey: 'sk_test_1',
+            apiUrl: 'http://fake.workos.local',
+            fetchImpl,
+            maxRetries: 0,
+          }),
+      },
+    )
+    return { engine, destination, lines }
+  }
+
+  it('quarantines one event after two sightings and keeps the rest of the environment moving', async () => {
+    fake.createUser({ email: 'good1@example.com' })
+    const bad = fake.createUser({ email: 'bad@example.com' })
+    fake.createUser({ email: 'good2@example.com' })
+    const badEvent = eventFor(bad['id'] as string)
+    const { engine, destination, lines } = makeFaulty()
+    destination.poison = bad['id'] as string
+
+    // Poll 1: first sighting. The tick fails as it always did, the cursor
+    // stays put, and the suspect is only remembered in memory.
+    const first = await engine.tick()
+    expect(first).toMatchObject({ processed: 0, rejected: 0 })
+    let status = await engine.status()
+    expect(status['prod']!.cursor).toBeNull()
+    expect(status['prod']!.rejected).toBe(0)
+    expect(await count('_rejected')).toBe(0)
+    const warned = lines.find((l) => l.level === 'warn' && l.fields['eventId'] === badEvent.id)
+    expect(warned?.msg).toMatch(/quarantined if it fails again/)
+    expect(warned?.fields['error']).toMatch(/invalid input syntax for type boolean/)
+
+    // Poll 2: the same batch, the same failure. The good events are written,
+    // the bad one is set aside, and the cursor moves past all three.
+    const second = await engine.tick()
+    expect(second).toMatchObject({ processed: 3, rejected: 1 })
+    status = await engine.status()
+    expect(status['prod']!.cursor).toBe(fake.events[fake.events.length - 1]!.id)
+    expect(status['prod']!.rejected).toBe(1)
+    expect(await emails()).toEqual(['good1@example.com', 'good2@example.com'])
+
+    const rejected = (await engine.rejected())['prod']!
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]).toMatchObject({
+      eventId: badEvent.id,
+      eventType: 'user.created',
+      objectId: bad['id'],
+      createdAt: badEvent.created_at,
+      raw: badEvent,
+    })
+    expect(rejected[0]!.error).toMatch(/invalid input syntax for type boolean: "maybe"/)
+    expect(rejected[0]!.rejectedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    const logged = lines.find((l) => l.level === 'error' && l.msg.includes('quarantined'))
+    expect(logged?.fields).toMatchObject({ eventId: badEvent.id, eventType: 'user.created', objectId: bad['id'] })
+    expect(String(logged?.fields['hint'])).toContain('rejected')
+
+    // The tail is not stalled: the next poll is a no-op rather than a retry.
+    expect((await engine.tick()).processed).toBe(0)
+
+    // The archive still has every event, including the one set aside.
+    expect(await count('events')).toBe(3)
+  })
+
+  it('replays a quarantined event through the normal path once the cause is fixed', async () => {
+    fake.createUser({ email: 'good@example.com' })
+    const bad = fake.createUser({ email: 'bad@example.com' })
+    const { engine, destination } = makeFaulty()
+    destination.poison = bad['id'] as string
+    await engine.tick()
+    await engine.tick()
+    expect((await engine.status())['prod']!.rejected).toBe(1)
+
+    // Still broken: the row stays, with its error refreshed.
+    destination.fault = () => Object.assign(new Error('still broken'), { code: '22P02' })
+    const again = await engine.replayRejected()
+    expect(again.replayed).toBe(0)
+    expect(again.stillRejected).toEqual([{ eventId: eventFor(bad['id'] as string).id, error: 'Error: still broken' }])
+    expect((await engine.rejected())['prod']![0]!.error).toBe('Error: still broken')
+
+    // Fixed: the event is applied and forgotten.
+    destination.poison = null
+    const fixed = await engine.replayRejected()
+    expect(fixed).toEqual({ replayed: 1, stillRejected: [] })
+    expect(await count('_rejected')).toBe(0)
+    expect((await engine.status())['prod']!.rejected).toBe(0)
+    expect(await emails()).toEqual(['bad@example.com', 'good@example.com'])
+  })
+
+  it('never quarantines on an error the destination classifies as transient', async () => {
+    const u1 = fake.createUser()
+    fake.createUser()
+    const { engine, destination, lines } = makeFaulty()
+    destination.poison = u1['id'] as string
+
+    // A dropped connection, then a socket error: both are the database having
+    // a bad moment, and the tick must retry, however many times it happens.
+    destination.fault = () => Object.assign(new Error('connection failure'), { code: '08006' })
+    await engine.tick()
+    await engine.tick()
+    destination.fault = () => Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+    await engine.tick()
+    await engine.tick()
+
+    expect(await count('_rejected')).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBeNull()
+    expect(lines.filter((l) => l.msg === 'tick failed')).toHaveLength(4)
+    expect(lines.some((l) => l.level === 'warn')).toBe(false)
+    // It failed fast each time, without ever isolating event by event.
+    expect(destination.faults).toBe(4)
+
+    // Once the database recovers the batch applies in full.
+    destination.poison = null
+    expect((await engine.tick()).processed).toBe(2)
+    expect(await count('users')).toBe(2)
+  })
+
+  it('treats a whole batch failing as an outage, not a batch of poison events', async () => {
+    fake.createUser()
+    fake.createUser()
+    fake.createUser()
+    const { engine, destination, lines } = makeFaulty()
+    // An unclassified error, so only the all-fail rule stands in the way.
+    destination.fault = () => new Error('relation "workos.users" does not exist')
+    destination.failAll = true
+
+    await engine.tick()
+    await engine.tick()
+    await engine.tick()
+
+    expect(await count('_rejected')).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBeNull()
+    expect(lines.filter((l) => l.msg === 'tick failed')).toHaveLength(3)
+    expect(lines.some((l) => l.level === 'warn')).toBe(false)
+  })
+
+  it('treats a hydration failure as an outage, never as a poison event', async () => {
+    fake.createUser()
+    fake.createUser()
+    // The API answers the events page but not the user GET that hydration
+    // needs. The client has already given up retrying by the time the engine
+    // sees it, so what the engine sees is an outage.
+    const failingGet: typeof fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' ? input : input.toString())
+      if (/^\/user_management\/users\/[^/]+$/.test(url.pathname)) {
+        return Promise.resolve(new Response('{"message":"upstream"}', { status: 503 }))
+      }
+      return fake.fetchImpl(input, init)
+    }) as typeof fetch
+    const { engine, lines } = makeFaulty({ hydrate: { users: 'on_create' } }, failingGet)
+
+    await engine.tick()
+    await engine.tick()
+
+    expect(await count('_rejected')).toBe(0)
+    expect(await count('users')).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBeNull()
+    const failures = lines.filter((l) => l.msg === 'tick failed')
+    expect(failures).toHaveLength(2)
+    expect(String(failures[0]!.fields['error'])).toMatch(/hydration failed .* 503/)
+    expect(lines.some((l) => l.level === 'warn')).toBe(false)
+  })
+
+  it('forgets a suspect that succeeds on its second poll', async () => {
+    const flaky = fake.createUser({ email: 'flaky@example.com' })
+    fake.createUser({ email: 'steady@example.com' })
+    const { engine, destination } = makeFaulty()
+    // An unclassified error that happens once: exactly what two sightings is for.
+    destination.fault = () => new Error('Connection terminated unexpectedly')
+    destination.poison = flaky['id'] as string
+    await engine.tick()
+    destination.poison = null
+
+    const second = await engine.tick()
+    expect(second).toMatchObject({ processed: 2, rejected: 0 })
+    expect(await count('_rejected')).toBe(0)
+    expect(await emails()).toEqual(['flaky@example.com', 'steady@example.com'])
+  })
+
+  it('is scrubbed by redact like the event archive', async () => {
+    fake.createUser({ email: 'keep@example.com' })
+    const subject = fake.createUser({ email: 'forget@example.com' })
+    const { engine, destination } = makeFaulty()
+    destination.poison = subject['id'] as string
+    await engine.tick()
+    await engine.tick()
+    expect(await count('_rejected')).toBe(1)
+
+    const removed = await engine.redact(subject['id'] as string)
+    expect(removed).toContainEqual({ table: '_rejected', rows: 1 })
+    expect(await count('_rejected')).toBe(0)
+    const leftovers = await db.query<{ n: string }>(
+      `select count(*)::text as n from workos."_rejected" where "_raw"::text like $1`,
+      [`%${subject['id']}%`],
+    )
+    expect(Number(leftovers.rows[0]!.n)).toBe(0)
+  })
+
+  it('quarantines a payload that Postgres itself cannot cast, with no fault injected', async () => {
+    // The realistic case: an operator projects a boolean column, and one
+    // object carries a string there. The generated column raises on insert,
+    // the batch fails, and without quarantine every stream would stop here.
+    fake.createUser({ email: 'good@example.com', metadata: { beta: true } })
+    const bad = fake.createUser({ email: 'bad@example.com', metadata: { beta: 'maybe' } })
+    const engine = makeEngine(db, fake, TIER1, {
+      // Hydration is on by default for users, so the REST object — the one
+      // with `metadata` — is what gets written.
+      extraColumns: { users: [{ name: 'beta', type: 'boolean', path: ['metadata', 'beta'] }] },
+    })
+
+    expect((await engine.tick()).processed).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBeNull()
+
+    const second = await engine.tick()
+    expect(second).toMatchObject({ processed: 2, rejected: 1 })
+    const rejected = (await engine.rejected())['prod']!
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]!.objectId).toBe(bad['id'])
+    expect(rejected[0]!.error).toMatch(/invalid input syntax for type boolean: "maybe"/)
+
+    const rows = await db.query<{ email: string; beta: boolean }>(`select email, beta from workos.users`)
+    expect(rows.rows).toEqual([{ email: 'good@example.com', beta: true }])
+    expect((await engine.status())['prod']!.cursor).not.toBeNull()
   })
 })

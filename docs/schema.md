@@ -28,6 +28,7 @@ Two consequences worth internalising:
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `_sync_state` | Cursors and checkpoints, keyed by `(sync_id, env, stream)`. The tail position is the row with `stream = '__tail__'`; backfill progress is one row per stream. |
 | `_migrations` | Fingerprints of the schema versions that have been applied, so `init` is a single `SELECT` when nothing changed.                                              |
+| `_rejected`   | Events the tail could not apply: one row per event that failed deterministically on two consecutive polls, with the error and the whole event in `_raw`. Keyed by `(sync_id, env, event_id)`; `rejected --replay` drains it. |
 
 ## Stream modes
 

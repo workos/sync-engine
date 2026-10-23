@@ -25,6 +25,7 @@ npx workos-sync-postgres status
     "cursorAgeDays": 0.0004,
     "lastPolledAt": "2026-10-22T18:04:11.902Z",
     "pollAgeSeconds": 3.1,
+    "rejected": 0,
     "streams": [
       {
         "stream": "users",
@@ -50,6 +51,10 @@ Two of these numbers look similar but mean different things:
   happens for a week will show seven days here while being perfectly healthy.
   It is `null` until the first event is applied. The engine warns at 75 days
   and logs an error past 90. Alert well before that.
+- **`rejected`** is how many events the tail has set aside because they fail
+  deterministically. The tail kept going, so poll age looks healthy, but the
+  objects those events describe are missing or stale until you replay them.
+  **Alert on this too.** See [Rejected events](#rejected-events).
 
 ## What to monitor
 
@@ -108,6 +113,7 @@ SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS events
 | Stream not writing     | `max(_synced_at) < now() - interval '1 hour'` on a busy stream | One stream failing while others continue.                                                      |
 | Skipped writes spiking | `skipped` in the logs                                          | Out-of-order delivery or a backfill colliding with the tail. Usually benign, occasionally not. |
 | Drift detected         | `reconcile` exits 2                                            | Missed creates or deletes.                                                                     |
+| Events quarantined     | `rejected > 0` in `status`, or `rejected` exits 2              | One payload the mirror cannot apply. The tail kept going; the object waits on a replay.        |
 | Process exited         | `listen` returned or crashed                                   | A rejected credential or a backwards-paging cursor stops the engine on purpose.                |
 
 The engine emits structured JSON logs with per-batch counts:
@@ -215,10 +221,79 @@ Backfill checkpoints after every page, so an interrupted run resumes:
 npx workos-sync-postgres backfill --resume
 ```
 
+## Rejected events
+
+There is one cursor per environment. Without a quarantine, one event that fails
+deterministically — a payload a generated column cannot cast, an `updated_at`
+the `::timestamptz` cast rejects, a router bug on a shape nobody has seen —
+would fail every poll, the cursor would never move, and every stream in the
+environment would stop, sign-in capture included, while the 90-day retention
+clock ran down.
+
+So the tail isolates such an event and, once it has failed on **two
+consecutive polls**, sets it aside in `workos._rejected` and moves the cursor
+past the batch. Transient failures never qualify: a hydration 5xx, any API
+error, a dropped connection, a deadlock, a full disk all fail the tick and
+retry as before. The rules are spelled out in
+[Consistency](consistency.md#quarantine).
+
+When it happens, you get three signals: an error log line per event, with the
+event id, type, object id and the database's message; `rejected` in `status`;
+and a non-zero exit from `rejected`, so it can run as a scheduled check next to
+`reconcile`.
+
+```bash
+npx workos-sync-postgres rejected
+```
+
+```json
+{
+  "production": [
+    {
+      "eventId": "event_01HXXXXXXXXXXXXXXXXXXXXXX",
+      "eventType": "user.updated",
+      "objectId": "user_01HXXXXXXXXXXXXXXXXXXXXXX",
+      "createdAt": "2026-10-22T18:04:09.471Z",
+      "rejectedAt": "2026-10-22T18:04:21.118+00:00",
+      "error": "error: invalid input syntax for type boolean: \"maybe\"",
+      "raw": { "id": "event_01H...", "event": "user.updated", "data": { "...": "..." } }
+    }
+  ]
+}
+```
+
+Then, in order:
+
+1. **Read the error.** It is the database's own message, so it names the
+   column or the cast. The whole event is in `raw`, and the same row is in
+   `workos._rejected` if SQL is more convenient.
+2. **Fix the cause.** Usually a release: a widened column type, a corrected
+   `extraColumns` path, a router fix. Occasionally the payload upstream.
+3. **Replay.** Everything, or one event by id:
+
+   ```bash
+   npx workos-sync-postgres rejected --replay
+   npx workos-sync-postgres rejected --replay --id event_01H...
+   ```
+
+   Each event goes back through the normal write path, oldest first. Those
+   that succeed are forgotten; those that fail again stay, with the error
+   updated, and the command exits 2. The staleness gate still applies, so a
+   replayed event older than the row it targets is a no-op: later events
+   already carried the newer state, and the row is already correct.
+
+The quarantine holds whole event payloads, which embed personal data; `redact`
+scrubs it along with the `events` archive.
+
 ## Recovery
 
 - **Backfill was interrupted.**
   - Call `backfill --resume`.
+
+- **One event keeps failing.**
+  - It is quarantined automatically after two polls, and `status` shows
+    `rejected > 0`. Fix the cause, then `rejected --replay`. See
+    [Rejected events](#rejected-events).
 
 - **The sync was down for hours or days.**
   - There's nothing to do; start it again. The

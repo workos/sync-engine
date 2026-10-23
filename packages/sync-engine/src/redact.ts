@@ -14,8 +14,8 @@
  *
  * Not to be confused with `Destination.redact`, which erases one subject.
  */
-import type { Destination, FreshnessRow, Row, WriteMode } from './destination.js'
-import type { Logger, StreamDef, WriteStats } from './types.js'
+import type { Destination, FreshnessRow, RejectedEvent, Row, WriteMode } from './destination.js'
+import type { Logger, StreamDef, WorkOSEvent, WriteStats } from './types.js'
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -111,6 +111,25 @@ export class RedactingDestination implements Destination {
 
   setState(env: string, stream: string, state: unknown): Promise<void> {
     return this.inner.setState(env, stream, state)
+  }
+
+  // The quarantine store holds raw events, which never carry the credentials
+  // `redact` paths name (those exist only on REST objects), so these pass
+  // straight through like the `events` archive write does.
+  reject(env: string, rows: { event: WorkOSEvent; error: string }[]): Promise<void> {
+    return this.inner.reject(env, rows)
+  }
+
+  rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]> {
+    return this.inner.rejected(env, opts)
+  }
+
+  clearRejected(env: string, ids: string[]): Promise<number> {
+    return this.inner.clearRejected(env, ids)
+  }
+
+  isTransientError(err: unknown): boolean {
+    return this.inner.isTransientError?.(err) ?? false
   }
 }
 

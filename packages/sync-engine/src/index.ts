@@ -13,7 +13,7 @@
 export { SyncEngine } from './engine.js'
 export type { EngineDeps } from './engine.js'
 
-export type { Destination, FreshnessRow, Row, WriteMode } from './destination.js'
+export type { Destination, FreshnessRow, RejectedEvent, Row, WriteMode } from './destination.js'
 export { StateStore } from './state.js'
 export { redactPayload, redactRows, RedactingDestination, redacting } from './redact.js'
 
@@ -38,7 +38,14 @@ export {
 
 export { verifyWebhook, parseSignatureHeader, WebhookVerificationError } from './webhook.js'
 
-export { applyEvents } from './sync/apply.js'
+export { applyEvents, HydrationError } from './sync/apply.js'
+export {
+  applyWithQuarantine,
+  isTransientError,
+  eventObjectId,
+  PoisonEventSuspectedError,
+} from './sync/quarantine.js'
+export type { QuarantineResult, RejectedRow, Suspect, SuspectMap } from './sync/quarantine.js'
 export { backfillStream } from './sync/backfill.js'
 export { diffStream, freshness, refreshStream } from './sync/reconcile.js'
 

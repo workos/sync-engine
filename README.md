@@ -114,6 +114,7 @@ the same setting, the flag wins.
 | `refresh`   |               | Re-list top-level streams to refresh fields that event payloads omit.                                        |
 | `status`    |               | Cursor, time since the last successful poll, and per-stream row counts, tombstones and lag.                  |
 | `redact`    | `--user <id>` | Erase one subject from the mirror and the event archive.                                                     |
+| `rejected`  | `--replay`, `--id <event_id>` | Show events the tail quarantined; exits 2 if there are any. `--replay` re-applies them (one, with `--id`) once the cause is fixed. |
 | `streams`   |               | List what this build can mirror, with group, mode, and whether it is on by default.                          |
 
 ### Flags available for every command

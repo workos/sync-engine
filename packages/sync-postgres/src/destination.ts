@@ -6,13 +6,17 @@ import type {
   Destination,
   FreshnessRow,
   Logger,
+  RejectedEvent,
   Row,
   StreamDef,
+  WorkOSEvent,
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows } from './db/upsert.js'
+import { rejectEvents, listRejected, clearRejected } from './db/rejected.js'
+import { isTransientPgError } from './db/errors.js'
 import { migrate } from './schema/migrate.js'
 import { quoteIdent, safeIdentifier } from './schema/ddl.js'
 
@@ -53,6 +57,10 @@ export class PostgresDestination implements Destination {
 
   private get writeOpts() {
     return { schema: this.schema, batchSize: this.batchSize }
+  }
+
+  private get bookkeepingOpts() {
+    return { schema: this.schema, syncId: this.syncId }
   }
 
   private table(stream: StreamDef): string {
@@ -159,7 +167,32 @@ export class PostgresDestination implements Destination {
       [env, userId],
     )
     if (ev.rows.length > 0) out.push({ table: 'events', rows: ev.rows.length })
+    // Quarantined events embed the payload too, and they may be the only copy
+    // of it: an event rejected before its archive write succeeded is nowhere
+    // in `events`.
+    const rj = await this.client.query(
+      `delete from ${quoteIdent(this.schema)}."_rejected"
+       where sync_id = $1 and env = $2 and ("object_id" = $3 or "_raw"->'data'->>'user_id' = $3) returning 1`,
+      [this.syncId, env, userId],
+    )
+    if (rj.rows.length > 0) out.push({ table: '_rejected', rows: rj.rows.length })
     return out
+  }
+
+  reject(env: string, rows: { event: WorkOSEvent; error: string }[]): Promise<void> {
+    return rejectEvents(this.client, this.bookkeepingOpts, env, rows)
+  }
+
+  rejected(env: string, opts: { ids?: string[] } = {}): Promise<RejectedEvent[]> {
+    return listRejected(this.client, this.bookkeepingOpts, env, opts.ids)
+  }
+
+  clearRejected(env: string, ids: string[]): Promise<number> {
+    return clearRejected(this.client, this.bookkeepingOpts, env, ids)
+  }
+
+  isTransientError(err: unknown): boolean {
+    return isTransientPgError(err)
   }
 
   async getState<T>(env: string, stream: string): Promise<T | null> {

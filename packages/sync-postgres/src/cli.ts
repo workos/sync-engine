@@ -10,6 +10,7 @@
  *   workos-sync-postgres refresh              re-list to refresh partial event fields
  *   workos-sync-postgres status               cursor age and per-stream freshness
  *   workos-sync-postgres redact --user <id>   erase one subject
+ *   workos-sync-postgres rejected [--replay]  quarantined events; replay them once fixed
  *   workos-sync-postgres streams              list what this build can mirror
  */
 import {
@@ -129,6 +130,8 @@ Commands
   refresh              Re-list top-level streams (refreshes fields events omit)
   status               Cursor position, poll age, and per-stream freshness
   redact --user <id>   Delete one subject from the mirror and event archive
+  rejected             Show events quarantined by the tail; exits 2 if there are any
+           --replay    Re-apply them all (or one with --id <event_id>) once the cause is fixed
   streams              Show the streams this build can mirror
 
 Flags
@@ -151,7 +154,12 @@ Environment
   LOG_LEVEL                    debug | info | warn | error | silent
 `
 
-export async function main(argv = process.argv.slice(2)): Promise<number> {
+export interface CliDeps {
+  /** Injectable for tests, which run against PGlite rather than a `DATABASE_URL`. */
+  engine?: SyncEngine
+}
+
+export async function main(argv = process.argv.slice(2), deps: CliDeps = {}): Promise<number> {
   const { command, flags } = parseArgs(argv)
 
   if (command === 'help' || flags['help']) {
@@ -173,7 +181,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0
   }
 
-  const engine = new SyncEngine(configFromEnv(flags))
+  const engine = deps.engine ?? new SyncEngine(configFromEnv(flags))
   try {
     switch (command) {
       case 'init': {
@@ -225,6 +233,22 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         const r = await engine.redact(user)
         process.stdout.write(JSON.stringify(r, null, 2) + '\n')
         return 0
+      }
+      case 'rejected': {
+        const id = flags['id']
+        if (id !== undefined && typeof id !== 'string') throw new Error('--id requires an event id')
+        const only = typeof id === 'string' ? { ids: [id] } : {}
+        if (flags['replay']) {
+          const r = await engine.replayRejected(only)
+          process.stdout.write(JSON.stringify(r, null, 2) + '\n')
+          // Anything still rejected after a replay is still a problem.
+          return r.stillRejected.length > 0 ? 2 : 0
+        }
+        const r = await engine.rejected(only)
+        process.stdout.write(JSON.stringify(r, null, 2) + '\n')
+        // Like `reconcile`: a non-zero exit makes this a scheduled check.
+        const any = Object.values(r).some((rows) => rows.length > 0)
+        return any ? 2 : 0
       }
       default:
         process.stderr.write(`unknown command: ${command}\n\n${HELP}`)

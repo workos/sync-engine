@@ -108,6 +108,9 @@ describe('RedactingDestination', () => {
       redact: async () => [],
       getState: async () => null,
       setState: async () => {},
+      reject: async () => {},
+      rejected: async () => [],
+      clearRejected: async () => 0,
     }
     return { inner, calls }
   }

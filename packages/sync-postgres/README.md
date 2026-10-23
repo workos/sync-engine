@@ -54,6 +54,7 @@ npx workos-sync-postgres listen     # tail the Events API, forever
 | `refresh`              | Re-list top-level streams to refresh fields that event payloads omit. Re-run `backfill` for per-parent streams. |
 | `status`               | Cursor, time since the last successful poll, and per-stream row counts and lag.                                 |
 | `redact --user <id>`   | Erase one subject from the mirror and the event archive.                                                        |
+| `rejected [--replay] [--id <event_id>]` | Show events the tail quarantined; exits 2 if there are any. `--replay` re-applies them once the cause is fixed. |
 | `streams`              | List what this build can mirror.                                                                                |
 
 Rows are labelled `_env = 'production'` by default; set

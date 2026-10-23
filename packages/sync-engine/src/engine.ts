@@ -11,7 +11,7 @@
  * Steps 2 and 3 overlap on purpose. Anything that changes mid-backfill is
  * replayed in step 3, and the staleness gate decides which version wins.
  */
-import type { Destination, FreshnessRow } from './destination.js'
+import type { Destination, FreshnessRow, RejectedEvent } from './destination.js'
 import { StateStore } from './state.js'
 import { STREAMS, streamByName, defaultStreams, subscribedEventTypes } from './catalog.js'
 import { WorkOSClient, WorkOSApiError } from './workos/client.js'
@@ -23,6 +23,7 @@ import {
   EVENT_RETENTION_DAYS,
 } from './workos/events.js'
 import { applyEvents } from './sync/apply.js'
+import { applyWithQuarantine, eventObjectId, isTransientError, type SuspectMap } from './sync/quarantine.js'
 import { backfillStream, type BackfillStreamResult } from './sync/backfill.js'
 import { diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
 import { createLogger } from './logger.js'
@@ -55,6 +56,12 @@ export interface EnvironmentStatus {
   lastPolledAt: string | null
   /** Seconds since `lastPolledAt`. This is the number to alert on for a stalled sync. */
   pollAgeSeconds: number | null
+  /**
+   * Events the tail set aside because they failed deterministically. The
+   * cursor has moved past them, so nothing else is stalled, but they are not
+   * in the mirror until `replayRejected` succeeds. Alert on this being non-zero.
+   */
+  rejected: number
   streams: FreshnessRow[]
 }
 
@@ -70,6 +77,12 @@ export class SyncEngine {
   private logger: Logger
   private clients = new Map<string, WorkOSClient>()
   private stopping = false
+  /**
+   * Events that failed on the previous poll, per environment. In memory on
+   * purpose: a restart forgets them, and the worst that costs is one more
+   * poll before a poison event is quarantined.
+   */
+  private suspects = new Map<string, SuspectMap>()
   /** Event types passed to `GET /events`, which requires them. */
   readonly eventTypes: string[]
   /** Effective hydration setting, after defaults. */
@@ -215,11 +228,21 @@ export class SyncEngine {
     return results
   }
 
+  private suspectsFor(env: string): SuspectMap {
+    let m = this.suspects.get(env)
+    if (!m) {
+      m = new Map()
+      this.suspects.set(env, m)
+    }
+    return m
+  }
+
   /** One poll of the events tail across every environment. */
-  async tick(): Promise<{ processed: number; stats: WriteStats }> {
+  async tick(): Promise<{ processed: number; stats: WriteStats; rejected: number }> {
     await this.init()
     let processed = 0
     let stats = emptyStats()
+    let rejected = 0
 
     for (const env of this.config.environments) {
       const api = this.clientFor(env)
@@ -267,12 +290,26 @@ export class SyncEngine {
           continue
         }
 
-        const result = await applyEvents(this.destination, events, {
-          env: env.name,
-          logger: this.logger,
-          hydrate: this.hydrate,
-          api,
-        })
+        // Applies the batch as before; on a deterministic failure it isolates
+        // the event responsible and, once it has failed twice, quarantines it
+        // so the cursor can move. See sync/quarantine.ts.
+        const result = await applyWithQuarantine(
+          this.destination,
+          events,
+          { env: env.name, logger: this.logger, hydrate: this.hydrate, api },
+          this.suspectsFor(env.name),
+        )
+        for (const row of result.rejected) {
+          this.logger.error('event quarantined; the cursor is moving past it', {
+            env: env.name,
+            eventId: row.event.id,
+            eventType: row.event.event,
+            objectId: eventObjectId(row.event),
+            error: row.error,
+            hint: 'inspect with the `rejected` command; fix the cause, then `rejected --replay`',
+          })
+        }
+        rejected += result.rejected.length
 
         // Checkpoint only after the writes above are durable.
         const last = events[events.length - 1]!
@@ -307,7 +344,7 @@ export class SyncEngine {
         this.logger.error('tick failed', { env: env.name, error: String(err) })
       }
     }
-    return { processed, stats }
+    return { processed, stats, rejected }
   }
 
   /** Poll until `stop()`. */
@@ -393,10 +430,70 @@ export class SyncEngine {
         cursorAgeDays: cursorAgeDays(tail?.lastEventAt),
         lastPolledAt: tail?.lastPolledAt ?? null,
         pollAgeSeconds: Number.isFinite(polled) ? (Date.now() - polled) / 1000 : null,
+        rejected: (await this.destination.rejected(env.name)).length,
         streams: await freshness(this.destination, env.name, this.streams),
       }
     }
     return out
+  }
+
+  /** Quarantined events per environment, oldest first. */
+  async rejected(options: { ids?: string[] } = {}): Promise<Record<string, RejectedEvent[]>> {
+    await this.init()
+    const out: Record<string, RejectedEvent[]> = {}
+    for (const env of this.config.environments) {
+      out[env.name] = await this.destination.rejected(env.name, options)
+    }
+    return out
+  }
+
+  /**
+   * Put quarantined events back through the normal write path, oldest first,
+   * and forget the ones that succeed. Run it after fixing whatever rejected
+   * them: a release with the router fix, the generated column altered, the
+   * payload corrected upstream. One that fails again stays quarantined with
+   * its error updated. The staleness gate still applies, so a replayed event
+   * older than the row it targets is a no-op — correct, because later events
+   * already carried the newer state.
+   */
+  async replayRejected(options: { ids?: string[] } = {}): Promise<{
+    replayed: number
+    stillRejected: { eventId: string; error: string }[]
+  }> {
+    await this.init()
+    let replayed = 0
+    const stillRejected: { eventId: string; error: string }[] = []
+    for (const env of this.config.environments) {
+      const api = this.clientFor(env)
+      const rows = await this.destination.rejected(env.name, options)
+      for (const row of rows) {
+        try {
+          await applyEvents(this.destination, [row.raw], {
+            env: env.name,
+            logger: this.logger,
+            hydrate: this.hydrate,
+            api,
+          })
+        } catch (err) {
+          // An outage mid-replay is not a verdict on the event. Stop and say
+          // so, rather than stamping every remaining row with a connection error.
+          if (isFatal(err) || isTransientError(err, this.destination)) throw err
+          const error = String(err)
+          await this.destination.reject(env.name, [{ event: row.raw, error }])
+          stillRejected.push({ eventId: row.eventId, error })
+          this.logger.warn('replayed event failed again', { env: env.name, eventId: row.eventId, error })
+          continue
+        }
+        await this.destination.clearRejected(env.name, [row.eventId])
+        replayed++
+        this.logger.info('replayed rejected event', {
+          env: env.name,
+          eventId: row.eventId,
+          eventType: row.eventType,
+        })
+      }
+    }
+    return { replayed, stillRejected }
   }
 
   /**

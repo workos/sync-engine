@@ -136,13 +136,41 @@ is a genuine event.
 | 429                               | Retried, honouring `Retry-After`.                                                                                                                                        |
 | One stream fails during backfill  | Isolated. Other streams continue; the failed stream's checkpoint stays where it was and `--resume` picks it up.                                                          |
 | One stream fails during reconcile | Isolated. Other streams are still diffed; the failed one is logged and omitted from the report.                                                                          |
-| A write fails during the tail     | The whole batch is retried on the next poll. There is one cursor per environment, not per stream, so no part of the batch is acknowledged until all of it is written.    |
+| A write fails during the tail     | Retried on the next poll when it could be transient: a dropped connection, a deadlock, a hydration 5xx. When it is deterministic, the engine finds the event at fault and, once it has failed on two consecutive polls, quarantines it in `_rejected` and moves the cursor past it, so one bad payload cannot stall the environment. See [Quarantine](#quarantine). |
 | Invalid API key (401 or 403)      | Fatal. The engine stops rather than looping, because retrying will not fix a rejected credential and a healthy-looking process that writes nothing is the worse outcome. |
 | Cursor pages backwards            | Fatal, with an explicit error. Continuing would overwrite current state with history.                                                                                    |
 | Unknown event type                | Archived, logged at info, processing continues.                                                                                                                          |
 | Process dies mid-batch            | The batch replays on restart. Writes are idempotent.                                                                                                                     |
 
-There is no dead-letter queue. The Events API's replayability serves that role:
-a failed range simply is not acknowledged, and the next run retries it. That is
+The Events API's replayability is the retry queue for everything transient: a
+failed range simply is not acknowledged, and the next poll retries it. That is
 only safe if you alert on poll age, which is why `status` reports it and why it
 is the first thing in [Operations](operations.md).
+
+### Quarantine
+
+There is one cursor per environment, not per stream. A batch that fails
+deterministically — an `updated_at` the `::timestamptz` cast rejects, a
+generated column that cannot cast one payload's value, a router bug on a shape
+nobody has seen — would otherwise stop every stream in that environment,
+sign-in capture included, while the 90-day retention clock runs. The quarantine
+exists for exactly that case, and it is deliberately narrow, because skipping
+an event is permanent and reprocessing one is free:
+
+- **Only deterministic failures.** A hydration failure, any WorkOS API error,
+  and any database error the destination calls transient (for Postgres:
+  SQLSTATE classes `08`, `40`, `53`, `57`, `58` and `XX`, and socket errors)
+  fail the tick and retry exactly as before. Nothing is set aside.
+- **Only after two sightings.** When a batch fails for a reason that could be
+  deterministic, the events are applied one at a time to find the one at
+  fault. The first time it fails, the tick still fails and the cursor stays
+  put; it is quarantined only if it fails again on the next poll. That costs
+  one poll interval and protects against transient errors the classifier does
+  not recognise.
+- **Never a whole batch.** If every event in a batch of more than one fails,
+  that is an outage, and the batch is retried.
+- **Reversible.** The whole event is kept in `_rejected`, `status` reports
+  the count, and `rejected --replay` puts it back through the normal write
+  path once the cause is fixed. Until then the object it describes is missing
+  or stale in the mirror: convergence, for that one object, waits on the
+  replay. Alert on `rejected` for the same reason you alert on poll age.

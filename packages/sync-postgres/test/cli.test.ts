@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest'
-import { parseHydrate } from '../src/cli.js'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
+import { main, parseHydrate } from '../src/cli.js'
+import { createTestDb } from './helpers/pg.js'
+import { FaultyDestination } from './helpers/faulty.js'
+import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
+import type { SqlClient } from '../src/db/client.js'
 
 describe('WORKOS_SYNC_HYDRATE', () => {
   it('leaves the engine default in place when unset', () => {
@@ -20,5 +25,74 @@ describe('WORKOS_SYNC_HYDRATE', () => {
   it('rejects anything else loudly', () => {
     expect(() => parseHydrate('sometimes')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
     expect(() => parseHydrate('users=maybe')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
+  })
+})
+
+describe('rejected command', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+  let out: string[]
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+    out = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk))
+      return true
+    })
+  })
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await db.close()
+  })
+
+  const lastJson = () => JSON.parse(out[out.length - 1]!) as Record<string, unknown>
+
+  it('exits 2 while quarantined events exist, and 0 once they replay', async () => {
+    fake.createUser({ email: 'good@example.com' })
+    const bad = fake.createUser({ email: 'bad@example.com' })
+    const destination = new FaultyDestination({ db, schema: 'workos' })
+    destination.poison = bad['id'] as string
+    const engine = new SyncEngine(
+      {
+        destination,
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: ['users'],
+        hydrate: 'off',
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({ apiKey: 'sk_test_1', apiUrl: 'http://fake.workos.local', fetchImpl: fake.fetchImpl }),
+      },
+    )
+
+    // Nothing quarantined yet: a clean exit, so a scheduled check stays quiet.
+    expect(await main(['rejected'], { engine })).toBe(0)
+
+    // Two polls: first sighting, then quarantine.
+    await engine.tick()
+    await engine.tick()
+    expect(await main(['rejected'], { engine })).toBe(2)
+    const listed = lastJson() as { prod: { eventId: string; eventType: string; error: string }[] }
+    expect(listed.prod).toHaveLength(1)
+    expect(listed.prod[0]!.eventType).toBe('user.created')
+    expect(listed.prod[0]!.error).toMatch(/invalid input syntax/)
+
+    // Still broken: a replay reports it and keeps the non-zero exit.
+    expect(await main(['rejected', '--replay'], { engine })).toBe(2)
+    expect((lastJson() as { stillRejected: unknown[] }).stillRejected).toHaveLength(1)
+
+    // Fixed: replaying one by id clears it, and the check goes quiet again.
+    destination.poison = null
+    expect(await main(['rejected', '--replay', '--id', listed.prod[0]!.eventId], { engine })).toBe(0)
+    expect(lastJson()).toEqual({ replayed: 1, stillRejected: [] })
+    expect(await main(['rejected'], { engine })).toBe(0)
+
+    const users = await db.query<{ email: string }>(`select email from workos.users order by email`)
+    expect(users.rows.map((r) => r.email)).toEqual(['bad@example.com', 'good@example.com'])
   })
 })

@@ -30,6 +30,23 @@ export interface ApplyResult {
   hydrated: number
 }
 
+/**
+ * A hydration GET that failed for a reason other than 404. It gets its own
+ * type so the quarantine logic can tell an API outage apart from a poison
+ * event: the event is fine, the re-fetch is not, and skipping the event
+ * would be the wrong response to either.
+ */
+export class HydrationError extends Error {
+  constructor(
+    readonly eventId: string,
+    readonly path: string,
+    cause: unknown,
+  ) {
+    super(`hydration failed for ${eventId} (GET ${path}): ${String(cause)}`, { cause })
+    this.name = 'HydrationError'
+  }
+}
+
 function hydrateModeFor(opts: ApplyOptions, stream: string): HydrateMode {
   const h = opts.hydrate
   if (!h) return 'off'
@@ -98,7 +115,13 @@ export async function applyEvents(
       const want = mode === 'always' || (mode === 'on_create' && isCreate)
       const id = objectIdOf(data)
       if (want && def?.get && id && action.kind === 'upsert') {
-        const fresh = await opts.api.get<Record<string, unknown>>(def.get(id))
+        const path = def.get(id)
+        let fresh: Record<string, unknown> | null
+        try {
+          fresh = await opts.api.get<Record<string, unknown>>(path)
+        } catch (err) {
+          throw new HydrationError(event.id, path, err)
+        }
         if (fresh) {
           data = fresh
           result.hydrated++

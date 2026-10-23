@@ -106,7 +106,18 @@ export function createSchemaSql(schema: string): string {
   return `create schema if not exists ${quoteIdent(schema)};`
 }
 
-/** Engine bookkeeping: cursors and applied-schema fingerprints. */
+/**
+ * Engine bookkeeping: cursors, applied-schema fingerprints, and the
+ * quarantine. These run on every `migrate` before the fingerprint check, so a
+ * table added here reaches existing deployments without a new fingerprint.
+ *
+ * `_rejected` holds events the tail set aside after they failed
+ * deterministically on two consecutive polls (see the engine's
+ * `sync/quarantine.ts`). It keeps the whole event, not a reference into
+ * `events`, because the archive write may itself have been the failure.
+ * `created_at` is nullable and goes through `parse_iso8601` on insert: a
+ * quarantine write must never fail on the same bad data that caused it.
+ */
 export function bookkeepingSql(schema: string): string {
   const s = quoteIdent(schema)
   return `
@@ -123,6 +134,19 @@ create table if not exists ${s}."_migrations" (
   fingerprint text primary key,
   applied_at  timestamptz not null default now(),
   detail      jsonb
+);
+
+create table if not exists ${s}."_rejected" (
+  sync_id     text not null,
+  env         text not null,
+  event_id    text not null,
+  event_type  text not null,
+  object_id   text,
+  created_at  timestamptz,
+  rejected_at timestamptz not null default now(),
+  error       text not null,
+  "_raw"      jsonb not null,
+  primary key (sync_id, env, event_id)
 );`.trim()
 }
 
