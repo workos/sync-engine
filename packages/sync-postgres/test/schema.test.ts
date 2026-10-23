@@ -532,7 +532,8 @@ describe('live views against real Postgres', () => {
     await migrate(db, [users], 'workos')
     // Same columns in the same order, so Postgres itself would accept
     // `create or replace` and keep the reader's grant — on a definition that
-    // is not ours. No comment, so it is somebody else's.
+    // is not ours. No comment and a different `where`, so it is somebody
+    // else's rather than an interrupted creation of ours.
     await db.exec(`
       drop view workos.users_live;
       create view workos.users_live as select * from workos.users;
@@ -574,5 +575,54 @@ describe('live views against real Postgres', () => {
     expect(r.rows[0]!.def).toContain('_deleted_at IS NULL')
     expect(r.rows[0]!.def).not.toContain('nowhere')
     expect(await countAsReader()).toBe('0')
+  })
+
+  it('finishes a creation that was interrupted before the comment, rather than calling it foreign', async () => {
+    const users = streamByName('users')!
+    await migrate(db, [users], 'workos')
+    // What a process that died between creating the view and commenting it
+    // would leave: the generated definition, no comment. A reader granted in
+    // the meantime must keep access, which `create or replace` guarantees.
+    await db.exec(`
+      comment on view workos.users_live is null;
+      create role reader;
+      grant usage on schema workos to reader;
+      grant select on workos.users_live to reader;
+      delete from workos."_migrations";
+    `)
+
+    const r = await migrate(db, [users], 'workos')
+    expect(r.applied).toBe(true)
+
+    const c = await db.query<{ c: string | null }>(
+      `select obj_description('workos.users_live'::regclass, 'pg_class') as c`,
+    )
+    expect(c.rows[0]!.c).toContain('@workos/sync-postgres')
+    expect(await countAsReader()).toBe('0')
+    // The probe view used to compare definitions does not outlive the check.
+    const probe = await db.query<{ v: string | null }>(`select to_regclass('pg_temp."_sync_postgres_view_probe"') as v`)
+    expect(probe.rows[0]!.v).toBeNull()
+  })
+
+  it('creates a view and its comment as one unit', async () => {
+    const users = streamByName('users')!
+    // Every `comment on view` fails, as if the process died right after the
+    // create. The view must not be left behind without its comment.
+    const failing = (client: SqlClient): SqlClient => ({
+      ...client,
+      async exec(sql) {
+        if (sql.startsWith('comment on view')) throw new Error('simulated death after create')
+        await client.exec(sql)
+      },
+      async transaction<T>(fn: (tx: SqlClient) => Promise<T>) {
+        return client.transaction((tx) => fn(failing(tx)))
+      },
+    })
+    await expect(migrate(failing(db), [users], 'workos')).rejects.toThrow('simulated death after create')
+
+    expect(await viewNames()).not.toContain('users_live')
+    // And a plain retry completes setup.
+    await migrate(db, [users], 'workos')
+    expect(await viewNames()).toContain('users_live')
   })
 })

@@ -72,7 +72,10 @@ Things to know:
   asking you to rename or drop them: one without the generated comment, which
   is yours — even with the same shape, where Postgres itself would have
   overwritten it in place — and one with the comment but not the shape of
-  `select *` over its table, which was rebuilt by hand.
+  `select *` over its table, which was rebuilt by hand. A view and its comment
+  are created in one transaction, so an interrupted `init` cannot leave one
+  without the other; should a view with exactly the generated definition and
+  no comment exist anyway, `init` recognises it as its own and finishes it.
 - **Append-only streams have no view.** `events` and `auth_attempts` have no
   `_deleted_at` column, so there is nothing to filter.
 
