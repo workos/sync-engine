@@ -881,27 +881,23 @@ describe('single-writer lease', () => {
     expect(await other.getLease('prod')).toMatchObject({ holder: 'replacement' })
   })
 
-  it('does not rewind a cursor another process advanced while it was stalled', async () => {
+  it('does not overwrite a position that moved under it, even while it holds the lease', async () => {
     fake.createUser()
     const other = new PostgresDestination({ db, schema: 'workos' })
-    let stalled = false
-    // Stalled past the TTL; a replacement took over, checkpointed, and
-    // stopped cleanly before this process woke up. The lease is free again,
-    // so renewing it succeeds and cannot be the guard: the cursor itself is.
+    let moved = false
+    // The lease is intact throughout, so it cannot be the guard. A backfill
+    // re-capturing the position mid-poll, or a replacement that advanced the
+    // cursor and let go before this process woke, both look like this.
     const engine = makeEngine(db, fake, TIER1, {}, async () => {
-      if (stalled) return
-      stalled = true
-      await db.query(`update workos."_sync_lease" set expires_at = now() - interval '1 second'`)
-      await other.acquireLease('prod', 'replacement', 60_000)
-      await new StateStore(other).setTail('prod', { cursor: 'event_from_replacement' })
-      await other.releaseLease('prod', 'replacement')
+      if (moved) return
+      moved = true
+      await new StateStore(other).setTail('prod', { cursor: 'event_from_elsewhere' })
     })
     await engine.init()
     const r = await engine.tick()
 
     expect(r.processed).toBe(0)
-    expect((await engine.status())['prod']!.cursor).toBe('event_from_replacement')
-    // The tick renewed the free lease to check it, and gave it back on return.
+    expect((await engine.status())['prod']!.cursor).toBe('event_from_elsewhere')
     expect(await other.getLease('prod')).toBeNull()
   })
 

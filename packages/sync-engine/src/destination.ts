@@ -21,7 +21,10 @@
  * - **One writer per cursor.** `acquireLease` is atomic: of two processes
  *   asking at once, exactly one is told it holds the lease. The tail runs
  *   under it so a rolling deploy cannot have both the old and the new process
- *   advancing the same cursor.
+ *   advancing the same cursor. `setStateIfHeld` makes the cursor write itself
+ *   conditional on still holding it, in the same statement, so a process that
+ *   stalled past its lease is refused by the database rather than by a check
+ *   made a moment earlier.
  *
  * The `created`/`updated`/`skipped` split in `WriteStats` is a health metric
  * the engine logs but never branches on; an engine that cannot tell an insert
@@ -105,6 +108,16 @@ export interface Destination {
   /** Cursor and run state, keyed by `(env, stream)`. */
   getState<T>(env: string, stream: string): Promise<T | null>
   setState(env: string, stream: string, state: unknown): Promise<void>
+  /**
+   * Write `state` only if `holder` holds the unexpired lease for `env` and
+   * the stored state for `(env, stream)` still equals `expected` (`null` for
+   * no row), with both conditions checked in the same atomic statement as
+   * the write. Returns whether it was written. The engine checkpoints the
+   * tail through this, so a former holder saving an older cursor, or a poll
+   * racing a backfill that re-captured the position, is refused by the
+   * database itself: there is no window between the check and the write.
+   */
+  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean>
 
   /**
    * Take or renew the single-writer lease for `env`, atomically. Succeeds when

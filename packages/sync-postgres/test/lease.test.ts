@@ -94,4 +94,44 @@ describe('events tail lease', () => {
     expect((await dest.acquireLease('staging', 'c', 60_000)).acquired).toBe(true)
     expect(await dest.getLease('prod')).toMatchObject({ holder: 'a' })
   })
+
+  describe('fences the state write', () => {
+    const stored = () => dest.getState<Record<string, unknown>>('prod', '__tail__')
+
+    it('writes for the holder, and refuses anyone else', async () => {
+      await dest.acquireLease('prod', 'a', 60_000)
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'b', null)).toBe(false)
+      expect(await stored()).toBeNull()
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)).toBe(true)
+      expect(await stored()).toEqual({ cursor: 'c1' })
+    })
+
+    it('refuses a holder whose lease has expired or been taken over', async () => {
+      await dest.acquireLease('prod', 'a', 60_000)
+      await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
+      await db.query(`update workos."_sync_lease" set expires_at = now() - interval '1 second'`)
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { cursor: 'c1' })).toBe(false)
+      // The replacement is now the writer; the former holder stays refused.
+      await dest.acquireLease('prod', 'b', 60_000)
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { cursor: 'c1' })).toBe(false)
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'b', { cursor: 'c1' })).toBe(true)
+      expect(await stored()).toEqual({ cursor: 'c2' })
+    })
+
+    it('refuses a write whose expected state is no longer the stored one', async () => {
+      await dest.acquireLease('prod', 'a', 60_000)
+      await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
+      // A row appeared where none was expected, and a stale expectation: both
+      // are how a holder would rewind a position someone else moved.
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', null)).toBe(false)
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { cursor: 'c0' })).toBe(false)
+      expect(await stored()).toEqual({ cursor: 'c1' })
+      // Equality is semantic, not textual: key order does not matter.
+      await dest.setState('prod', '__tail__', { cursor: 'c1', lastEventAt: null })
+      expect(
+        await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { lastEventAt: null, cursor: 'c1' }),
+      ).toBe(true)
+      expect(await stored()).toEqual({ cursor: 'c2' })
+    })
+  })
 })

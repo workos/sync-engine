@@ -20,7 +20,7 @@
 import os from 'node:os'
 import { randomBytes } from 'node:crypto'
 import type { Destination, FreshnessRow, Lease } from './destination.js'
-import { StateStore, type TailState } from './state.js'
+import { StateStore, type TailState, type TailUpdate } from './state.js'
 import { STREAMS, streamByName, defaultStreams, subscribedEventTypes } from './catalog.js'
 import { WorkOSClient, WorkOSApiError } from './workos/client.js'
 import {
@@ -422,38 +422,28 @@ export class SyncEngine {
    * while the poll ran. Mirror writes are idempotent and staleness-gated, so
    * a former holder re-applying a batch is harmless; a former holder saving
    * its older cursor is not, because it rewinds the replacement and makes it
-   * apply the same events again. Two checks guard the write: the lease is
-   * renewed, which a holder that was taken over is refused; and the stored
-   * cursor must still be the one this poll started from, which catches a
-   * replacement that advanced it and has since let go, and a backfill that
-   * re-captured the position. Returns false when nothing was written.
+   * apply the same events again. The destination refuses the write, in the
+   * same statement that makes it, unless this process holds the lease and the
+   * stored position is still the one this poll started from. The second
+   * condition catches a replacement that advanced the cursor and has since
+   * let go, and a backfill that re-captured the position. Nothing is acquired
+   * here: taking a lease is the loop's job, and the heartbeat's. Returns
+   * false when nothing was written.
    */
-  private async checkpoint(
-    env: string,
-    before: TailState | null,
-    next: {
-      cursor: string | null
-      lastEventAt?: string | null
-      rangeStart?: string | null
-      lastPolledAt?: string | null
-    },
-  ): Promise<boolean> {
-    const r = await this.destination.acquireLease(env, this.holder, this.leaseTtlMs)
-    if (!r.acquired) {
-      this.lostLease(env, r.holder)
-      return false
-    }
-    const stored = await this.state.getTail(env)
-    if ((stored?.cursor ?? null) !== (before?.cursor ?? null)) {
+  private async checkpoint(env: string, before: TailState | null, next: TailUpdate): Promise<boolean> {
+    if (await this.state.setTailIfHeld(env, next, this.holder, before)) return true
+    // Refused. The two reasons mean different things to an operator, so look
+    // up which it was; this path is rare enough that one extra read is fine.
+    const lease = await this.destination.getLease(env)
+    if (lease?.holder === this.holder) {
       this.logger.warn('events cursor moved during this poll; not checkpointing', {
         env,
-        expected: before?.cursor ?? null,
-        found: stored?.cursor ?? null,
+        cursor: before?.cursor ?? null,
       })
-      return false
+    } else {
+      this.lostLease(env, lease?.holder ?? null)
     }
-    await this.state.setTail(env, next)
-    return true
+    return false
   }
 
   /**

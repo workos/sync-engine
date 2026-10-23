@@ -76,6 +76,43 @@ export async function releaseLease(
   )
 }
 
+/**
+ * The write the lease exists to fence. One statement: the row is inserted or
+ * updated only if `holder` has the unexpired lease for `env` and the stored
+ * state is still `expected` (`null` for no row). The `on conflict ... where`
+ * re-checks the stored state under the row lock, so a write that lands
+ * between this statement's snapshot and its update is caught as well.
+ */
+export async function setStateIfHeld(
+  db: SqlClient,
+  schema: string,
+  syncId: string,
+  env: string,
+  stream: string,
+  state: unknown,
+  holder: string,
+  expected: unknown,
+): Promise<boolean> {
+  const s = quoteIdent(schema)
+  const r = await db.query(
+    `insert into ${s}."_sync_state" as t (sync_id, env, stream, state, updated_at)
+     select $1, $2, $3, $4::jsonb, now()
+     where exists (
+       select 1 from ${s}."_sync_lease"
+       where sync_id = $1 and env = $2 and holder = $5 and expires_at > now()
+     )
+     and (
+       select state from ${s}."_sync_state" where sync_id = $1 and env = $2 and stream = $3
+     ) is not distinct from $6::jsonb
+     on conflict (sync_id, env, stream) do update
+       set state = excluded.state, updated_at = now()
+       where t.state = $6::jsonb
+     returning 1`,
+    [syncId, env, stream, JSON.stringify(state), holder, expected == null ? null : JSON.stringify(expected)],
+  )
+  return r.rows.length > 0
+}
+
 export async function getLease(
   db: SqlClient,
   schema: string,

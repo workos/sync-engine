@@ -113,6 +113,10 @@ export class RedactingDestination implements Destination {
     return this.inner.setState(env, stream, state)
   }
 
+  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean> {
+    return this.inner.setStateIfHeld(env, stream, state, holder, expected)
+  }
+
   acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult> {
     return this.inner.acquireLease(env, holder, ttlMs)
   }

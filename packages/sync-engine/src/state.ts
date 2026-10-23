@@ -51,6 +51,25 @@ export type StreamState = TailState | BackfillState | Record<string, unknown>
 
 const TAIL_STREAM = '__tail__'
 
+export interface TailUpdate {
+  cursor: string | null
+  lastEventAt?: string | null
+  rangeStart?: string | null
+  lastPolledAt?: string | null
+}
+
+function tailRecord(next: TailUpdate): TailState {
+  return {
+    kind: 'tail',
+    cursor: next.cursor,
+    // Once a real cursor exists the bootstrap position is redundant, and the
+    // API rejects a request carrying both.
+    rangeStart: next.cursor ? null : (next.rangeStart ?? null),
+    lastEventAt: next.lastEventAt ?? null,
+    lastPolledAt: next.lastPolledAt ?? null,
+  }
+}
+
 export class StateStore {
   constructor(private destination: Destination) {}
 
@@ -66,24 +85,17 @@ export class StateStore {
     return this.get<TailState>(env, TAIL_STREAM)
   }
 
-  async setTail(
-    env: string,
-    next: {
-      cursor: string | null
-      lastEventAt?: string | null
-      rangeStart?: string | null
-      lastPolledAt?: string | null
-    },
-  ): Promise<void> {
-    await this.set(env, TAIL_STREAM, {
-      kind: 'tail',
-      cursor: next.cursor,
-      // Once a real cursor exists the bootstrap position is redundant, and the
-      // API rejects a request carrying both.
-      rangeStart: next.cursor ? null : (next.rangeStart ?? null),
-      lastEventAt: next.lastEventAt ?? null,
-      lastPolledAt: next.lastPolledAt ?? null,
-    })
+  async setTail(env: string, next: TailUpdate): Promise<void> {
+    await this.set(env, TAIL_STREAM, tailRecord(next))
+  }
+
+  /**
+   * Save the tail position only while `holder` has the lease for `env` and
+   * the stored position is still `expected`, in one atomic write. This is
+   * how the tail checkpoints: see `Destination.setStateIfHeld`.
+   */
+  setTailIfHeld(env: string, next: TailUpdate, holder: string, expected: TailState | null): Promise<boolean> {
+    return this.destination.setStateIfHeld(env, TAIL_STREAM, tailRecord(next), holder, expected)
   }
 
   /** Forget the tail position entirely; the next capture starts from now. */

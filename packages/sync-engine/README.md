@@ -85,8 +85,8 @@ environments, `listen()` claims all of them, in name order, before polling,
 and gives partial claims back while it waits for the rest, so two engines
 whose lists overlap cannot block each other. A process that stalls past the
 TTL loses the lease to its replacement: it still applies the batch it had
-fetched, which is idempotent, but does not checkpoint, so the replacement's
-cursor is never rewound. `backfill`, `reconcile`, `refresh`, `status` and
+fetched, which is idempotent, but the destination refuses its checkpoint, so
+the replacement's cursor is never rewound. `backfill`, `reconcile`, `refresh`, `status` and
 `redact` do not take the lease; they are idempotent and run safely alongside
 a tail.
 
@@ -147,6 +147,7 @@ class MyDestination implements Destination {
 
   getState<T>(env: string, stream: string): Promise<T | null>;
   setState(env: string, stream: string, state: unknown): Promise<void>;
+  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean>;
 
   acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult>;
   releaseLease(env: string, holder: string): Promise<void>;
@@ -154,7 +155,7 @@ class MyDestination implements Destination {
 }
 ```
 
-The engine relies on six properties of your implementation. Each one exists
+The engine relies on seven properties of your implementation. Each one exists
 because of a documented failure in a comparable sync engine.
 
 1. **Staleness gate, `>=` not `>`.** `upsert` rejects a row whose `updatedAt`
@@ -178,6 +179,14 @@ because of a documented failure in a comparable sync engine.
    row. Without this, a rolling deploy has two processes advancing one cursor.
    In SQL it is one `INSERT ... ON CONFLICT DO UPDATE ... WHERE` on a row
    keyed by `(syncId, env)`; see `db/lease.ts` in the Postgres destination.
+7. **The checkpoint is fenced by the lease.** `setStateIfHeld` writes only
+   if `holder` holds the unexpired lease for `env` _and_ the stored state
+   still equals `expected` (`null` for no row), with both checked in the same
+   statement as the write. The engine saves the tail cursor through it, so a
+   process that stalled past its lease, or whose position a backfill
+   re-captured meanwhile, is refused by the database rather than by a check
+   made a moment earlier. In SQL it is an `INSERT ... SELECT ... WHERE EXISTS
+   (lease) ... ON CONFLICT DO UPDATE ... WHERE`; also in `db/lease.ts`.
 
 `WriteStats` (`created` / `updated` / `skipped` / `deleted`) is a health metric
 the engine logs but never branches on; a database that cannot tell an insert
