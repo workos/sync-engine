@@ -5,9 +5,6 @@ choosing. It knows WorkOS — the object catalog, event routing, the REST
 backfill, the Events API tail, reconciliation — and nothing about any
 particular database. Writes go through a small `Destination` interface.
 
-> **Prototype.** A working proof of concept — not yet a supported product.
-> The API may change between minor versions.
-
 **You probably want a destination package instead.** Each one depends on this
 package and re-exports it, so it is the only thing to install:
 
@@ -59,20 +56,20 @@ The lifecycle is deliberately overlapping: the cursor is captured _before_
 backfill starts, so anything that changes mid-backfill is replayed afterwards
 and the staleness gate decides which version wins.
 
-| Option             | Default                             |                                                                                                                                               |
-| ------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `destination`      | —                                   | A `Destination` implementation. Required.                                                                                                     |
-| `environments`     | —                                   | `{ name, apiKey, apiUrl? }[]`. `name` is written to every row and must never change.                                                          |
-| `streams`          | `defaultStreams()`                  | Stream names to sync: every stream with events. Poll-only streams are opt-in. `events` is always included.                                    |
-| `extraColumns`     | —                                   | Extra typed columns to project out of `_raw`, keyed by stream. Add-only.                                                                      |
-| `eventTypes`       | derived from `streams`              | The `GET /events` filter. Widen it to archive event families with no mirror table.                                                            |
-| `hydrate`          | users and organizations `on_create` | Re-fetch objects on event receipt: `off`, `on_create`, `always`, or a per-stream map. Only streams with a get-by-id endpoint can be hydrated. |
-| `pollIntervalMs`   | `5000`                              | Idle wait between polls.                                                                                                                      |
-| `lagWindowMs`      | `5000`                              | Never advance the cursor past events younger than this.                                                                                       |
-| `pageSize`         | `100`                               | Page size for list and event calls.                                                                                                           |
-| `maxEventsPerTick` | one page                            | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive.                       |
+| Option             | Default                             |                                                                                                                                                         |
+| ------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `destination`      | —                                   | A `Destination` implementation. Required.                                                                                                               |
+| `environments`     | —                                   | `{ name, apiKey, apiUrl? }[]`. `name` is written to every row and must never change.                                                                    |
+| `streams`          | `defaultStreams()`                  | Stream names to sync: every stream with events. Poll-only streams are opt-in. `events` is always included.                                              |
+| `extraColumns`     | —                                   | Extra typed columns to project out of `_raw`, keyed by stream. Add-only.                                                                                |
+| `eventTypes`       | derived from `streams`              | The `GET /events` filter. Widen it to archive event families with no mirror table.                                                                      |
+| `hydrate`          | users and organizations `on_create` | Re-fetch objects on event receipt: `off`, `on_create`, `always`, or a per-stream map. Only streams with a get-by-id endpoint can be hydrated.           |
+| `pollIntervalMs`   | `5000`                              | Idle wait between polls.                                                                                                                                |
+| `lagWindowMs`      | `5000`                              | Never advance the cursor past events younger than this.                                                                                                 |
+| `pageSize`         | `100`                               | Page size for list and event calls.                                                                                                                     |
+| `maxEventsPerTick` | one page                            | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive.                                 |
 | `leaseTtlMs`       | `60000`                             | How long the events-tail lease outlives a crashed process; at least 1. Renewed every third of this while polling; a clean stop releases it immediately. |
-| `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                               |
+| `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                                         |
 
 Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
 `reconcile({ repair, streams })`, `refresh()`, `status()`, `health()`,
@@ -188,12 +185,21 @@ class MyDestination implements Destination {
 
   getState<T>(env: string, stream: string): Promise<T | null>;
   setState(env: string, stream: string, state: unknown): Promise<void>;
-  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean>;
+  setStateIfHeld(
+    env: string,
+    stream: string,
+    state: unknown,
+    holder: string,
+    expected: unknown,
+  ): Promise<boolean>;
 
-  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult>;
+  acquireLease(
+    env: string,
+    holder: string,
+    ttlMs: number,
+  ): Promise<LeaseResult>;
   releaseLease(env: string, holder: string): Promise<void>;
   getLease(env: string): Promise<Lease | null>;
-
 
   reject(
     env: string,
@@ -206,8 +212,7 @@ class MyDestination implements Destination {
 }
 ```
 
-The engine relies on seven properties of your implementation. Each one exists
-because of a documented failure in a comparable sync engine.
+The engine relies on seven properties of your implementation.
 
 1. **Staleness gate, `>=` not `>`.** `upsert` rejects a row whose `updatedAt`
    is older than the stored one and accepts an equal one. With a strict `<`,
@@ -241,7 +246,7 @@ because of a documented failure in a comparable sync engine.
    process that stalled past its lease, or whose position a backfill
    re-captured meanwhile, is refused by the database rather than by a check
    made a moment earlier. In SQL it is an `INSERT ... SELECT ... WHERE EXISTS
-   (lease) ... ON CONFLICT DO UPDATE ... WHERE`; also in `db/lease.ts`.
+(lease) ... ON CONFLICT DO UPDATE ... WHERE`; also in `db/lease.ts`.
 
 `WriteStats` (`created` / `updated` / `skipped` / `deleted`) is a health metric
 the engine logs but never branches on; a database that cannot tell an insert
@@ -275,16 +280,6 @@ dropped connection, a deadlock, a full disk), never for a verdict on the row,
 and the engine will retry instead of ever quarantining on them. Without it,
 every error is presumed deterministic and only the two-sightings rule stands
 between a flaky connection and a quarantine.
-
-The reference implementation is
-[`PostgresDestination`](https://github.com/workos/workos-pg-sync/blob/main/packages/sync-postgres/src/destination.ts)
-in `@workos/sync-postgres` (about 200 lines).
-
-## Documentation
-
-- [How it works](https://github.com/workos/workos-pg-sync/blob/main/docs/how-it-works.md)
-- [Consistency](https://github.com/workos/workos-pg-sync/blob/main/docs/consistency.md)
-- [Operations](https://github.com/workos/workos-pg-sync/blob/main/docs/operations.md)
 
 ## License
 

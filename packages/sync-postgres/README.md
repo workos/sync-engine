@@ -2,10 +2,6 @@
 
 Mirror your WorkOS data into your own Postgres, and query it with SQL.
 
-> **Prototype.** A working proof of concept, tested against real Postgres and
-> verified against the live WorkOS API — not yet a supported product. The
-> API may change between minor versions.
-
 Backfills what already exists from the REST API, tails the Events API from a
 durable cursor, and reconciles the two so drift is found rather than assumed.
 The result is a `workos` schema you can join against your own tables:
@@ -24,14 +20,10 @@ SELECT o.name AS organization, u.email, m.role_slug
 npm install @workos/sync-postgres
 ```
 
-Not on npm yet: until it is, `pnpm install && pnpm build` in this repository
-and run `node packages/sync-postgres/dist/cli.js` where the examples say
-`npx workos-sync-postgres`.
-
 This package ships the Postgres destination, the `workos-sync-postgres`
 command, and re-exports the engine from
 [`@workos/sync-engine`](https://www.npmjs.com/package/@workos/sync-engine),
-so it is the only package you need.
+so it is the only package you need for Postgres.
 
 ## Command line
 
@@ -44,18 +36,18 @@ npx workos-sync-postgres backfill   # load everything that already exists
 npx workos-sync-postgres listen     # tail the Events API, forever
 ```
 
-| Command                | What it does                                                                                                    |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `init [--repair]`      | Create the schema. Idempotent; safe to run on every deploy. Exits 2 on column drift, and fails if a generated `_live` view must be rebuilt; `--repair` rebuilds columns from `_raw` and views with their grants. |
-| `backfill [--resume]`  | Page the REST list endpoints for current state.                                                                 |
-| `listen [--health-port <n>]` | Poll the Events API and apply changes continuously, as the sole writer; waits if another listener has the lease. With a port, serve `GET /healthz` and `/metrics` on it. |
-| `tick`                 | One poll, then exit — for a cron job instead of a process. Exits 3 if a listener holds the lease.               |
-| `reconcile [--repair]` | Diff ids against the API; `--repair` tombstones and inserts. Exits 2 on drift unless repairing.                 |
-| `refresh`              | Re-list top-level streams to refresh fields that event payloads omit. Re-run `backfill` for per-parent streams. |
-| `status`               | Cursor, time since the last successful poll, and per-stream row counts and lag.                                 |
-| `redact --user <id>`   | Erase one subject from the mirror and the event archive.                                                        |
-| `rejected [--replay] [--id <event_id>]` | Show events the tail quarantined; exits 2 if there are any. `--replay` re-applies them once the cause is fixed. |
-| `streams`              | List what this build can mirror.                                                                                |
+| Command                                 | What it does                                                                                                                                                                                                     |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init [--repair]`                       | Create the schema. Idempotent; safe to run on every deploy. Exits 2 on column drift, and fails if a generated `_live` view must be rebuilt; `--repair` rebuilds columns from `_raw` and views with their grants. |
+| `backfill [--resume]`                   | Page the REST list endpoints for current state.                                                                                                                                                                  |
+| `listen [--health-port <n>]`            | Poll the Events API and apply changes continuously, as the sole writer; waits if another listener has the lease. With a port, serve `GET /healthz` and `/metrics` on it.                                         |
+| `tick`                                  | One poll, then exit — for a cron job instead of a process. Exits 3 if a listener holds the lease.                                                                                                                |
+| `reconcile [--repair]`                  | Diff ids against the API; `--repair` tombstones and inserts. Exits 2 on drift unless repairing.                                                                                                                  |
+| `refresh`                               | Re-list top-level streams to refresh fields that event payloads omit. Re-run `backfill` for per-parent streams.                                                                                                  |
+| `status`                                | Cursor, time since the last successful poll, and per-stream row counts and lag.                                                                                                                                  |
+| `redact --user <id>`                    | Erase one subject from the mirror and the event archive.                                                                                                                                                         |
+| `rejected [--replay] [--id <event_id>]` | Show events the tail quarantined; exits 2 if there are any. `--replay` re-applies them once the cause is fixed.                                                                                                  |
+| `streams`                               | List what this build can mirror.                                                                                                                                                                                 |
 
 Rows are labelled `_env = 'production'` by default; set
 `WORKOS_ENVIRONMENT_NAME` if the key is for something else. The label is
@@ -63,20 +55,20 @@ written to every row and must never change once you have data. To mirror
 several environments into one database, run one process per key with a
 different label each; cursors are kept per label, so they never collide.
 
-| Variable                          | Default                             |                                                                    |
-| --------------------------------- | ----------------------------------- | ------------------------------------------------------------------ |
-| `WORKOS_SYNC_SCHEMA`              | `workos`                            | Schema the mirror lives in.                                        |
-| `WORKOS_SYNC_ID`                  | `default`                           | Identifier when several syncs share one database.                  |
-| `WORKOS_SYNC_HYDRATE`             | users and organizations `on_create` | `off`, `on_create`, `always`, or `users=always,organizations=off`. |
-| `WORKOS_SYNC_POLL_MS`             | `5000`                              | Idle wait between polls.                                           |
-| `WORKOS_SYNC_LAG_MS`              | `5000`                              | Hold back events younger than this.                                |
-| `WORKOS_SYNC_MAX_EVENTS_PER_TICK` | one page                            | Events to apply per poll.                                          |
-| `WORKOS_SYNC_HEALTH_PORT`         | off (`8080` in the image)           | `listen` only: serve `/healthz` and `/metrics` on this port.       |
-| `WORKOS_SYNC_HEALTH_HOST`         | `0.0.0.0`                           | Interface the health server binds.                                 |
-| `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` | `60000`                          | `/healthz` is 503 once the last successful poll is older than this. |
-| `WORKOS_SYNC_LEASE_TTL_MS`        | `60000`                             | How long the tail lease outlives a crashed listener; at least 1.   |
-| `WORKOS_API_URL`                  | `https://api.workos.com`            | API base URL.                                                      |
-| `LOG_LEVEL`                       | `info`                              | `debug`, `info`, `warn`, `error` or `silent`.                      |
+| Variable                             | Default                             |                                                                     |
+| ------------------------------------ | ----------------------------------- | ------------------------------------------------------------------- |
+| `WORKOS_SYNC_SCHEMA`                 | `workos`                            | Schema the mirror lives in.                                         |
+| `WORKOS_SYNC_ID`                     | `default`                           | Identifier when several syncs share one database.                   |
+| `WORKOS_SYNC_HYDRATE`                | users and organizations `on_create` | `off`, `on_create`, `always`, or `users=always,organizations=off`.  |
+| `WORKOS_SYNC_POLL_MS`                | `5000`                              | Idle wait between polls.                                            |
+| `WORKOS_SYNC_LAG_MS`                 | `5000`                              | Hold back events younger than this.                                 |
+| `WORKOS_SYNC_MAX_EVENTS_PER_TICK`    | one page                            | Events to apply per poll.                                           |
+| `WORKOS_SYNC_HEALTH_PORT`            | off (`8080` in the image)           | `listen` only: serve `/healthz` and `/metrics` on this port.        |
+| `WORKOS_SYNC_HEALTH_HOST`            | `0.0.0.0`                           | Interface the health server binds.                                  |
+| `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` | `60000`                             | `/healthz` is 503 once the last successful poll is older than this. |
+| `WORKOS_SYNC_LEASE_TTL_MS`           | `60000`                             | How long the tail lease outlives a crashed listener; at least 1.    |
+| `WORKOS_API_URL`                     | `https://api.workos.com`            | API base URL.                                                       |
+| `LOG_LEVEL`                          | `info`                              | `debug`, `info`, `warn`, `error` or `silent`.                       |
 
 `listen` with a health port answers `GET /healthz` with `200` while the tail
 is polling (and while it is still starting) and `503` once a poll is overdue
@@ -121,15 +113,15 @@ new PostgresDestination({ db: fromPgPool(pool) });
 
 `PostgresDestination` options:
 
-| Option        | Default   |                                                                        |
-| ------------- | --------- | ---------------------------------------------------------------------- |
-| `databaseUrl` | —         | Connection string. Either this or `db`.                                |
-| `db`          | —         | A pre-built client, e.g. `fromPgPool(pool)`. Not closed by the engine. |
-| `schema`      | `workos`  | Schema the mirror lives in, for DDL and DML alike.                     |
-| `syncId`      | `default` | Identifier when several syncs share one database.                      |
-| `batchSize`   | `500`     | Rows per upsert statement.                                             |
-| `repairViews` | `false`   | On `init()`, rebuild a generated `_live` view that can no longer be replaced in place and carry its grants over. Off, `init()` fails and lists the grants instead. |
-| `repairColumns` | `false` | On `init()`, rebuild generated columns that no longer match the catalog from `_raw`. Off, drift is reported and `init` withholds the schema fingerprint. |
+| Option          | Default   |                                                                                                                                                                    |
+| --------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `databaseUrl`   | —         | Connection string. Either this or `db`.                                                                                                                            |
+| `db`            | —         | A pre-built client, e.g. `fromPgPool(pool)`. Not closed by the engine.                                                                                             |
+| `schema`        | `workos`  | Schema the mirror lives in, for DDL and DML alike.                                                                                                                 |
+| `syncId`        | `default` | Identifier when several syncs share one database.                                                                                                                  |
+| `batchSize`     | `500`     | Rows per upsert statement.                                                                                                                                         |
+| `repairViews`   | `false`   | On `init()`, rebuild a generated `_live` view that can no longer be replaced in place and carry its grants over. Off, `init()` fails and lists the grants instead. |
+| `repairColumns` | `false`   | On `init()`, rebuild generated columns that no longer match the catalog from `_raw`. Off, drift is reported and `init` withholds the schema fingerprint.           |
 
 Engine options (`environments`, `streams`, `extraColumns`, `hydrate`,
 `pollIntervalMs`, `lagWindowMs`, `maxEventsPerTick`, …) are documented in
