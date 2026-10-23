@@ -53,13 +53,16 @@ Things to know:
   `reconcile`, `status` and freshness all use the base tables, so the views are
   purely a convenience for your queries.
 - **Do not edit them.** They are generated from the catalog, carry a comment
-  saying so, and are re-created on every schema apply. If a view's shape can no
-  longer be replaced in place (for instance a column was dropped by hand), the
-  engine drops it and creates it afresh, with a warning in the log. That
-  happens in one transaction and carries the view's grants over, so a
-  read-only role keeps its access and a re-create that fails leaves the old
+  saying so, and are re-created on every schema apply. If a generated view's
+  shape can no longer be replaced in place (for instance it changed between
+  releases), the engine drops it and creates it afresh, with a warning in the
+  log. That happens in one transaction and carries the view's grants over, so
+  a read-only role keeps its access and a re-create that fails leaves the old
   view where it was. Build your own views on top of them if you want different
   names or a separate schema; the engine never drops a view it did not create.
+  A view of your own that already has a `_live` name is left alone too: `init`
+  fails and asks you to rename or drop it, because replacing it with
+  `select *` could expose columns it was written to hide.
 - **Append-only streams have no view.** `events` and `auth_attempts` have no
   `_deleted_at` column, so there is nothing to filter.
 
