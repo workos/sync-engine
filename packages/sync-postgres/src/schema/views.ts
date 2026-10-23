@@ -73,7 +73,10 @@ export function isViewStatement(sql: string): boolean {
  * theirs, and taking it down silently would be worse than failing.
  *
  * This relies on `migrate` running each statement outside a transaction;
- * inside one, the failed create would already have aborted it.
+ * inside one, the failed create would already have aborted it. The repair
+ * itself is one transaction: DDL is transactional in Postgres, so a create
+ * that fails after the drop — or a process that dies between the two — rolls
+ * back to the old view instead of leaving readers with none.
  */
 export async function applyViewStatement(db: SqlClient, sql: string, logger?: Logger): Promise<void> {
   try {
@@ -84,9 +87,47 @@ export async function applyViewStatement(db: SqlClient, sql: string, logger?: Lo
       view,
       reason: err instanceof Error ? err.message : String(err),
     })
-    await db.exec(`drop view if exists ${view};`)
-    await db.exec(sql)
+    await db.transaction(async (tx) => {
+      const grants = await grantsOn(tx, view)
+      await tx.exec(`drop view if exists ${view};`)
+      await tx.exec(sql)
+      for (const grant of grants) await tx.exec(grant)
+    })
   }
+}
+
+/**
+ * `grant` statements that re-create the privileges held on a view, so the
+ * replacement is as readable as the original.
+ *
+ * `create or replace view` keeps a view's ACL; `drop view` discards it, and a
+ * reader set up the way docs/queries.md suggests — `grant select on all tables
+ * in schema` — would find the repaired view denying it. Default privileges do
+ * not reliably cover this: they attach to objects created by the role that
+ * ran `alter default privileges`, which need not be the role running `init`.
+ *
+ * Entries for the role running this are skipped: it owns the replacement,
+ * which gives it everything implicitly. Any other role's are re-granted, the
+ * previous owner's included. Column privileges are not carried over: the
+ * fallback runs precisely because the column list changed, so they may name
+ * columns that no longer exist.
+ */
+async function grantsOn(db: SqlClient, view: string): Promise<string[]> {
+  const r = await db.query<{ grantee: string | null; privilege: string; grantable: boolean }>(
+    `select r.rolname as grantee, a.privilege_type as privilege, a.is_grantable as grantable
+       from pg_class c
+       cross join lateral aclexplode(c.relacl) a
+       left join pg_roles r on r.oid = a.grantee
+      where c.oid = to_regclass($1) and r.rolname is distinct from current_user`,
+    [view],
+  )
+  return r.rows.map(
+    // A null role name is the pseudo-role `public`, which is a keyword, not an
+    // identifier.
+    ({ grantee, privilege, grantable }) =>
+      `grant ${privilege} on ${view} to ${grantee === null ? 'public' : quoteIdent(grantee)}` +
+      `${grantable ? ' with grant option' : ''};`,
+  )
 }
 
 /**

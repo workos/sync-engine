@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb } from './helpers/pg.js'
 import { migrate, fingerprint } from '../src/schema/migrate.js'
 import { buildSchemaSql, safeIdentifier, columnExpression, createTableSql } from '../src/schema/ddl.js'
-import { liveViewName, liveViewSql } from '../src/schema/views.js'
+import { isViewStatement, liveViewName, liveViewSql } from '../src/schema/views.js'
 import { STREAMS, streamByName } from '@workos/sync-engine'
 import type { Logger, StreamDef } from '@workos/sync-engine'
 import type { SqlClient } from '../src/db/client.js'
@@ -333,5 +333,83 @@ describe('live views against real Postgres', () => {
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toMatchObject({ view: '"workos"."users_live"' })
     expect(String(warnings[0]!['reason'])).toMatch(/view column/)
+  })
+
+  // Everything granted on the view to anyone but its owner, as the catalog
+  // reports it. `role_table_grants` lists `public` under its own name.
+  const grantsOnUsersLive = async () => {
+    const r = await db.query<{ grantee: string; privilege_type: string; is_grantable: string }>(
+      `select grantee, privilege_type, is_grantable from information_schema.role_table_grants
+       where table_schema = 'workos' and table_name = 'users_live' and grantee <> current_user
+       order by grantee, privilege_type`,
+    )
+    return r.rows
+  }
+
+  const countAsReader = async () => {
+    await db.exec(`set role reader`)
+    try {
+      const r = await db.query<{ n: string }>(`select count(*)::text as n from workos.users_live`)
+      return r.rows[0]!.n
+    } finally {
+      await db.exec(`reset role`)
+    }
+  }
+
+  it('carries grants over when it has to drop and re-create a view', async () => {
+    const users = streamByName('users')!
+    await migrate(db, [users], 'workos')
+    // A view left under our name with a different column list, which is what
+    // forces the drop-and-recreate path; the read-only role docs/queries.md
+    // sets up; and a grant to public and one with grant option, so every kind
+    // of ACL entry is exercised.
+    await db.exec(`
+      drop view workos.users_live;
+      create view workos.users_live as select email, id from workos.users;
+      create role reader; create role lead;
+      grant usage on schema workos to reader;
+      grant select on workos.users_live to reader;
+      grant select on workos.users_live to public;
+      grant select on workos.users_live to lead with grant option;
+      delete from workos."_migrations";
+    `)
+    const before = await grantsOnUsersLive()
+    expect(before).toHaveLength(3)
+
+    await migrate(db, [users], 'workos')
+
+    expect(await columnsOf('users_live')).toEqual(await columnsOf('users'))
+    expect(await grantsOnUsersLive()).toEqual(before)
+    // The reader can actually query it, not just appear in the catalog.
+    expect(await countAsReader()).toBe('0')
+  })
+
+  it('leaves the old view and its grants in place when the re-create fails part-way', async () => {
+    const users = streamByName('users')!
+    await migrate(db, [users], 'workos')
+    await db.exec(`
+      create role reader;
+      grant usage on schema workos to reader;
+      grant select on workos.users_live to reader;
+      delete from workos."_migrations";
+    `)
+
+    // Every `create or replace view` fails, as it would if the connection
+    // dropped between the fallback's drop and its create. Everything else,
+    // the drop included, runs against the real database.
+    const failing = (client: SqlClient): SqlClient => ({
+      ...client,
+      async exec(sql) {
+        if (isViewStatement(sql)) throw new Error('simulated connection loss')
+        await client.exec(sql)
+      },
+      async transaction<T>(fn: (tx: SqlClient) => Promise<T>) {
+        return client.transaction((tx) => fn(failing(tx)))
+      },
+    })
+    await expect(migrate(failing(db), [users], 'workos')).rejects.toThrow('simulated connection loss')
+
+    expect(await viewNames()).toContain('users_live')
+    expect(await countAsReader()).toBe('0')
   })
 })
