@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { parseHydrate } from '../src/cli.js'
+import { describe, it, expect, vi } from 'vitest'
+import { main, parseHydrate, repairViewsRequested } from '../src/cli.js'
 
 describe('WORKOS_SYNC_HYDRATE', () => {
   it('leaves the engine default in place when unset', () => {
@@ -20,5 +20,28 @@ describe('WORKOS_SYNC_HYDRATE', () => {
   it('rejects anything else loudly', () => {
     expect(() => parseHydrate('sometimes')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
     expect(() => parseHydrate('users=maybe')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
+  })
+})
+
+describe('init --repair', () => {
+  it('asks for view repair on init and nothing else', () => {
+    expect(repairViewsRequested('init', { repair: true })).toBe(true)
+    expect(repairViewsRequested('init', {})).toBe(false)
+    // `reconcile --repair` repairs rows, not views.
+    expect(repairViewsRequested('reconcile', { repair: true })).toBe(false)
+  })
+
+  it('is in the help text', async () => {
+    const out: string[] = []
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      out.push(String(chunk))
+      return true
+    }) as typeof process.stdout.write)
+    try {
+      expect(await main(['help'])).toBe(0)
+    } finally {
+      spy.mockRestore()
+    }
+    expect(out.join('')).toContain('init [--repair]')
   })
 })

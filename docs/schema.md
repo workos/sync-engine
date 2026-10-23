@@ -53,19 +53,26 @@ Things to know:
   `reconcile`, `status` and freshness all use the base tables, so the views are
   purely a convenience for your queries.
 - **Do not edit them.** They are generated from the catalog, carry a comment
-  saying so, and are re-created on every schema apply. If a generated view's
-  shape can no longer be replaced in place (for instance it changed between
-  releases), the engine drops it and creates it afresh, with a warning in the
-  log. That happens in one transaction and carries the view's grants over, so
-  a read-only role keeps its access and a re-create that fails leaves the old
-  view where it was. The engine repairs only a view it generated whose columns
-  are still the table's — possibly minus columns promoted since — and reads
-  nothing else. It never widens a narrower one: a view of your own under a
-  `_live` name, or a generated view that was narrowed by hand, is left alone
-  and `init` fails asking you to rename or drop it, because replacing it with
-  `select *` could expose columns it was written to hide. Build your own views
-  on top of them if you want different names or a separate schema; the engine
-  never drops a view it did not create.
+  saying so, and are re-created on every schema apply. A generated view you
+  edited by hand while keeping its comment and its shape is simply overwritten
+  on the next apply. Build your own views on top of the generated ones if you
+  want different names or a separate schema; the engine never drops a view it
+  did not create.
+- **Rebuilding a view needs `--repair`.** If a generated view's shape can no
+  longer be replaced in place (for instance it changed between releases), the
+  engine does not rebuild it on its own: `create or replace view` keeps a
+  view's grants, a drop and re-create does not, and re-granting a reader on a
+  different definition is an authorization decision, not a repair. Instead
+  `init` fails, names the view, and lists the grants it would have to carry
+  over. Run `init --repair` (`repairViews: true` on `PostgresDestination`) to
+  consent: the view is dropped and re-created in one transaction, those grants
+  are re-applied and each is logged, and a re-create that fails leaves the old
+  view where it was. Or drop the view by hand and grant selectively. Two kinds
+  of view are never rebuilt, with or without `--repair`, and `init` fails
+  asking you to rename or drop them: one without the generated comment, which
+  is yours — even with the same shape, where Postgres itself would have
+  overwritten it in place — and one with the comment but not the shape of
+  `select *` over its table, which was rebuilt by hand.
 - **Append-only streams have no view.** `events` and `auth_attempts` have no
   `_deleted_at` column, so there is nothing to filter.
 

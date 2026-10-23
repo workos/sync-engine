@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto'
 import type { SqlClient } from '../db/client.js'
 import { buildSchemaSql, createSchemaSql, bookkeepingSql, parseIso8601Function, quoteIdent } from './ddl.js'
-import { applyViewStatement, isViewStatement } from './views.js'
+import { applyViewStatement, isViewStatement, type ApplyViewOptions } from './views.js'
 import type { Logger, StreamDef } from '@workos/sync-engine'
 
 /**
@@ -47,11 +47,15 @@ export interface MigrateResult {
   statements: number
 }
 
+/** See `PostgresDestinationOptions.repairViews`. */
+export type MigrateOptions = ApplyViewOptions
+
 export async function migrate(
   db: SqlClient,
   streams: StreamDef[],
   schema: string,
   logger?: Logger,
+  options: MigrateOptions = {},
 ): Promise<MigrateResult> {
   const fp = fingerprint(streams, schema)
 
@@ -74,7 +78,7 @@ export async function migrate(
   for (const sql of statements) {
     // A view is the one statement that can legitimately fail on an existing
     // database; everything else is `if not exists`. See applyViewStatement.
-    if (isViewStatement(sql)) await applyViewStatement(db, sql, logger)
+    if (isViewStatement(sql)) await applyViewStatement(db, sql, logger, options)
     else await db.exec(sql)
   }
 

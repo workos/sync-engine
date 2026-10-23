@@ -29,6 +29,17 @@ export interface PostgresDestinationOptions {
   syncId?: string
   /** Rows per upsert statement. Defaults to 500. */
   batchSize?: number
+  /**
+   * On `init()`, rebuild a generated `_live` view that `create or replace
+   * view` refuses because its shape changed between releases, and carry its
+   * grants onto the new definition. Off, `init()` fails and lists the grants
+   * it would have carried instead. Turning this on is the operator consenting
+   * to widen those grantees to the generated definition — `select * ... where
+   * "_deleted_at" is null` — whatever the old view showed them. `init
+   * --repair` on the CLI. Views without the generated comment, or with it but
+   * not the generated shape, are never rebuilt. See docs/schema.md.
+   */
+  repairViews?: boolean
 }
 
 export class PostgresDestination implements Destination {
@@ -64,7 +75,7 @@ export class PostgresDestination implements Destination {
       this.db = await connect(this.options.databaseUrl!)
       this.ownsDb = true
     }
-    await migrate(this.db, streams, this.schema, logger)
+    await migrate(this.db, streams, this.schema, logger, { repairViews: this.options.repairViews })
   }
 
   async close(): Promise<void> {

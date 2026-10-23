@@ -46,7 +46,7 @@ npx workos-sync-postgres listen     # tail the Events API, forever
 
 | Command                | What it does                                                                                                    |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `init`                 | Create the schema. Idempotent; safe to run on every deploy.                                                     |
+| `init [--repair]`      | Create the schema. Idempotent; safe to run on every deploy. Fails if a generated `_live` view must be rebuilt; `--repair` rebuilds it and carries its grants over. |
 | `backfill [--resume]`  | Page the REST list endpoints for current state.                                                                 |
 | `listen`               | Poll the Events API and apply changes continuously.                                                             |
 | `tick`                 | One poll, then exit — for a cron job instead of a process.                                                      |
@@ -114,6 +114,7 @@ new PostgresDestination({ db: fromPgPool(pool) });
 | `schema`      | `workos`  | Schema the mirror lives in, for DDL and DML alike.                     |
 | `syncId`      | `default` | Identifier when several syncs share one database.                      |
 | `batchSize`   | `500`     | Rows per upsert statement.                                             |
+| `repairViews` | `false`   | On `init()`, rebuild a generated `_live` view that can no longer be replaced in place and carry its grants over. Off, `init()` fails and lists the grants instead. |
 
 Engine options (`environments`, `streams`, `extraColumns`, `hydrate`,
 `pollIntervalMs`, `lagWindowMs`, `maxEventsPerTick`, …) are documented in
