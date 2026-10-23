@@ -74,6 +74,19 @@ const PG_TYPE: Record<ColumnDef['type'], string> = {
 }
 
 /**
+ * One `"name" type generated always as (...) stored` clause. Every path that
+ * creates a projected column — table creation, the additive upgrade, drift
+ * detection and repair — goes through here, so they cannot disagree about
+ * what a column should look like.
+ */
+export function generatedColumnSql(col: ColumnDef, schema: string): string {
+  return `${quoteIdent(safeIdentifier(col.name))} ${PG_TYPE[col.type]} generated always as ${columnExpression(
+    col,
+    schema,
+  )} stored`
+}
+
+/**
  * A strict ISO-8601 parser built only from immutable primitives, so it is
  * legal in a generated column. Returns NULL rather than raising on input it
  * cannot parse — a generated column that throws would reject the whole row and
@@ -140,14 +153,7 @@ export function createTableSql(stream: StreamDef, schema: string): string {
   // Append-only streams are immutable logs: no tombstones.
   if (stream.mode !== 'append') cols.push(`"_deleted_at" timestamptz`)
 
-  for (const c of stream.columns) {
-    cols.push(
-      `${quoteIdent(safeIdentifier(c.name))} ${PG_TYPE[c.type]} generated always as ${columnExpression(
-        c,
-        schema,
-      )} stored`,
-    )
-  }
+  for (const c of stream.columns) cols.push(generatedColumnSql(c, schema))
   const pk = [ENV, ...stream.key].map((k) => quoteIdent(safeIdentifier(k))).join(', ')
   cols.push(`primary key (${pk})`)
 
@@ -189,10 +195,7 @@ export function addColumnsSql(stream: StreamDef, schema: string): string[] {
   const s = quoteIdent(schema)
   const table = quoteIdent(safeIdentifier(stream.name))
   return stream.columns.map(
-    (c) =>
-      `alter table ${s}.${table} add column if not exists ${quoteIdent(
-        safeIdentifier(c.name),
-      )} ${PG_TYPE[c.type]} generated always as ${columnExpression(c, schema)} stored;`,
+    (c) => `alter table ${s}.${table} add column if not exists ${generatedColumnSql(c, schema)};`,
   )
 }
 

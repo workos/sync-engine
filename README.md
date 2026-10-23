@@ -106,7 +106,7 @@ the same setting, the flag wins.
 
 | Command     | Flags         | What it does                                                                                                 |
 | ----------- | ------------- | ------------------------------------------------------------------------------------------------------------ |
-| `init`      |               | Create the schema and bookkeeping tables. Idempotent; safe on every deploy.                                  |
+| `init`      | `--repair`    | Create the schema and bookkeeping tables. Idempotent; safe on every deploy. Exits 2 if a generated column has drifted from the catalog; `--repair` rebuilds it from `_raw`. |
 | `backfill`  | `--resume`    | Load current state from the REST list endpoints. `--resume` continues from the last checkpoint.              |
 | `listen`    |               | Poll the Events API continuously. Finishes the current batch on `SIGINT` or `SIGTERM`.                       |
 | `tick`      |               | One poll, then exit. For a cron job instead of a long-running process.                                       |

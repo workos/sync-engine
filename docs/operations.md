@@ -108,6 +108,7 @@ SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS events
 | Stream not writing     | `max(_synced_at) < now() - interval '1 hour'` on a busy stream | One stream failing while others continue.                                                      |
 | Skipped writes spiking | `skipped` in the logs                                          | Out-of-order delivery or a backfill colliding with the tail. Usually benign, occasionally not. |
 | Drift detected         | `reconcile` exits 2                                            | Missed creates or deletes.                                                                     |
+| Column drift           | `init` exits 2 after a deploy                                  | A generated column no longer matches the catalog; the projection is stale until repaired.      |
 | Process exited         | `listen` returned or crashed                                   | A rejected credential or a backwards-paging cursor stops the engine on purpose.                |
 
 The engine emits structured JSON logs with per-batch counts:
@@ -263,6 +264,13 @@ npx workos-sync-postgres backfill --resume
     WHERE object_id = 'user_01H...'
     ORDER BY created_at;
   ```
+
+* **`init` exits 2 after a deploy.** A catalog column changed its path or type
+  and the database still has the old projection; the rows are right in `_raw`,
+  the typed column is stale. The log and the printed report carry the exact
+  DDL. `init --repair` rebuilds non-key columns from `_raw`; key columns and
+  columns a view depends on are left for you, with the DDL to run. See
+  [Changing a column](schema.md#changing-a-column).
 
 ## Deletion requests
 
