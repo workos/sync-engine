@@ -111,7 +111,7 @@ the same setting, the flag wins.
 
 | Command     | Flags         | What it does                                                                                                 |
 | ----------- | ------------- | ------------------------------------------------------------------------------------------------------------ |
-| `init`      | `--repair`    | Create the schema and bookkeeping tables. Idempotent; safe on every deploy. Fails if a generated `_live` view must be rebuilt; `--repair` rebuilds it and carries its grants over. |
+| `init`      | `--repair`    | Create the schema and bookkeeping tables. Idempotent; safe on every deploy. Exits 2 if a generated column has drifted from the catalog, and fails if a generated `_live` view must be rebuilt; `--repair` rebuilds columns from `_raw` and views with their grants carried over. |
 | `backfill`  | `--resume`    | Load current state from the REST list endpoints. `--resume` continues from the last checkpoint.              |
 | `listen`    | `--health-port <n>` | Poll the Events API continuously. Finishes the current batch on `SIGINT` or `SIGTERM`. With a port, serves `/healthz` and `/metrics`. |
 | `tick`      |               | One poll, then exit. For a cron job instead of a long-running process.                                       |

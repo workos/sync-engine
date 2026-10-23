@@ -15,7 +15,7 @@ import type {
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows } from './db/upsert.js'
 import { diffIdsInSql } from './db/reconcile.js'
-import { migrate } from './schema/migrate.js'
+import { migrate, type MigrateResult } from './schema/migrate.js'
 import { quoteIdent, safeIdentifier } from './schema/ddl.js'
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
@@ -42,6 +42,15 @@ export interface PostgresDestinationOptions {
    * not the generated shape, are never rebuilt. See docs/schema.md.
    */
   repairViews?: boolean
+  /**
+   * During `init()`, rebuild from `_raw` any generated column whose expression
+   * or type no longer matches the catalog. Off by default: drift is then
+   * reported at error level and the schema fingerprint withheld until it is
+   * fixed. Key columns, columns carrying your own indexes or constraints, and
+   * orphans are never touched either way; see docs/schema.md, "Changing a
+   * column". `init --repair` on the CLI sets this together with `repairViews`.
+   */
+  repairColumns?: boolean
 }
 
 export class PostgresDestination implements Destination {
@@ -50,6 +59,12 @@ export class PostgresDestination implements Destination {
   private ownsDb = false
   private readonly syncId: string
   private readonly batchSize: number | undefined
+  /**
+   * What the most recent `init()` did, including any column drift it found.
+   * The engine's `init()` returns nothing, so this is how a caller — the CLI's
+   * `init` command — gets the drift report back.
+   */
+  lastMigration: MigrateResult | undefined
 
   constructor(private options: PostgresDestinationOptions) {
     if (!options.db && !options.databaseUrl) throw new Error('databaseUrl or db is required')
@@ -77,7 +92,10 @@ export class PostgresDestination implements Destination {
       this.db = await connect(this.options.databaseUrl!)
       this.ownsDb = true
     }
-    await migrate(this.db, streams, this.schema, logger, { repairViews: this.options.repairViews })
+    this.lastMigration = await migrate(this.db, streams, this.schema, logger, {
+      repair: this.options.repairColumns,
+      repairViews: this.options.repairViews,
+    })
   }
 
   async close(): Promise<void> {

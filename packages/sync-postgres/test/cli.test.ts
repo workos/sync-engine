@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { main, parseHydrate, repairViewsRequested } from '../src/cli.js'
+import { main, parseHydrate, repairRequested } from '../src/cli.js'
 
 describe('WORKOS_SYNC_HYDRATE', () => {
   it('leaves the engine default in place when unset', () => {
@@ -24,11 +24,11 @@ describe('WORKOS_SYNC_HYDRATE', () => {
 })
 
 describe('init --repair', () => {
-  it('asks for view repair on init and nothing else', () => {
-    expect(repairViewsRequested('init', { repair: true })).toBe(true)
-    expect(repairViewsRequested('init', {})).toBe(false)
+  it('asks for repair on init and nothing else', () => {
+    expect(repairRequested('init', { repair: true })).toBe(true)
+    expect(repairRequested('init', {})).toBe(false)
     // `reconcile --repair` repairs rows, not views.
-    expect(repairViewsRequested('reconcile', { repair: true })).toBe(false)
+    expect(repairRequested('reconcile', { repair: true })).toBe(false)
   })
 
   it('is in the help text', async () => {

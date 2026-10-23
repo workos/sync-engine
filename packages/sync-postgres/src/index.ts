@@ -18,6 +18,9 @@ export { PostgresDestination } from './destination.js'
 export type { PostgresDestinationOptions } from './destination.js'
 
 export { migrate, fingerprint, DDL_VERSION } from './schema/migrate.js'
+export type { MigrateOptions, MigrateResult } from './schema/migrate.js'
+export { detectColumnDrift, repairColumnDrift, unrepairableReason } from './schema/drift.js'
+export type { ColumnDrift, DriftKind, RepairResult } from './schema/drift.js'
 export { buildSchemaSql, createTableSql, columnExpression, parseIso8601Function } from './schema/ddl.js'
 export { liveViewSql, liveViewName } from './schema/views.js'
 

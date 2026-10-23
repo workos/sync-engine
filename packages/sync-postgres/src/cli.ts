@@ -2,7 +2,7 @@
 /**
  * workos-sync-postgres — command line interface.
  *
- *   workos-sync-postgres init [--repair]      create the schema; --repair rebuilds generated views
+ *   workos-sync-postgres init [--repair]      create the schema; --repair rebuilds drifted columns and generated views
  *   workos-sync-postgres backfill [--resume]  page the list endpoints
  *   workos-sync-postgres listen               tail the Events API
  *   workos-sync-postgres tick                 one poll, then exit (for cron)
@@ -27,6 +27,7 @@ import {
 } from '@workos/sync-engine'
 import { PostgresDestination } from './destination.js'
 import { healthOptionsFromEnv } from './health.js'
+import type { SqlClient } from './db/client.js'
 
 interface Args {
   command: string
@@ -97,25 +98,45 @@ export function parseHydrate(value: string | undefined): SyncEngineConfig['hydra
 }
 
 /**
- * `--repair` means rebuilding generated views for `init` and rebuilding rows
- * for `reconcile`. Sharing the flag name is deliberate — it is "fix what you
- * found" in both — but each command reads only its own meaning.
+ * `--repair` on `init` means rebuilding drifted columns from `_raw` and
+ * rebuilding generated `_live` views with their grants; on `reconcile` it
+ * means repairing rows. Sharing the flag name is deliberate — it is "fix what
+ * you found" in both — but each command reads only its own meaning.
  */
-export function repairViewsRequested(command: string, flags: Record<string, string | boolean>): boolean {
+export function repairRequested(command: string, flags: Record<string, string | boolean>): boolean {
   return command === 'init' && Boolean(flags['repair'])
 }
 
-function configFromEnv(command: string, flags: Record<string, string | boolean>): SyncEngineConfig & { logger: Logger } {
+/**
+ * Built apart from the rest of the config because `init` reads the drift
+ * report back off it after the engine has run; the engine's own `init()`
+ * returns nothing. `db` is a test seam: a pre-built client (PGlite) in place
+ * of a connection string, so the CLI can be exercised end to end.
+ */
+function destinationFromEnv(
+  flags: Record<string, string | boolean>,
+  repair: boolean,
+  db?: SqlClient,
+): PostgresDestination {
   const databaseUrl = (flags['database-url'] as string) ?? process.env['DATABASE_URL']
-  if (!databaseUrl) throw new Error('set DATABASE_URL (or pass --database-url)')
+  if (!db && !databaseUrl) throw new Error('set DATABASE_URL (or pass --database-url)')
+  return new PostgresDestination({
+    databaseUrl,
+    db,
+    schema: (flags['schema'] as string) ?? process.env['WORKOS_SYNC_SCHEMA'] ?? 'workos',
+    syncId: process.env['WORKOS_SYNC_ID'] ?? 'default',
+    repairColumns: repair,
+    repairViews: repair,
+  })
+}
+
+function configFromEnv(
+  flags: Record<string, string | boolean>,
+  destination: PostgresDestination,
+): SyncEngineConfig & { logger: Logger } {
   const streams = typeof flags['streams'] === 'string' ? flags['streams'].split(',') : undefined
   return {
-    destination: new PostgresDestination({
-      databaseUrl,
-      schema: (flags['schema'] as string) ?? process.env['WORKOS_SYNC_SCHEMA'] ?? 'workos',
-      syncId: process.env['WORKOS_SYNC_ID'] ?? 'default',
-      repairViews: repairViewsRequested(command, flags),
-    }),
+    destination,
     environments: environmentsFromEnv(),
     streams,
     hydrate: parseHydrate(process.env['WORKOS_SYNC_HYDRATE']),
@@ -134,8 +155,10 @@ Usage
   workos-sync-postgres <command> [flags]
 
 Commands
-  init [--repair]      Create the schema and bookkeeping tables. Fails if a generated _live
-                       view must be rebuilt; --repair rebuilds it and carries its grants over
+  init [--repair]      Create the schema and bookkeeping tables. Exits 2 if a generated
+                       column has drifted from the catalog, and fails if a generated _live
+                       view must be rebuilt; --repair rebuilds columns from _raw and views
+                       with their grants carried over
   backfill [--resume]  Load current state from the REST list endpoints
   listen [--health-port <n>]
                        Tail the Events API and apply changes continuously;
@@ -172,7 +195,12 @@ Environment
   LOG_LEVEL                    debug | info | warn | error | silent
 `
 
-export async function main(argv = process.argv.slice(2)): Promise<number> {
+export interface MainDeps {
+  /** A pre-built client in place of `DATABASE_URL`, so tests can run the CLI against PGlite. */
+  db?: SqlClient
+}
+
+export async function main(argv = process.argv.slice(2), deps: MainDeps = {}): Promise<number> {
   const { command, flags } = parseArgs(argv)
 
   if (command === 'help' || flags['help']) {
@@ -194,14 +222,23 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0
   }
 
-  const config = configFromEnv(command, flags)
+  const destination = destinationFromEnv(flags, repairRequested(command, flags), deps.db)
+  const config = configFromEnv(flags, destination)
   const engine = new SyncEngine(config)
   try {
     switch (command) {
       case 'init': {
         await engine.init()
-        process.stdout.write('schema ready\n')
-        return 0
+        const drift = destination.lastMigration?.drift ?? []
+        const repaired = destination.lastMigration?.repaired ?? []
+        if (drift.length > 0 || repaired.length > 0) {
+          process.stdout.write(JSON.stringify({ repaired, drift }, null, 2) + '\n')
+        }
+        // Orphans are advisory. Anything else means a projection is wrong and
+        // the fingerprint was withheld, so exit 2 the way `reconcile` does.
+        const unresolved = drift.some((d) => d.kind !== 'orphan')
+        if (!unresolved) process.stdout.write('schema ready\n')
+        return unresolved ? 2 : 0
       }
       case 'backfill': {
         const results = await engine.backfill({ resume: Boolean(flags['resume']) })
