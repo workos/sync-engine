@@ -70,14 +70,32 @@ and the staleness gate decides which version wins.
 | `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                               |
 
 Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
-`reconcile({ repair, streams })`, `refresh()`, `status()`, `redact(userId)`,
-`processWebhook()`, `close()`. Every method applies the schema first, so
-`init()` is optional.
+`reconcile({ repair, streams })`, `refresh()`, `status()`, `health()`,
+`redact(userId)`, `processWebhook()`, `close()`. Every method except
+`health()` applies the schema first, so `init()` is optional.
 
 `status()` reports, per environment, the cursor, `pollAgeSeconds` (time since
 the last successful poll; alert on this), `cursorAgeDays` (age of the newest
 event applied; distance from the 90-day retention cliff, not liveness), and
 per-stream row counts, tombstones, staleness and lag.
+
+`health()` is the same liveness picture without the database: a synchronous
+snapshot of in-memory state (`starting` / `listening` / `stopped`, any fatal
+error, and per environment the last poll, last event, cursor, last error and
+running counters). `startHealthServer(engine, { port, host?, maxPollAgeMs? })`
+serves it on `GET /healthz` (`200` or `503`) and `GET /metrics` (Prometheus
+text), which is what the `listen` command does when given a port. To mount
+the same endpoints on a server you already run, `healthReport(engine.health(),
+{ maxPollAgeMs })` gives the JSON body and verdict, and
+`renderMetrics(engine.health())` the exposition text.
+
+```ts
+import { startHealthServer } from "@workos/sync-engine";
+
+const health = await startHealthServer(engine, { port: 8080 });
+await engine.listen();
+await health.close();
+```
 
 A rejected credential (401 or 403) and a cursor that pages backwards are
 fatal: the engine stops rather than retrying. Everything else is retried or

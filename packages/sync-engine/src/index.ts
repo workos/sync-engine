@@ -13,6 +13,17 @@
 export { SyncEngine } from './engine.js'
 export type { EngineDeps } from './engine.js'
 
+export { startHealthServer, healthReport, renderMetrics, DEFAULT_MAX_POLL_AGE_MS } from './health.js'
+export type {
+  EngineHealth,
+  EnvironmentHealth,
+  HealthCounters,
+  HealthCheckOptions,
+  HealthReport,
+  HealthServer,
+  HealthServerOptions,
+} from './health.js'
+
 export type { Destination, FreshnessRow, IdDiff, Row, WriteMode } from './destination.js'
 export { StateStore } from './state.js'
 export { redactPayload, redactRows, RedactingDestination, redacting } from './redact.js'
