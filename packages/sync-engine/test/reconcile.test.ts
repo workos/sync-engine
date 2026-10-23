@@ -67,6 +67,11 @@ describe('diffStream', () => {
       acquireLease: async (_e, holder) => ({ acquired: true, holder, expiresAt: null }),
       releaseLease: async () => {},
       getLease: async () => null,
+      unlink: async () => emptyStats(),
+      reject: async () => {},
+      rejected: async () => [],
+      rejectedCount: async () => 0,
+      clearRejected: async () => 0,
     }
 
     const result = await diffStream(destination, api, 'prod', memberships)

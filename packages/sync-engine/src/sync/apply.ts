@@ -30,6 +30,23 @@ export interface ApplyResult {
   hydrated: number
 }
 
+/**
+ * A hydration GET that failed for a reason other than 404. It gets its own
+ * type so the quarantine logic can tell an API outage apart from a poison
+ * event: the event is fine, the re-fetch is not, and skipping the event
+ * would be the wrong response to either.
+ */
+export class HydrationError extends Error {
+  constructor(
+    readonly eventId: string,
+    readonly path: string,
+    cause: unknown,
+  ) {
+    super(`hydration failed for ${eventId} (GET ${path}): ${String(cause)}`, { cause })
+    this.name = 'HydrationError'
+  }
+}
+
 function hydrateModeFor(opts: ApplyOptions, stream: string): HydrateMode {
   const h = opts.hydrate
   if (!h) return 'off'
@@ -86,7 +103,7 @@ export async function applyEvents(
       continue
     }
     let data = action.data
-    const updatedAt = sourceUpdatedAt(event, data)
+    let updatedAt = sourceUpdatedAt(event, data)
 
     // Optional hydration: re-fetch the object so fields the event payload
     // omits (external_id, metadata, ...) are correct immediately rather than
@@ -98,9 +115,21 @@ export async function applyEvents(
       const want = mode === 'always' || (mode === 'on_create' && isCreate)
       const id = objectIdOf(data)
       if (want && def?.get && id && action.kind === 'upsert') {
-        const fresh = await opts.api.get<Record<string, unknown>>(def.get(id))
+        const path = def.get(id)
+        let fresh: Record<string, unknown> | null
+        try {
+          fresh = await opts.api.get<Record<string, unknown>>(path)
+        } catch (err) {
+          throw new HydrationError(event.id, path, err)
+        }
         if (fresh) {
           data = fresh
+          // The snapshot is the object as it is now, which may be newer than
+          // the event that prompted the fetch: a replay of a quarantined
+          // `created` after a later `updated` already made the row, for one.
+          // Stamped with the event's time it would lose to the staleness
+          // gate and the fields only the snapshot carries would never land.
+          updatedAt = sourceUpdatedAt(event, fresh)
           result.hydrated++
         } else {
           // A 404 during hydration is itself a delete signal: the object is
@@ -146,7 +175,7 @@ export async function applyEvents(
           bump(streamName, await destination.relink(def, opts.env, rows))
           break
         case 'unlink':
-          bump(streamName, await destination.delete(def, opts.env, rows))
+          bump(streamName, await destination.unlink(def, opts.env, rows))
           break
       }
     }

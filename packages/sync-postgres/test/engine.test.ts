@@ -12,9 +12,10 @@ import {
   type Destination,
 } from '@workos/sync-engine'
 import { createTestDb } from './helpers/pg.js'
-import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
+import { FakeWorkOS, resetIds, id } from '../../sync-engine/test/helpers/fake-workos.js'
 import { PostgresDestination } from '../src/destination.js'
 import type { SqlClient } from '../src/db/client.js'
+import { FaultyDestination, captureLogger } from './helpers/faulty.js'
 
 const TIER1 = [
   'users',
@@ -1083,5 +1084,450 @@ describe('redaction', () => {
       [`%${user['id']}%`],
     )
     expect(Number(events.rows[0]!.n)).toBe(0)
+  })
+})
+
+describe('poison events', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+  })
+  afterEach(async () => {
+    await db.close()
+  })
+
+  const count = async (table: string) => {
+    const r = await db.query<{ n: string }>(`select count(*)::text as n from workos."${table}"`)
+    return Number(r.rows[0]!.n)
+  }
+  const emails = async () => {
+    const r = await db.query<{ email: string }>(`select email from workos.users order by email`)
+    return r.rows.map((x) => x.email)
+  }
+  const eventFor = (objectId: string) => fake.events.find((e) => e.data['id'] === objectId)!
+
+  /** The engine over a FaultyDestination, with a capturing logger and no client retries. */
+  function makeFaulty(extra: Record<string, unknown> = {}, fetchImpl = fake.fetchImpl) {
+    const destination = new FaultyDestination({ db, schema: 'workos' })
+    const { logger, lines } = captureLogger()
+    const engine = new SyncEngine(
+      {
+        destination,
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: TIER1,
+        hydrate: 'off',
+        logger,
+        lagWindowMs: 0,
+        ...extra,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({
+            apiKey: 'sk_test_1',
+            apiUrl: 'http://fake.workos.local',
+            fetchImpl,
+            maxRetries: 0,
+          }),
+      },
+    )
+    return { engine, destination, lines }
+  }
+
+  it('quarantines one event after two sightings and keeps the rest of the environment moving', async () => {
+    fake.createUser({ email: 'good1@example.com' })
+    const bad = fake.createUser({ email: 'bad@example.com' })
+    fake.createUser({ email: 'good2@example.com' })
+    const badEvent = eventFor(bad['id'] as string)
+    const { engine, destination, lines } = makeFaulty()
+    destination.poison = bad['id'] as string
+
+    // Poll 1: first sighting. The tick fails as it always did, the cursor
+    // stays put, and the suspect is only remembered in memory.
+    const first = await engine.tick()
+    expect(first).toMatchObject({ processed: 0, rejected: 0 })
+    let status = await engine.status()
+    expect(status['prod']!.cursor).toBeNull()
+    expect(status['prod']!.rejected).toBe(0)
+    expect(await count('_rejected')).toBe(0)
+    const warned = lines.find((l) => l.level === 'warn' && l.fields['eventId'] === badEvent.id)
+    expect(warned?.msg).toMatch(/quarantined if it fails again/)
+    expect(warned?.fields['error']).toMatch(/invalid input syntax for type boolean/)
+
+    // Poll 2: the same batch, the same failure. The good events are written,
+    // the bad one is set aside, and the cursor moves past all three.
+    const second = await engine.tick()
+    expect(second).toMatchObject({ processed: 3, rejected: 1 })
+    status = await engine.status()
+    expect(status['prod']!.cursor).toBe(fake.events[fake.events.length - 1]!.id)
+    expect(status['prod']!.rejected).toBe(1)
+    expect(await emails()).toEqual(['good1@example.com', 'good2@example.com'])
+
+    const rejected = (await engine.rejected())['prod']!
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]).toMatchObject({
+      eventId: badEvent.id,
+      eventType: 'user.created',
+      objectId: bad['id'],
+      createdAt: badEvent.created_at,
+      raw: badEvent,
+    })
+    expect(rejected[0]!.error).toMatch(/invalid input syntax for type boolean: "maybe"/)
+    expect(rejected[0]!.rejectedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    const logged = lines.find((l) => l.level === 'error' && l.msg.includes('quarantined'))
+    expect(logged?.fields).toMatchObject({ eventId: badEvent.id, eventType: 'user.created', objectId: bad['id'] })
+    expect(String(logged?.fields['hint'])).toContain('rejected')
+
+    // The tail is not stalled: the next poll is a no-op rather than a retry.
+    expect((await engine.tick()).processed).toBe(0)
+
+    // The archive still has every event, including the one set aside.
+    expect(await count('events')).toBe(3)
+  })
+
+  it('replays a quarantined event through the normal path once the cause is fixed', async () => {
+    fake.createUser({ email: 'good@example.com' })
+    const bad = fake.createUser({ email: 'bad@example.com' })
+    const { engine, destination } = makeFaulty()
+    destination.poison = bad['id'] as string
+    await engine.tick()
+    await engine.tick()
+    expect((await engine.status())['prod']!.rejected).toBe(1)
+
+    // Still broken: the row stays, with its error refreshed.
+    destination.fault = () => Object.assign(new Error('still broken'), { code: '22P02' })
+    const again = await engine.replayRejected()
+    expect(again.replayed).toBe(0)
+    expect(again.stillRejected).toEqual([{ eventId: eventFor(bad['id'] as string).id, error: 'Error: still broken' }])
+    expect((await engine.rejected())['prod']![0]!.error).toBe('Error: still broken')
+
+    // Fixed: the event is applied and forgotten.
+    destination.poison = null
+    const fixed = await engine.replayRejected()
+    expect(fixed).toEqual({ replayed: 1, stillRejected: [] })
+    expect(await count('_rejected')).toBe(0)
+    expect((await engine.status())['prod']!.rejected).toBe(0)
+    expect(await emails()).toEqual(['bad@example.com', 'good@example.com'])
+  })
+
+  it('replays a quarantined create after a later update, restoring the fields only hydration carries', async () => {
+    const user = fake.createUser({ email: 'late@example.com' })
+    const { engine, destination } = makeFaulty({ hydrate: 'on_create' })
+    destination.poison = user['id'] as string
+    await engine.tick()
+    await engine.tick()
+    expect((await engine.status())['prod']!.rejected).toBe(1)
+
+    // The cause is gone, and the object moves on before anyone replays: the
+    // update creates the row from the event payload alone, which carries
+    // neither external_id nor metadata.
+    destination.poison = null
+    fake.updateUser(user['id'] as string, { first_name: 'Late' })
+    await engine.tick()
+    const before = await db.query<{ external_id: string | null; metadata: unknown }>(
+      `select external_id, metadata from workos.users where id = $1`,
+      [user['id']],
+    )
+    expect(before.rows[0]).toEqual({ external_id: null, metadata: null })
+
+    // The replayed create hydrates, and the snapshot it writes must win over
+    // the row the update made, or clearing the rejection would be a lie.
+    expect(await engine.replayRejected()).toEqual({ replayed: 1, stillRejected: [] })
+    const after = await db.query<{ first_name: string; external_id: string | null; metadata: unknown }>(
+      `select first_name, external_id, metadata from workos.users where id = $1`,
+      [user['id']],
+    )
+    expect(after.rows[0]).toEqual({ first_name: 'Late', external_id: user['external_id'], metadata: { plan: 'pro' } })
+  })
+
+  it('never quarantines on an error the destination classifies as transient', async () => {
+    const u1 = fake.createUser()
+    fake.createUser()
+    const { engine, destination, lines } = makeFaulty()
+    destination.poison = u1['id'] as string
+
+    // A dropped connection, then a socket error: both are the database having
+    // a bad moment, and the tick must retry, however many times it happens.
+    destination.fault = () => Object.assign(new Error('connection failure'), { code: '08006' })
+    await engine.tick()
+    await engine.tick()
+    destination.fault = () => Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+    await engine.tick()
+    await engine.tick()
+
+    expect(await count('_rejected')).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBeNull()
+    expect(lines.filter((l) => l.msg === 'tick failed')).toHaveLength(4)
+    expect(lines.some((l) => l.level === 'warn')).toBe(false)
+    // It failed fast each time, without ever isolating event by event.
+    expect(destination.faults).toBe(4)
+
+    // Once the database recovers the batch applies in full.
+    destination.poison = null
+    expect((await engine.tick()).processed).toBe(2)
+    expect(await count('users')).toBe(2)
+  })
+
+  it('treats a whole batch failing as an outage, not a batch of poison events', async () => {
+    fake.createUser()
+    fake.createUser()
+    fake.createUser()
+    const { engine, destination, lines } = makeFaulty()
+    // An unclassified error, so only the all-fail rule stands in the way.
+    destination.fault = () => new Error('relation "workos.users" does not exist')
+    destination.failAll = true
+
+    await engine.tick()
+    await engine.tick()
+    await engine.tick()
+
+    expect(await count('_rejected')).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBeNull()
+    expect(lines.filter((l) => l.msg === 'tick failed')).toHaveLength(3)
+    expect(lines.some((l) => l.level === 'warn')).toBe(false)
+  })
+
+  it('treats a hydration failure as an outage, never as a poison event', async () => {
+    fake.createUser()
+    fake.createUser()
+    // The API answers the events page but not the user GET that hydration
+    // needs. The client has already given up retrying by the time the engine
+    // sees it, so what the engine sees is an outage.
+    const failingGet: typeof fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' ? input : input.toString())
+      if (/^\/user_management\/users\/[^/]+$/.test(url.pathname)) {
+        return Promise.resolve(new Response('{"message":"upstream"}', { status: 503 }))
+      }
+      return fake.fetchImpl(input, init)
+    }) as typeof fetch
+    const { engine, lines } = makeFaulty({ hydrate: { users: 'on_create' } }, failingGet)
+
+    await engine.tick()
+    await engine.tick()
+
+    expect(await count('_rejected')).toBe(0)
+    expect(await count('users')).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBeNull()
+    const failures = lines.filter((l) => l.msg === 'tick failed')
+    expect(failures).toHaveLength(2)
+    expect(String(failures[0]!.fields['error'])).toMatch(/hydration failed .* 503/)
+    expect(lines.some((l) => l.level === 'warn')).toBe(false)
+  })
+
+  it('stops when hydration is denied, not only when the events page is', async () => {
+    fake.createUser()
+    // The events page answers; the object GET that hydration needs is
+    // forbidden. That is the same configuration error as a 403 on the events
+    // page, and wrapping it in a hydration error must not turn it into a
+    // retry every poll interval.
+    const denied: typeof fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' ? input : input.toString())
+      if (/^\/user_management\/users\/[^/]+$/.test(url.pathname)) {
+        return Promise.resolve(new Response('{"message":"forbidden"}', { status: 403 }))
+      }
+      return fake.fetchImpl(input, init)
+    }) as typeof fetch
+    const { engine, lines } = makeFaulty({ hydrate: { users: 'on_create' } }, denied)
+
+    await expect(engine.tick()).rejects.toThrow(/403/)
+    expect(await count('_rejected')).toBe(0)
+    expect(lines.some((l) => l.msg === 'tick failed')).toBe(false)
+    expect(lines.some((l) => l.msg === 'authentication failed; stopping')).toBe(true)
+  })
+
+  it('forgets a suspect that succeeds on its second poll', async () => {
+    const flaky = fake.createUser({ email: 'flaky@example.com' })
+    fake.createUser({ email: 'steady@example.com' })
+    const { engine, destination } = makeFaulty()
+    // An unclassified error that happens once: exactly what two sightings is for.
+    destination.fault = () => new Error('Connection terminated unexpectedly')
+    destination.poison = flaky['id'] as string
+    await engine.tick()
+    destination.poison = null
+
+    const second = await engine.tick()
+    expect(second).toMatchObject({ processed: 2, rejected: 0 })
+    expect(await count('_rejected')).toBe(0)
+    expect(await emails()).toEqual(['flaky@example.com', 'steady@example.com'])
+  })
+
+  it('forgets a suspect that succeeds alone on a poll that fails for another reason', async () => {
+    const flaky = fake.createUser({ email: 'flaky@example.com' })
+    fake.createUser({ email: 'steady@example.com' })
+    const { engine, destination } = makeFaulty()
+    destination.fault = () => new Error('Connection terminated unexpectedly')
+
+    // Poll 1: the event fails alone. First sighting.
+    destination.poison = flaky['id'] as string
+    await engine.tick()
+
+    // Poll 2: the batch fails, but every event — this one included — succeeds
+    // alone. Nothing is quarantined and the tick still fails, but whatever
+    // was wrong with the event last time is not wrong now.
+    destination.poison = null
+    destination.failBatches = true
+    expect(await engine.tick()).toMatchObject({ processed: 0, rejected: 0 })
+
+    // Poll 3: it fails alone again. Two failures, but not on consecutive
+    // polls: this is a new first sighting, and nothing is quarantined.
+    destination.failBatches = false
+    destination.poison = flaky['id'] as string
+    expect(await engine.tick()).toMatchObject({ processed: 0, rejected: 0 })
+    expect(await count('_rejected')).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBeNull()
+
+    // Poll 4: now it has failed twice in a row.
+    expect(await engine.tick()).toMatchObject({ processed: 2, rejected: 1 })
+    expect(await count('_rejected')).toBe(1)
+  })
+
+  it('does not resurrect a membership removed after a quarantined link', async () => {
+    // A membership re-add is the one write that clears a tombstone, which
+    // makes it the one place an out-of-order replay could undo a removal that
+    // happened after the replayed event.
+    const at = (ms: number) => new Date(Date.now() - 50_000 + ms).toISOString()
+    const pair = { group_id: 'group_01', organization_membership_id: 'om_01' }
+    const push = (event: string, created_at: string) => {
+      const e = { id: id('event_'), event, data: pair, created_at }
+      fake.events.push(e)
+      return e
+    }
+    push('group.member_added', at(0))
+    push('group.member_removed', at(1_000))
+    const readd = push('group.member_added', at(2_000))
+    push('group.member_removed', at(3_000))
+    const { engine, destination } = makeFaulty({ streams: ['group_memberships', 'events'] })
+    const live = async () => {
+      const r = await db.query<{ n: string }>(
+        `select count(*)::text as n from workos.group_memberships where "_deleted_at" is null`,
+      )
+      return Number(r.rows[0]!.n)
+    }
+
+    // The archive write for the re-add fails, so it alone is set aside; the
+    // removal that followed it is applied, and the membership ends up removed.
+    destination.poison = readd.id
+    await engine.tick()
+    expect(await engine.tick()).toMatchObject({ processed: 4, rejected: 1 })
+    expect(await count('group_memberships')).toBe(1)
+    expect(await live()).toBe(0)
+
+    // Replayed now, the re-add is older than the removal it would undo. It is
+    // a no-op, like any stale event, and is forgotten like any replayed one.
+    destination.poison = null
+    expect(await engine.replayRejected()).toEqual({ replayed: 1, stillRejected: [] })
+    expect(await live()).toBe(0)
+    expect(await count('_rejected')).toBe(0)
+  })
+
+  it('does not hide a membership re-added after a quarantined removal', async () => {
+    // The mirror image: an older removal replayed after a newer re-add must
+    // not tombstone a membership that is active now. Object deletes are
+    // terminal and not staleness-gated; membership removals have to be.
+    const at = (ms: number) => new Date(Date.now() - 50_000 + ms).toISOString()
+    const pair = { group_id: 'group_01', organization_membership_id: 'om_01' }
+    const push = (event: string, created_at: string) => {
+      const e = { id: id('event_'), event, data: pair, created_at }
+      fake.events.push(e)
+      return e
+    }
+    push('group.member_added', at(0))
+    const removal = push('group.member_removed', at(1_000))
+    push('group.member_added', at(2_000))
+    const { engine, destination } = makeFaulty({ streams: ['group_memberships', 'events'] })
+    const live = async () => {
+      const r = await db.query<{ n: string }>(
+        `select count(*)::text as n from workos.group_memberships where "_deleted_at" is null`,
+      )
+      return Number(r.rows[0]!.n)
+    }
+
+    destination.poison = removal.id
+    await engine.tick()
+    expect(await engine.tick()).toMatchObject({ processed: 3, rejected: 1 })
+    expect(await live()).toBe(1)
+
+    destination.poison = null
+    expect(await engine.replayRejected()).toEqual({ replayed: 1, stillRejected: [] })
+    expect(await live()).toBe(1)
+    expect(await count('_rejected')).toBe(0)
+
+    // A removal that really is newer than the re-add still lands.
+    push('group.member_removed', at(3_000))
+    expect(await engine.tick()).toMatchObject({ processed: 1, rejected: 0 })
+    expect(await live()).toBe(0)
+  })
+
+  it('quarantines an event whose own timestamp Postgres cannot store', async () => {
+    // A `created_at` that has the ISO-8601 shape but is not a real instant
+    // fails the archive write's cast. The quarantine row stores the same
+    // value, and must not fail on it: that would leave the tail stuck on the
+    // very event the quarantine exists to set aside.
+    const bad = fake.createUser({ email: 'bad@example.com' })
+    const badEvent = eventFor(bad['id'] as string)
+    badEvent.created_at = '2026-02-30T12:00:00Z'
+    fake.createUser({ email: 'good@example.com' })
+    const { engine } = makeFaulty()
+
+    expect((await engine.tick()).processed).toBe(0)
+    expect(await engine.tick()).toMatchObject({ processed: 2, rejected: 1 })
+    const rejected = (await engine.rejected())['prod']!
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]).toMatchObject({ eventId: badEvent.id, createdAt: '2026-02-30T12:00:00Z' })
+    expect(rejected[0]!.error).toMatch(/out of range/)
+    // The typed column is only for SQL; the value as it arrived is in `_raw`.
+    const stored = await db.query<{ created_at: string | null }>(`select created_at from workos."_rejected"`)
+    expect(stored.rows[0]!.created_at).toBeNull()
+    expect(await emails()).toEqual(['good@example.com'])
+    expect((await engine.status())['prod']!.cursor).not.toBeNull()
+  })
+
+  it('is scrubbed by redact like the event archive', async () => {
+    fake.createUser({ email: 'keep@example.com' })
+    const subject = fake.createUser({ email: 'forget@example.com' })
+    const { engine, destination } = makeFaulty()
+    destination.poison = subject['id'] as string
+    await engine.tick()
+    await engine.tick()
+    expect(await count('_rejected')).toBe(1)
+
+    const removed = await engine.redact(subject['id'] as string)
+    expect(removed).toContainEqual({ table: '_rejected', rows: 1 })
+    expect(await count('_rejected')).toBe(0)
+    const leftovers = await db.query<{ n: string }>(
+      `select count(*)::text as n from workos."_rejected" where "_raw"::text like $1`,
+      [`%${subject['id']}%`],
+    )
+    expect(Number(leftovers.rows[0]!.n)).toBe(0)
+  })
+
+  it('quarantines a payload that Postgres itself cannot cast, with no fault injected', async () => {
+    // The realistic case: an operator projects a boolean column, and one
+    // object carries a string there. The generated column raises on insert,
+    // the batch fails, and without quarantine every stream would stop here.
+    fake.createUser({ email: 'good@example.com', metadata: { beta: true } })
+    const bad = fake.createUser({ email: 'bad@example.com', metadata: { beta: 'maybe' } })
+    const engine = makeEngine(db, fake, TIER1, {
+      // Hydration is on by default for users, so the REST object — the one
+      // with `metadata` — is what gets written.
+      extraColumns: { users: [{ name: 'beta', type: 'boolean', path: ['metadata', 'beta'] }] },
+    })
+
+    expect((await engine.tick()).processed).toBe(0)
+    expect((await engine.status())['prod']!.cursor).toBeNull()
+
+    const second = await engine.tick()
+    expect(second).toMatchObject({ processed: 2, rejected: 1 })
+    const rejected = (await engine.rejected())['prod']!
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]!.objectId).toBe(bad['id'])
+    expect(rejected[0]!.error).toMatch(/invalid input syntax for type boolean: "maybe"/)
+
+    const rows = await db.query<{ email: string; beta: boolean }>(`select email, beta from workos.users`)
+    expect(rows.rows).toEqual([{ email: 'good@example.com', beta: true }])
+    expect((await engine.status())['prod']!.cursor).not.toBeNull()
   })
 })

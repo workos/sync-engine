@@ -35,6 +35,10 @@ Install this package directly only to write a new destination.
   and the id-set difference that is the only way to find a missed delete.
 - **Webhook verification** — `verifyWebhook`: a verified delivery is a nudge
   to poll now; state still flows through the ordered events stream.
+- **Quarantine** — `applyWithQuarantine`: a write that fails deterministically
+  on two consecutive polls is set aside in the destination's rejected store,
+  so one bad payload cannot stall every stream in the environment. Transient
+  errors never qualify, and `replayRejected` puts an event back.
 - **`SyncEngine`** — the lifecycle that ties them together.
 
 ## Using the engine
@@ -72,8 +76,9 @@ and the staleness gate decides which version wins.
 
 Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
 `reconcile({ repair, streams })`, `refresh()`, `status()`, `health()`,
-`redact(userId)`, `processWebhook()`, `close()`. Every method except
-`health()` applies the schema first, so `init()` is optional.
+`redact(userId)`, `rejected({ ids })`, `replayRejected({ ids })`,
+`processWebhook()`, `close()`. Every method except `health()` applies the
+schema first, so `init()` is optional.
 
 The tail has one writer per environment. `listen()` takes a lease in the
 destination before polling and renews it while it runs; if another process
@@ -94,8 +99,9 @@ a tail.
 `status()` reports, per environment, the cursor, `pollAgeSeconds` (time since
 the last successful poll; alert on this), `cursorAgeDays` (age of the newest
 event applied; distance from the 90-day retention cliff, not liveness),
-`lease` (who is tailing it now, or `null`), and per-stream row counts,
-tombstones, staleness and lag.
+`lease` (who is tailing it now, or `null`), `rejected` (events quarantined by
+the tail; alert on this too), and per-stream row counts, tombstones,
+staleness and lag.
 
 `health()` is the same liveness picture without the database: a synchronous
 snapshot of in-memory state (`starting` / `listening` / `stopped`, any fatal
@@ -117,7 +123,14 @@ await health.close();
 
 A rejected credential (401 or 403) and a cursor that pages backwards are
 fatal: the engine stops rather than retrying. Everything else is retried or
-isolated by stream.
+isolated by stream, with one exception: an event whose write fails
+deterministically on two consecutive polls is quarantined, so the cursor can
+move past it rather than stalling the environment. `tick()` reports how many
+it set aside, `rejected()` lists them with the error and the whole event, and
+`replayRejected()` re-applies them, oldest first, once the cause is fixed.
+Hydration failures, API errors, and anything the destination's
+`isTransientError` recognises never qualify; the two-sightings rule covers
+transient errors it does not.
 
 ## Writing a destination
 
@@ -133,8 +146,10 @@ import type {
   Lease,
   LeaseResult,
   Logger,
+  RejectedEvent,
   Row,
   StreamDef,
+  WorkOSEvent,
   WriteMode,
   WriteStats,
 } from "@workos/sync-engine";
@@ -151,6 +166,7 @@ class MyDestination implements Destination {
   ): Promise<WriteStats>;
   delete(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
   relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
+  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
 
   liveIds(stream: StreamDef, env: string): Promise<string[]>;
   rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>;
@@ -177,6 +193,16 @@ class MyDestination implements Destination {
   acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult>;
   releaseLease(env: string, holder: string): Promise<void>;
   getLease(env: string): Promise<Lease | null>;
+
+
+  reject(
+    env: string,
+    rows: { event: WorkOSEvent; error: string }[],
+  ): Promise<void>;
+  rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]>;
+  rejectedCount(env: string): Promise<number>;
+  clearRejected(env: string, ids: string[]): Promise<number>;
+  isTransientError?(err: unknown): boolean; // optional
 }
 ```
 
@@ -191,7 +217,11 @@ because of a documented failure in a comparable sync engine.
    REST objects, so event writes merge and a whole-row replace would null out
    exactly the columns people join on.
 3. **Deletion is terminal.** `delete` tombstones without a staleness check and
-   never clears the tombstone; only `relink` (a membership re-add) does.
+   never clears the tombstone. Memberships are the exception, in both
+   directions and only when the write is at least as new as the row: `relink`
+   (a re-add) clears the tombstone and `unlink` (a removal) sets it. Events
+   can be replayed from quarantine after newer ones have landed, and an older
+   link or unlink must not undo what a newer one established.
 4. **Durable on return.** The engine checkpoints its cursor as soon as a write
    resolves. A write must not be buffered past its own call.
 5. **`init` is called before every operation.** It must be idempotent and
@@ -232,9 +262,23 @@ with nothing to stage into can delegate to the exported `diffIdsInMemory`,
 which is the old in-process algorithm, and accept that its memory grows with
 the stream.
 
+The last five methods are the **quarantine store**, separate from the mirror.
+`reject` stores whole raw events keyed by `(env, eventId)` — the archive write
+may itself be what failed, so a reference into it is not enough — and replaces
+the error when an id is rejected again. `rejected` returns them oldest first by
+event id, `rejectedCount` is what `status()` reports on every monitoring poll
+(a count, so it must not fetch the payloads), and `clearRejected` forgets them
+after a replay. Because they embed payloads, `redact` must scrub this store as
+well as the archive. `isTransientError`
+is optional: return `true` for errors that mean the database had a bad moment (a
+dropped connection, a deadlock, a full disk), never for a verdict on the row,
+and the engine will retry instead of ever quarantining on them. Without it,
+every error is presumed deterministic and only the two-sightings rule stands
+between a flaky connection and a quarantine.
+
 The reference implementation is
 [`PostgresDestination`](https://github.com/workos/workos-pg-sync/blob/main/packages/sync-postgres/src/destination.ts)
-in `@workos/sync-postgres` (under 200 lines).
+in `@workos/sync-postgres` (about 200 lines).
 
 ## Documentation
 

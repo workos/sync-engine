@@ -14,8 +14,8 @@
  *
  * Not to be confused with `Destination.redact`, which erases one subject.
  */
-import type { Destination, FreshnessRow, IdDiff, Lease, LeaseResult, Row, WriteMode } from './destination.js'
-import type { Logger, StreamDef, WriteStats } from './types.js'
+import type { Destination, FreshnessRow, IdDiff, Lease, LeaseResult, RejectedEvent, Row, WriteMode } from './destination.js'
+import type { Logger, StreamDef, WorkOSEvent, WriteStats } from './types.js'
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -89,6 +89,10 @@ export class RedactingDestination implements Destination {
     return this.inner.relink(stream, env, redactRows(stream, rows))
   }
 
+  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats> {
+    return this.inner.unlink(stream, env, redactRows(stream, rows))
+  }
+
   liveIds(stream: StreamDef, env: string): Promise<string[]> {
     return this.inner.liveIds(stream, env)
   }
@@ -144,6 +148,29 @@ export class RedactingDestination implements Destination {
 
   getLease(env: string): Promise<Lease | null> {
     return this.inner.getLease(env)
+  }
+
+  // The quarantine store holds raw events, which never carry the credentials
+  // `redact` paths name (those exist only on REST objects), so these pass
+  // straight through like the `events` archive write does.
+  reject(env: string, rows: { event: WorkOSEvent; error: string }[]): Promise<void> {
+    return this.inner.reject(env, rows)
+  }
+
+  rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]> {
+    return this.inner.rejected(env, opts)
+  }
+
+  rejectedCount(env: string): Promise<number> {
+    return this.inner.rejectedCount(env)
+  }
+
+  clearRejected(env: string, ids: string[]): Promise<number> {
+    return this.inner.clearRejected(env, ids)
+  }
+
+  isTransientError(err: unknown): boolean {
+    return this.inner.isTransientError?.(err) ?? false
   }
 }
 

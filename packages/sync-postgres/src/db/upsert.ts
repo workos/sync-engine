@@ -21,7 +21,11 @@
  * 3. **Deletion is terminal.** Tombstones are not staleness-gated, and
  *    `_deleted_at` is never cleared. A late `updated` event arriving after a
  *    delete refreshes the payload but must not resurrect the row. WorkOS IDs
- *    are ULIDs and are never reused, so this is safe.
+ *    are ULIDs and are never reused, so this is safe. Memberships are the
+ *    exception, in both directions: a re-add (`relinkRows`) clears the
+ *    tombstone and a removal (`unlinkRows`) sets it, each only when it is at
+ *    least as new as the row. Events can be replayed out of order from
+ *    quarantine, and an older link or unlink must not undo a newer one.
  */
 import { emptyStats, type Row, type StreamDef, type WriteMode, type WriteStats } from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
@@ -190,11 +194,15 @@ export async function deleteRows(
       params.push(env, JSON.stringify(r.data), r.updatedAt)
       return `($${i + 1}, $${i + 2}::jsonb, $${i + 3}::timestamptz, $${i + 3}::timestamptz)`
     })
+    // `greatest`, not `coalesce`, for `_deleted_at`: a membership removed,
+    // re-added and removed again must carry the *latest* removal, because that
+    // is what `relinkRows` compares a re-add against. `greatest` ignores NULL,
+    // so a live row is tombstoned at the incoming time, as before.
     const sql = `insert into ${table} as t (${quoteIdent(ENV)}, ${raw}, "_updated_at", "_deleted_at")
 values ${tuples.join(', ')}
 on conflict (${conflict}) do update set
   ${raw} = t.${raw} || excluded.${raw},
-  "_deleted_at" = coalesce(t."_deleted_at", excluded."_deleted_at"),
+  "_deleted_at" = greatest(t."_deleted_at", excluded."_deleted_at"),
   "_synced_at" = now()
 returning (xmax = 0) as _created`
     const res = await db.query(sql, params)
@@ -227,7 +235,11 @@ export async function relinkRows(
       return `($${i + 1}, $${i + 2}::jsonb, $${i + 3}::timestamptz)`
     })
     // A membership is a fact that can legitimately come back: added, removed,
-    // added again. Unlike object deletes, a re-link clears the tombstone.
+    // added again. Unlike object deletes, a re-link clears the tombstone —
+    // but only a re-link at least as new as the removal. `_updated_at` alone
+    // is not enough: a tombstone written by `deleteRows` (a reconcile repair)
+    // leaves it untouched, so a link replayed from quarantine after that
+    // removal would pass the staleness gate and resurrect the membership.
     const sql = `insert into ${table} as t (${quoteIdent(ENV)}, ${raw}, "_updated_at")
 values ${tuples.join(', ')}
 on conflict (${conflict}) do update set
@@ -236,11 +248,61 @@ on conflict (${conflict}) do update set
   "_deleted_at" = null,
   "_synced_at" = now()
 where excluded."_updated_at" >= t."_updated_at"
+  and (t."_deleted_at" is null or excluded."_updated_at" >= t."_deleted_at")
 returning (xmax = 0) as _created`
     const res = await db.query<{ _created: boolean }>(sql, params)
     const created = res.rows.filter((r) => r._created).length
     stats.created += created
     stats.updated += res.rows.length - created
+    stats.skipped += batch.length - res.rows.length
+  }
+  return stats
+}
+
+/**
+ * Tombstone membership rows (a removal). The counterpart of `relinkRows`,
+ * and staleness-gated like it, which is what sets it apart from `deleteRows`:
+ * a membership can come back, so a removal is a fact with a time, not a
+ * terminal state, and one replayed from quarantine after a newer re-add has
+ * landed must not hide a membership that is active now.
+ */
+export async function unlinkRows(
+  db: SqlClient,
+  opts: WriteOptions,
+  stream: StreamDef,
+  env: string,
+  rows: Row[],
+): Promise<WriteStats> {
+  const stats = emptyStats()
+  if (rows.length === 0) return stats
+  const { rows: deduped, dropped } = dedupeByKey(stream, rows)
+  stats.skipped += dropped
+  const table = `${quoteIdent(opts.schema)}.${quoteIdent(safeIdentifier(stream.name))}`
+  const conflict = [ENV, ...stream.key].map((k) => quoteIdent(safeIdentifier(k))).join(', ')
+  const raw = quoteIdent(RAW)
+
+  for (const batch of chunk(deduped, opts.batchSize ?? 500)) {
+    const params: unknown[] = []
+    const tuples = batch.map((r) => {
+      const i = params.length
+      params.push(env, JSON.stringify(r.data), r.updatedAt)
+      return `($${i + 1}, $${i + 2}::jsonb, $${i + 3}::timestamptz, $${i + 3}::timestamptz)`
+    })
+    // `_updated_at` moves to the removal time, so the next re-add is gated
+    // against the removal by the same comparison every membership write uses.
+    // `_deleted_at` keeps the latest removal for the same reason `deleteRows`
+    // does.
+    const sql = `insert into ${table} as t (${quoteIdent(ENV)}, ${raw}, "_updated_at", "_deleted_at")
+values ${tuples.join(', ')}
+on conflict (${conflict}) do update set
+  ${raw} = t.${raw} || excluded.${raw},
+  "_updated_at" = excluded."_updated_at",
+  "_deleted_at" = greatest(t."_deleted_at", excluded."_deleted_at"),
+  "_synced_at" = now()
+where excluded."_updated_at" >= t."_updated_at"
+returning 1`
+    const res = await db.query(sql, params)
+    stats.deleted += res.rows.length
     stats.skipped += batch.length - res.rows.length
   }
   return stats

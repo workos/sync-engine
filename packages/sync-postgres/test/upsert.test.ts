@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb } from './helpers/pg.js'
 import { migrate } from '../src/schema/migrate.js'
-import { upsertRows, deleteRows, relinkRows, dedupeByKey, keyValues } from '../src/db/upsert.js'
+import { upsertRows, deleteRows, relinkRows, unlinkRows, dedupeByKey, keyValues } from '../src/db/upsert.js'
 import { streamByName, STREAMS } from '@workos/sync-engine'
 import type { SqlClient } from '../src/db/client.js'
 
@@ -212,7 +212,7 @@ describe('write path', () => {
     const memberships = streamByName('group_memberships')!
     const pair = { group_id: 'group_1', organization_membership_id: 'om_1' }
     await relinkRows(db, opts, memberships, 'prod', [{ data: pair, updatedAt: '2026-01-01T00:00:00.000Z' }])
-    await deleteRows(db, opts, memberships, 'prod', [{ data: pair, updatedAt: '2026-01-02T00:00:00.000Z' }])
+    await unlinkRows(db, opts, memberships, 'prod', [{ data: pair, updatedAt: '2026-01-02T00:00:00.000Z' }])
     await relinkRows(db, opts, memberships, 'prod', [{ data: pair, updatedAt: '2026-01-03T00:00:00.000Z' }])
 
     const r = await db.query<{ _deleted_at: string | null }>(
@@ -220,6 +220,29 @@ describe('write path', () => {
     )
     // Unlike an object delete, a membership can legitimately come back.
     expect(r.rows[0]!._deleted_at).toBeNull()
+  })
+
+  it('ignores a membership removal older than the row, unlike an object delete', async () => {
+    const memberships = streamByName('group_memberships')!
+    const pair = { group_id: 'group_1', organization_membership_id: 'om_1' }
+    const deletedAt = async () => {
+      const r = await db.query<{ _deleted_at: string | null }>(
+        `select "_deleted_at" from workos.group_memberships where group_id = 'group_1'`,
+      )
+      return r.rows[0]!._deleted_at
+    }
+    await relinkRows(db, opts, memberships, 'prod', [{ data: pair, updatedAt: '2026-01-03T00:00:00.000Z' }])
+
+    // Replayed out of order from quarantine: the removal predates the re-add
+    // that is already in the row, so it is stale and must not land.
+    const stale = await unlinkRows(db, opts, memberships, 'prod', [{ data: pair, updatedAt: '2026-01-02T00:00:00.000Z' }])
+    expect(stale).toMatchObject({ deleted: 0, skipped: 1 })
+    expect(await deletedAt()).toBeNull()
+
+    // A removal that is newer than the row lands, as always.
+    const fresh = await unlinkRows(db, opts, memberships, 'prod', [{ data: pair, updatedAt: '2026-01-04T00:00:00.000Z' }])
+    expect(fresh).toMatchObject({ deleted: 1, skipped: 0 })
+    expect(await deletedAt()).not.toBeNull()
   })
 
   it('never updates an append-only row', async () => {

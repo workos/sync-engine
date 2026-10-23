@@ -85,6 +85,13 @@ export function generatedColumnSql(col: ColumnDef, schema: string): string {
  * legal in a generated column. Returns NULL rather than raising on input it
  * cannot parse — a generated column that throws would reject the whole row and
  * poison the batch.
+ *
+ * Matching the pattern is not enough for that promise: `make_timestamp`
+ * raises on a field that is out of range (`2026-02-30`, month 13, hour 25),
+ * so each field is range-checked first. The checks are successive CASE
+ * branches rather than one `AND`, because Postgres evaluates CASE branches in
+ * order and makes no such guarantee for the operands of `AND`; the
+ * day-of-month check relies on the month having been validated already.
  */
 export function parseIso8601Function(schema: string): string {
   return `
@@ -92,7 +99,13 @@ create or replace function ${quoteIdent(schema)}.parse_iso8601(iso text)
 returns timestamptz
 language sql immutable strict parallel safe
 as $fn$
-  select case when p is null then null else
+  select case
+    when p is null then null
+    when p[1]::int < 1 or p[2]::int not between 1 and 12 then null
+    when p[3]::int not between 1 and
+      extract(day from (make_date(p[1]::int, p[2]::int, 1) + interval '1 month' - interval '1 day')) then null
+    when p[4]::int > 23 or p[5]::int > 59 or p[6]::double precision > 60 then null
+    else
     timezone('UTC', make_timestamp(
       p[1]::int, p[2]::int, p[3]::int, p[4]::int, p[5]::int, p[6]::double precision))
     - case when p[8] is null then interval '0'
@@ -115,8 +128,16 @@ export function createSchemaSql(schema: string): string {
 
 /**
  * Engine bookkeeping: cursors, applied-schema fingerprints, and the
- * single-writer lease for the events tail. These run before the fingerprint
- * check, so a table added here reaches existing databases on the next start.
+ * single-writer lease for the events tail, and the quarantine. These run on
+ * every `migrate` before the fingerprint check, so a table added here reaches
+ * existing deployments without a new fingerprint.
+ *
+ * `_rejected` holds events the tail set aside after they failed
+ * deterministically on two consecutive polls (see the engine's
+ * `sync/quarantine.ts`). It keeps the whole event, not a reference into
+ * `events`, because the archive write may itself have been the failure.
+ * `created_at` is nullable and goes through `parse_iso8601` on insert: a
+ * quarantine write must never fail on the same bad data that caused it.
  */
 export function bookkeepingSql(schema: string): string {
   const s = quoteIdent(schema)
@@ -143,6 +164,19 @@ create table if not exists ${s}."_sync_lease" (
   acquired_at timestamptz not null default now(),
   expires_at  timestamptz not null,
   primary key (sync_id, env)
+);
+
+create table if not exists ${s}."_rejected" (
+  sync_id     text not null,
+  env         text not null,
+  event_id    text not null,
+  event_type  text not null,
+  object_id   text,
+  created_at  timestamptz,
+  rejected_at timestamptz not null default now(),
+  error       text not null,
+  "_raw"      jsonb not null,
+  primary key (sync_id, env, event_id)
 );`.trim()
 }
 

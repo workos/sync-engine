@@ -15,7 +15,11 @@
  *   one; `replace` overwrites it. Event payloads are subsets of the REST
  *   objects, so event writes merge.
  * - **Deletion is terminal.** `delete` tombstones without a staleness check
- *   and never clears the tombstone; only `relink` (membership re-add) does.
+ *   and never clears the tombstone. Memberships are the exception, in both
+ *   directions and only when the write is at least as new as the row:
+ *   `relink` (a re-add) clears the tombstone and `unlink` (a removal) sets
+ *   it. Events can be replayed from quarantine after newer ones have landed,
+ *   and an older link or unlink must not undo what a newer one established.
  * - **Durable on return.** The engine checkpoints its cursor as soon as a
  *   write resolves, so a write must not be buffered past its own call.
  * - **One writer per cursor.** `acquireLease` is atomic: of two processes
@@ -29,8 +33,13 @@
  * The `created`/`updated`/`skipped` split in `WriteStats` is a health metric
  * the engine logs but never branches on; an engine that cannot tell an insert
  * from an update may approximate it.
+ *
+ * Besides the mirror, a destination keeps a small **quarantine store** for
+ * events the tail could not apply (`reject` / `rejected` / `clearRejected`).
+ * It holds whole raw events, so it must be scrubbed by `redact` like the
+ * `events` archive is. See `sync/quarantine.ts` for when it is written.
  */
-import type { Logger, StreamDef, WriteStats } from './types.js'
+import type { Logger, StreamDef, WorkOSEvent, WriteStats } from './types.js'
 
 export interface Row {
   data: Record<string, unknown>
@@ -90,6 +99,21 @@ export interface LeaseResult {
   expiresAt: string | null
 }
 
+/** One quarantined event, as `rejected` reports it. */
+export interface RejectedEvent {
+  eventId: string
+  eventType: string
+  /** `data.id` when the payload has one; membership events do not. */
+  objectId: string | null
+  /** The event's own `created_at`. */
+  createdAt: string
+  rejectedAt: string
+  /** The error from the most recent attempt to apply it. */
+  error: string
+  /** The whole event, verbatim, so it can be replayed. */
+  raw: WorkOSEvent
+}
+
 export interface Destination {
   /**
    * Connect if needed and create or upgrade the schema for `streams`. Called
@@ -103,6 +127,12 @@ export interface Destination {
   delete(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
   /** Restore tombstoned membership rows (a re-add after a removal). */
   relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
+  /**
+   * Tombstone membership rows (a removal). Unlike `delete`, this is
+   * staleness-gated: a removal older than the row is a no-op, because a
+   * quarantined removal can be replayed after a newer re-add has landed.
+   */
+  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
 
   /** Primary key values of every non-tombstoned row, in a stable order. */
   liveIds(stream: StreamDef, env: string): Promise<string[]>
@@ -165,4 +195,30 @@ export interface Destination {
   releaseLease(env: string, holder: string): Promise<void>
   /** The current, unexpired lease for `env`, or null when it is free. Read-only. */
   getLease(env: string): Promise<Lease | null>
+
+
+  /**
+   * Set aside events the tail could not apply, so the cursor can move past
+   * them. The whole raw event is stored because the archive write to `events`
+   * may itself have been what failed. Rejecting an id that is already stored
+   * (a replay that failed again) replaces its error and timestamp.
+   */
+  reject(env: string, rows: { event: WorkOSEvent; error: string }[]): Promise<void>
+  /** Quarantined events, oldest first by event id; only `ids` when given. */
+  rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]>
+  /**
+   * How many events are quarantined. `status` calls this on every monitoring
+   * poll, so it must not fetch the payloads the way `rejected` does.
+   */
+  rejectedCount(env: string): Promise<number>
+  /** Forget quarantined events once they have been replayed. Returns how many were removed. */
+  clearRejected(env: string, ids: string[]): Promise<number>
+  /**
+   * Whether a write error is the database having a bad moment — a dropped
+   * connection, a deadlock, a full disk — rather than a verdict on the row.
+   * The engine never quarantines on an error this returns true for. Optional:
+   * without it every error is presumed deterministic, and only the
+   * two-sightings rule stands between a flaky connection and a quarantine.
+   */
+  isTransientError?(err: unknown): boolean
 }

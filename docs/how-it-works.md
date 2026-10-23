@@ -147,6 +147,9 @@ Two rules apply:
 
 Memberships are the exception: `group.member_added` after
 `group.member_removed` is a real re-add, so relinking clears the tombstone.
+Because a membership can come back, both its writes are staleness-gated: a
+re-add or a removal older than the row is a no-op. That matters when an event
+is replayed from quarantine after newer ones have landed.
 
 A `404` on any hydration fetch is also treated as a delete, which repairs
 deletes whose event you never received.
@@ -176,7 +179,9 @@ primitives (`regexp_match`, `make_timestamp`, `timezone('UTC', ...)`,
 `make_interval`). It handles the formats WorkOS emits, with and without
 fractional seconds, `Z` or a numeric offset, and returns `NULL` on anything it
 cannot parse rather than raising, because a generated column that throws would
-reject the whole row.
+reject the whole row. That includes values that have the right shape but are
+not real instants, such as `2026-02-30T12:00:00Z`: each field is range-checked
+before `make_timestamp` sees it, because `make_timestamp` raises on those.
 
 ### No foreign keys
 
@@ -272,12 +277,20 @@ Errors are handled by blast radius, and the radius differs by phase.
   batch is retried on the next poll. That is the conservative choice: a
   per-stream cursor would need per-stream event filters, and partially
   acknowledging a batch is how data gets skipped.
+- **Poison events** are the one exception. A write that fails
+  deterministically — never a transient error — on two consecutive polls is
+  quarantined in `_rejected` and the cursor moves past it, so one bad payload
+  cannot stop sign-in capture for the whole environment. The event is kept
+  whole and `rejected --replay` puts it back once the cause is fixed. The
+  rules are in [Consistency](consistency.md#quarantine).
 - **Transient errors** (network, 5xx, 429) are retried with backoff inside the
   API client before any of the above applies.
 - **Fatal errors** stop the engine: a rejected credential (401 or 403), and a
   cursor that pages backwards. Neither will fix itself, and a process that
   looks alive while writing nothing is the worse outcome.
 
-There is no dead-letter queue. The Events API's replayability is the retry
-queue: a failed batch stays un-advanced and is retried on the next run. That is
-only safe with alerting on poll age, which is why `status` reports it.
+The Events API's replayability is the retry queue for everything transient: a
+failed batch stays un-advanced and is retried on the next run. `_rejected` is
+the dead-letter queue for everything else, written only when the same event
+fails on two consecutive polls. Neither is safe without alerting on poll age
+and on `rejected`, which is why `status` reports both.
