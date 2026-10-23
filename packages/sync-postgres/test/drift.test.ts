@@ -372,6 +372,31 @@ describe('column drift detection', () => {
     expect(comment.rows[0]?.c).toContain('@workos/sync-postgres')
   })
 
+  it('carries column-level grants on the _live view through a repair', async () => {
+    await migrate(db, [users], 'workos')
+    // A reader allowed two columns and nothing else, which lives in
+    // pg_attribute.attacl rather than the view's own ACL.
+    await db.exec(`
+      create role narrow;
+      grant usage on schema workos to narrow;
+      grant select (id, email) on workos.users_live to narrow;
+      insert into workos.users ("_env", "_raw", "_updated_at")
+        values ('prod', '{"id":"user_1","email":"old@x","primary_email":"new@x"}', now());
+    `)
+
+    const r = await migrate(db, [usersMovedEmail], 'workos', undefined, { repair: true })
+    expect(r.repaired.map((d) => d.column)).toEqual(['email'])
+
+    await db.exec(`set role narrow`)
+    try {
+      const rows = await db.query<{ id: string; email: string }>(`select id, email from workos.users_live`)
+      expect(rows.rows).toEqual([{ id: 'user_1', email: 'new@x' }])
+      await expect(db.query(`select "_raw" from workos.users_live`)).rejects.toThrow(/permission denied/)
+    } finally {
+      await db.exec(`reset role`)
+    }
+  })
+
   it('logs every drifted column at error with its repair DDL, and orphans at warn', async () => {
     const extended: StreamDef = {
       ...users,

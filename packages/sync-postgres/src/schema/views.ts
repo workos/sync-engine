@@ -327,8 +327,10 @@ async function grantsOn(db: SqlClient, view: string): Promise<string[]> {
  * the same table, which shows its grantees the same rows and columns they saw
  * before (a rebuilt column moves to the end of the table, which `select *`
  * hides), so carrying the grants over widens nobody and needs no
- * `repairViews` consent. Must run inside the caller's transaction, so a
- * failure part-way rolls the view back too.
+ * `repairViews` consent. Column grants come back too, by column name: unlike
+ * the fallback in `applyViewStatement`, a repair never changes the view's
+ * column list, so every column a grant names is still there. Must run inside
+ * the caller's transaction, so a failure part-way rolls the view back too.
  */
 export async function withoutLiveView<T>(
   tx: SqlClient,
@@ -342,13 +344,37 @@ export async function withoutLiveView<T>(
   if ((await commentOn(tx, view)) !== 'commented' || !(await isSelectStarSnapshot(tx, view, table))) {
     return fn()
   }
-  const grants = await grantsOn(tx, view)
+  const grants = [...(await grantsOn(tx, view)), ...(await columnGrantsOn(tx, view))]
   await tx.exec(`drop view ${view};`)
   const out = await fn()
   await tx.exec(create)
   await tx.exec(comment)
   for (const grant of grants) await tx.exec(grant)
   return out
+}
+
+/**
+ * `grant` statements for the column-level privileges on a view, which live
+ * in `pg_attribute.attacl` rather than the relation's ACL and so are invisible
+ * to `grantsOn`. A reader given `select (id, email)` and nothing else would
+ * otherwise be locked out by a repair that reports success.
+ */
+async function columnGrantsOn(db: SqlClient, view: string): Promise<string[]> {
+  const r = await db.query<{ column: string; grantee: string | null; privilege: string; grantable: boolean }>(
+    `select a.attname as column, r.rolname as grantee, x.privilege_type as privilege, x.is_grantable as grantable
+       from pg_attribute a
+       cross join lateral aclexplode(a.attacl) x
+       left join pg_roles r on r.oid = x.grantee
+      where a.attrelid = to_regclass($1) and a.attnum > 0 and not a.attisdropped and a.attacl is not null
+        and r.rolname is distinct from current_user
+      order by a.attnum`,
+    [view],
+  )
+  return r.rows.map(
+    ({ column, grantee, privilege, grantable }) =>
+      `grant ${privilege} (${quoteIdent(column)}) on ${view} to ${grantee === null ? 'public' : quoteIdent(grantee)}` +
+      `${grantable ? ' with grant option' : ''};`,
+  )
 }
 
 /**
