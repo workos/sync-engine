@@ -18,11 +18,23 @@
 import { createHash } from 'node:crypto'
 import type { SqlClient } from '../db/client.js'
 import { buildSchemaSql, createSchemaSql, bookkeepingSql, parseIso8601Function, quoteIdent } from './ddl.js'
+import { applyViewStatement, isViewStatement, type ApplyViewOptions } from './views.js'
 import { detectColumnDrift, repairColumnDrift, unrepairableReason, type ColumnDrift } from './drift.js'
 import type { Logger, StreamDef } from '@workos/sync-engine'
 
+/**
+ * Bumped whenever the DDL generated for an unchanged catalog changes: a new
+ * kind of object, a reworked index, a view. The fingerprint otherwise hashes
+ * only the catalog, so without this a database whose streams did not change
+ * would never run the new statements on upgrade.
+ *
+ *   2: `<stream>_live` views (views.ts)
+ */
+export const DDL_VERSION = 2
+
 export function fingerprint(streams: StreamDef[], schema: string): string {
   const canonical = JSON.stringify({
+    ddl: DDL_VERSION,
     schema,
     streams: streams
       .map((s) => ({
@@ -36,7 +48,12 @@ export function fingerprint(streams: StreamDef[], schema: string): string {
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
 }
 
-export interface MigrateOptions {
+/**
+ * Both repairs ride on the CLI's single `init --repair`: a column that drifted
+ * from the catalog and a generated view that can no longer be replaced in
+ * place are the two things additive DDL cannot fix on its own.
+ */
+export interface MigrateOptions extends ApplyViewOptions {
   /**
    * Rebuild drifted generated columns from `_raw` instead of only reporting
    * them. Key columns, non-generated columns, columns with your own indexes
@@ -93,7 +110,10 @@ export async function migrate(
 
   const statements = buildSchemaSql(streams, schema)
   for (const sql of statements) {
-    await db.exec(sql)
+    // A view is the one statement that can legitimately fail on an existing
+    // database; everything else is `if not exists`. See applyViewStatement.
+    if (isViewStatement(sql)) await applyViewStatement(db, sql, logger, options)
+    else await db.exec(sql)
   }
 
   // Detection runs only on this path — once per catalog change, not on every

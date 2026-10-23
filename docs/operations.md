@@ -51,6 +51,43 @@ Two of these numbers look similar but mean different things:
   It is `null` until the first event is applied. The engine warns at 75 days
   and logs an error past 90. Alert well before that.
 
+`status` opens a database connection and queries every stream, which is the
+wrong shape for something that runs every few seconds. The same poll age is
+also served by `listen` itself, from memory, when `WORKOS_SYNC_HEALTH_PORT`
+is set (the container image sets it to `8080`):
+
+```bash
+curl -s localhost:8080/healthz
+```
+
+```json
+{
+  "state": "listening",
+  "fatal": null,
+  "startedAt": "2026-10-22T17:58:02.114Z",
+  "healthy": true,
+  "environments": {
+    "production": {
+      "lastPolledAt": "2026-10-22T18:04:11.902Z",
+      "pollAgeSeconds": 3.1,
+      "lastEventAt": "2026-10-22T18:04:09.471Z",
+      "cursor": "event_01HXXXXXXXXXXXXXXXXXXXXXX",
+      "lastError": null,
+      "counters": { "ticks": 71, "events": 42, "created": 3, "updated": 38, "skipped": 1, "deleted": 0, "errors": 0 }
+    }
+  }
+}
+```
+
+The status code is the verdict: `200` while `state` is `starting` (the
+process is up, the first poll has not finished) and while every environment
+has polled successfully within `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` (default
+60 seconds); `503` once any environment's poll is older than that, once the
+engine has stopped on a fatal error, or once `listen` has returned. No
+request to it touches the database, so it keeps answering when the database
+is the thing that is down, and the answer is then a `503` from a climbing
+poll age rather than a timeout.
+
 ## What to monitor
 
 Every table carries `_updated_at` (source time) and `_synced_at` (write time),
@@ -103,7 +140,7 @@ SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS events
 
 | Alert                  | Condition                                                      | Why                                                                                            |
 | ---------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Sync stalled           | `pollAgeSeconds > 300`, or `null` long after deploy            | The poller has stopped.                                                                        |
+| Sync stalled           | `pollAgeSeconds > 300`, or `null` long after deploy; `/healthz` returns 503 | The poller has stopped.                                                           |
 | Cursor near retention  | `cursorAgeDays > 60`                                           | Replay is still possible, but the window is closing.                                           |
 | Stream not writing     | `max(_synced_at) < now() - interval '1 hour'` on a busy stream | One stream failing while others continue.                                                      |
 | Skipped writes spiking | `skipped` in the logs                                          | Out-of-order delivery or a backfill colliding with the tail. Usually benign, occasionally not. |
@@ -131,6 +168,37 @@ The engine emits structured JSON logs with per-batch counts:
 `skipped` is the health metric to graph. A steady trickle is normal: it is the
 staleness gate doing its job. A sudden spike means something changed about
 delivery ordering.
+
+### Prometheus metrics
+
+With `WORKOS_SYNC_HEALTH_PORT` set, `listen` also serves `GET /metrics` in
+the Prometheus text format, from the same in-memory state as `/healthz`.
+Every per-environment series carries an `env` label.
+
+| Metric                         | Type    | What it is                                                                                            |
+| ------------------------------ | ------- | ----------------------------------------------------------------------------------------------------- |
+| `workos_sync_up`               | gauge   | `1` while the engine is running; `0` once it has stopped or hit a fatal error.                        |
+| `workos_sync_poll_age_seconds` | gauge   | Seconds since the last successful poll. **Alert on this.** Absent until the first successful poll, so a listener that has never succeeded needs the `WorkOSSyncNeverPolled` rule below. |
+| `workos_sync_cursor_age_days`  | gauge   | Age of the newest event applied: distance from the 90-day cliff, not liveness. Absent until the first event. |
+| `workos_sync_ticks_total`      | counter | Polls attempted, successful or not.                                                                   |
+| `workos_sync_events_total`     | counter | Events applied.                                                                                       |
+| `workos_sync_writes_total`     | counter | Rows written, with a `kind` label of `created`, `updated`, `skipped` or `deleted`. Graph `skipped`.   |
+| `workos_sync_errors_total`     | counter | Polls that failed with a retryable error. Fatal errors stop the process instead.                      |
+
+```yaml
+# prometheus.rules.yml
+- alert: WorkOSSyncStalled
+  expr: workos_sync_poll_age_seconds > 300 or workos_sync_up == 0
+  for: 2m
+# An environment with a ticks series but no poll-age series has never polled
+# successfully: every request since startup failed, `/healthz` is 503, and
+# nothing above matches. The `for` is the startup grace period.
+- alert: WorkOSSyncNeverPolled
+  expr: workos_sync_ticks_total unless workos_sync_poll_age_seconds
+  for: 5m
+- alert: WorkOSSyncCursorNearRetention
+  expr: workos_sync_cursor_age_days > 60
+```
 
 ## Reconciliation schedule
 
@@ -161,6 +229,18 @@ Reconciliation reports two numbers per stream, and they mean different things:
 Reconciliation compares ids. With `--repair` it tombstones the `localOnly`
 rows and inserts the `remoteOnly` ones. It does not re-read rows that match,
 so it is not the tool for refreshing fields; see below.
+
+The comparison runs in the database, not in the sync process. The upstream
+list is streamed into a temporary table one page at a time and the set
+difference is a pair of anti-joins in SQL, so the memory `reconcile` needs is
+bounded by the size of the drift, not the size of the stream. A million-user
+directory with ten missed deletes costs ten ids, plus one page of the list at
+a time. The live ids are captured into a second temporary table before the
+first page is requested, so a row the tail writes while the list is in
+progress is never a deletion candidate: `--repair` only tombstones a row that
+was already in the mirror when the listing began and is absent from the list.
+Both tables live in a single transaction and are dropped when it commits, so
+nothing is left behind in the schema.
 
 Streams that cannot be reconciled say so explicitly rather than reporting a
 misleading zero:
@@ -321,6 +401,42 @@ The package and its production runs as a non-root user, and takes the same comma
 environment as the CLI. It honors `HTTPS_PROXY` and `NO_PROXY` for calls to
 the WorkOS API. To run the schema creation on each deploy,
 run `init` as a one-shot container before starting `listen`.
+
+The image sets `WORKOS_SYNC_HEALTH_PORT=8080`, exposes that port, and
+declares a `HEALTHCHECK` that fetches `/healthz` every 30 seconds after a
+30-second start period, so `docker ps` and Compose's `depends_on:
+condition: service_healthy` reflect whether the tail is actually polling.
+The check follows the port `listen` resolved, so changing it with either
+`-e WORKOS_SYNC_HEALTH_PORT=<n>` or `listen --health-port <n>` keeps the
+container healthy. The check only means something for `listen`: one-shot
+commands exit before it would ever run. Publish the port (`-p 8080:8080`)
+to scrape `/metrics` from outside the container.
+
+**On Kubernetes**, point both probes at `/healthz`. The engine answers `200`
+while it is still starting, so the liveness probe does not need a long
+initial delay; what it needs is a `failureThreshold` and `periodSeconds` that
+together exceed `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS`, or a transient API
+outage restarts a pod that would have recovered on its own.
+
+```yaml
+containers:
+  - name: sync
+    image: ghcr.io/workos/sync-postgres:0.2.0
+    args: ["listen"]
+    ports:
+      - name: health
+        containerPort: 8080
+    readinessProbe:
+      httpGet: { path: /healthz, port: health }
+      periodSeconds: 10
+    livenessProbe:
+      httpGet: { path: /healthz, port: health }
+      periodSeconds: 30
+      failureThreshold: 4
+```
+
+Add a `prometheus.io/scrape: "true"` annotation (or a `ServiceMonitor`) on
+port `health` to collect `/metrics`.
 
 Run **one listener per environment**, each with its own `WORKOS_API_KEY` and
 `WORKOS_ENVIRONMENT_NAME`; they can share a database. Two processes tailing the

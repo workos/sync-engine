@@ -2,7 +2,7 @@
 /**
  * workos-sync-postgres — command line interface.
  *
- *   workos-sync-postgres init [--repair]      create the schema; --repair rebuilds drifted columns
+ *   workos-sync-postgres init [--repair]      create the schema; --repair rebuilds drifted columns and generated views
  *   workos-sync-postgres backfill [--resume]  page the list endpoints
  *   workos-sync-postgres listen               tail the Events API
  *   workos-sync-postgres tick                 one poll, then exit (for cron)
@@ -18,12 +18,15 @@ import {
   DEFAULT_HYDRATE,
   defaultStreams,
   createLogger,
+  startHealthServer,
   type EnvironmentConfig,
   type HydrateMode,
+  type Logger,
   type LogLevel,
   type SyncEngineConfig,
 } from '@workos/sync-engine'
 import { PostgresDestination } from './destination.js'
+import { healthOptionsFromEnv } from './health.js'
 import type { SqlClient } from './db/client.js'
 
 interface Args {
@@ -95,6 +98,16 @@ export function parseHydrate(value: string | undefined): SyncEngineConfig['hydra
 }
 
 /**
+ * `--repair` on `init` means rebuilding drifted columns from `_raw` and
+ * rebuilding generated `_live` views with their grants; on `reconcile` it
+ * means repairing rows. Sharing the flag name is deliberate — it is "fix what
+ * you found" in both — but each command reads only its own meaning.
+ */
+export function repairRequested(command: string, flags: Record<string, string | boolean>): boolean {
+  return command === 'init' && Boolean(flags['repair'])
+}
+
+/**
  * Built apart from the rest of the config because `init` reads the drift
  * report back off it after the engine has run; the engine's own `init()`
  * returns nothing. `db` is a test seam: a pre-built client (PGlite) in place
@@ -102,7 +115,7 @@ export function parseHydrate(value: string | undefined): SyncEngineConfig['hydra
  */
 function destinationFromEnv(
   flags: Record<string, string | boolean>,
-  repairColumns: boolean,
+  repair: boolean,
   db?: SqlClient,
 ): PostgresDestination {
   const databaseUrl = (flags['database-url'] as string) ?? process.env['DATABASE_URL']
@@ -112,11 +125,15 @@ function destinationFromEnv(
     db,
     schema: (flags['schema'] as string) ?? process.env['WORKOS_SYNC_SCHEMA'] ?? 'workos',
     syncId: process.env['WORKOS_SYNC_ID'] ?? 'default',
-    repairColumns,
+    repairColumns: repair,
+    repairViews: repair,
   })
 }
 
-function configFromEnv(flags: Record<string, string | boolean>, destination: PostgresDestination): SyncEngineConfig {
+function configFromEnv(
+  flags: Record<string, string | boolean>,
+  destination: PostgresDestination,
+): SyncEngineConfig & { logger: Logger } {
   const streams = typeof flags['streams'] === 'string' ? flags['streams'].split(',') : undefined
   return {
     destination,
@@ -139,9 +156,13 @@ Usage
 
 Commands
   init [--repair]      Create the schema and bookkeeping tables. Exits 2 if a generated
-                       column has drifted from the catalog; --repair rebuilds it from _raw
+                       column has drifted from the catalog, and fails if a generated _live
+                       view must be rebuilt; --repair rebuilds columns from _raw and views
+                       with their grants carried over
   backfill [--resume]  Load current state from the REST list endpoints
-  listen               Tail the Events API and apply changes continuously
+  listen [--health-port <n>]
+                       Tail the Events API and apply changes continuously;
+                       with a port, serve GET /healthz and /metrics on it
   tick                 One poll of the Events API, then exit (for a cron job)
   reconcile [--repair] Compare the mirror against the API; --repair fixes drift
   refresh              Re-list top-level streams (refreshes fields events omit)
@@ -166,6 +187,11 @@ Environment
   WORKOS_SYNC_POLL_MS          Idle wait between polls (default: 5000)
   WORKOS_SYNC_LAG_MS           Hold back events younger than this (default: 5000)
   WORKOS_SYNC_MAX_EVENTS_PER_TICK  Events to apply per poll (default: one page)
+  WORKOS_SYNC_HEALTH_PORT      listen only: serve /healthz and /metrics on this port (default: off)
+  WORKOS_SYNC_HEALTH_HOST      Interface the health server binds (default: 0.0.0.0)
+  WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS
+                               /healthz returns 503 once any environment's last successful
+                               poll is older than this (default: 60000)
   LOG_LEVEL                    debug | info | warn | error | silent
 `
 
@@ -196,10 +222,9 @@ export async function main(argv = process.argv.slice(2), deps: MainDeps = {}): P
     return 0
   }
 
-  // `--repair` means column repair only for `init`; for `reconcile` it means
-  // row repair, and the two should not be conflated by sharing a flag name.
-  const destination = destinationFromEnv(flags, command === 'init' && Boolean(flags['repair']), deps.db)
-  const engine = new SyncEngine(configFromEnv(flags, destination))
+  const destination = destinationFromEnv(flags, repairRequested(command, flags), deps.db)
+  const config = configFromEnv(flags, destination)
+  const engine = new SyncEngine(config)
   try {
     switch (command) {
       case 'init': {
@@ -221,12 +246,27 @@ export async function main(argv = process.argv.slice(2), deps: MainDeps = {}): P
         return 0
       }
       case 'listen': {
+        // Up before the engine connects, so a probe during a slow schema init
+        // sees "starting" rather than a refused connection.
+        const healthOptions = healthOptionsFromEnv(flags)
+        const health = healthOptions ? await startHealthServer(engine, healthOptions) : null
+        if (healthOptions && health) {
+          config.logger.info('health server listening', {
+            host: healthOptions.host,
+            port: health.port,
+            maxPollAgeMs: healthOptions.maxPollAgeMs,
+          })
+        }
         const shutdown = () => {
           engine.stop()
         }
         process.on('SIGINT', shutdown)
         process.on('SIGTERM', shutdown)
-        await engine.listen()
+        try {
+          await engine.listen()
+        } finally {
+          await health?.close()
+        }
         return 0
       }
       case 'tick': {

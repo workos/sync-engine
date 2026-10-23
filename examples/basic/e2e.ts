@@ -168,11 +168,11 @@ async function main() {
   table(
     (
       await db.query(
+        // The _live views are the tables minus tombstones, so no _deleted_at filter.
         `select o.name as organization, u.email, m.role_slug as role
-         from workos.organization_memberships m
-         join workos.users u on u.id = m.user_id and u."_env" = m."_env"
-         join workos.organizations o on o.id = m.organization_id and o."_env" = m."_env"
-         where u."_deleted_at" is null and m."_deleted_at" is null
+         from workos.organization_memberships_live m
+         join workos.users_live u on u.id = m.user_id and u."_env" = m."_env"
+         join workos.organizations_live o on o.id = m.organization_id and o."_env" = m."_env"
          order by o.name, u.email`,
       )
     ).rows,

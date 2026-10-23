@@ -19,8 +19,9 @@
  * catalog query as the live table. Both sides are then rendered by the same
  * server with the same search_path, and compare as plain strings.
  */
-import type { ColumnDef, Logger, StreamDef } from '@workos/sync-engine'
+import { streamByName, type ColumnDef, type Logger, type StreamDef } from '@workos/sync-engine'
 import type { SqlClient } from '../db/client.js'
+import { withoutLiveView } from './views.js'
 import { ENV, RAW, createIndexesSql, generatedColumnSql, quoteIdent, safeIdentifier } from './ddl.js'
 
 export type DriftKind = 'expression' | 'type' | 'orphan'
@@ -298,7 +299,15 @@ export async function repairColumnDrift(
         if (live?.generated && d.catalog && live.type === d.catalog.type && live.expr === d.catalog.expr) {
           return false
         }
-        for (const sql of d.ddl) await tx.exec(sql)
+        // The stream's own `_live` view depends on every column, so it is set
+        // aside for the drop and restored, grants included, afterwards. Any
+        // other dependent view still makes the drop fail, by design.
+        const run = async () => {
+          for (const sql of d.ddl) await tx.exec(sql)
+        }
+        const stream = streamByName(d.stream)
+        if (stream) await withoutLiveView(tx, stream, schema, run)
+        else await run()
         return true
       })
       result.repaired.push(d)

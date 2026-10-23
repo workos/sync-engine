@@ -5,6 +5,7 @@
 import type {
   Destination,
   FreshnessRow,
+  IdDiff,
   Logger,
   Row,
   StreamDef,
@@ -13,6 +14,7 @@ import type {
 } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows } from './db/upsert.js'
+import { diffIdsInSql } from './db/reconcile.js'
 import { migrate, type MigrateResult } from './schema/migrate.js'
 import { quoteIdent, safeIdentifier } from './schema/ddl.js'
 
@@ -30,12 +32,23 @@ export interface PostgresDestinationOptions {
   /** Rows per upsert statement. Defaults to 500. */
   batchSize?: number
   /**
+   * On `init()`, rebuild a generated `_live` view that `create or replace
+   * view` refuses because its shape changed between releases, and carry its
+   * grants onto the new definition. Off, `init()` fails and lists the grants
+   * it would have carried instead. Turning this on is the operator consenting
+   * to widen those grantees to the generated definition — `select * ... where
+   * "_deleted_at" is null` — whatever the old view showed them. `init
+   * --repair` on the CLI. Views without the generated comment, or with it but
+   * not the generated shape, are never rebuilt. See docs/schema.md.
+   */
+  repairViews?: boolean
+  /**
    * During `init()`, rebuild from `_raw` any generated column whose expression
    * or type no longer matches the catalog. Off by default: drift is then
    * reported at error level and the schema fingerprint withheld until it is
    * fixed. Key columns, columns carrying your own indexes or constraints, and
    * orphans are never touched either way; see docs/schema.md, "Changing a
-   * column".
+   * column". `init --repair` on the CLI sets this together with `repairViews`.
    */
   repairColumns?: boolean
 }
@@ -81,6 +94,7 @@ export class PostgresDestination implements Destination {
     }
     this.lastMigration = await migrate(this.db, streams, this.schema, logger, {
       repair: this.options.repairColumns,
+      repairViews: this.options.repairViews,
     })
   }
 
@@ -116,6 +130,15 @@ export class PostgresDestination implements Destination {
       [env],
     )
     return r.rows.map((row) => row.raw)
+  }
+
+  /** Staged into a temp table and diffed in SQL; see `db/reconcile.ts`. */
+  diffIds(
+    stream: StreamDef,
+    env: string,
+    remote: AsyncIterable<Record<string, unknown>[]>,
+  ): Promise<IdDiff> {
+    return diffIdsInSql(this.client, this.writeOpts, stream, env, remote)
   }
 
   async freshness(stream: StreamDef, env: string, lagWindowHours: number): Promise<FreshnessRow> {

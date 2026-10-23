@@ -327,17 +327,49 @@ describe('column drift detection', () => {
 
   it('does not cascade through a view that depends on the column', async () => {
     await migrate(db, [users], 'workos')
-    await db.exec(`create view workos.users_live as select id, email from workos.users`)
+    // Somebody's own view, next to the generated `users_live`.
+    await db.exec(`create view workos.users_by_email as select id, email from workos.users`)
 
     const r = await migrate(db, [usersMovedEmail], 'workos', undefined, { repair: true })
     expect(r.repaired).toEqual([])
     expect(r.drift).toHaveLength(1)
     expect(await recorded(db, [usersMovedEmail])).toBe(false)
 
-    // The view survived and the column is as it was: the failed transaction changed nothing.
-    const view = await db.query(`select 1 from pg_views where schemaname = 'workos' and viewname = 'users_live'`)
-    expect(view.rows).toHaveLength(1)
+    // Both views survived and the column is as it was: the failed transaction changed nothing.
+    const views = await db.query<{ viewname: string }>(
+      `select viewname from pg_views where schemaname = 'workos' and viewname in ('users_live', 'users_by_email') order by 1`,
+    )
+    expect(views.rows.map((v) => v.viewname)).toEqual(['users_by_email', 'users_live'])
     expect((await detectColumnDrift(db, [usersMovedEmail], 'workos'))[0]?.actual).toBe(`(_raw ->> 'email'::text)`)
+  })
+
+  it('sets the generated _live view aside for a repair and restores it with its grants', async () => {
+    await migrate(db, [users], 'workos')
+    await db.exec(`
+      create role reader;
+      grant usage on schema workos to reader;
+      grant select on workos.users_live to reader;
+      insert into workos.users ("_env", "_raw", "_updated_at")
+        values ('prod', '{"id":"user_1","email":"old@x","primary_email":"new@x"}', now());
+    `)
+
+    const r = await migrate(db, [usersMovedEmail], 'workos', undefined, { repair: true })
+    expect(r.repaired.map((d) => d.column)).toEqual(['email'])
+    expect(r.drift).toEqual([])
+    expect(await recorded(db, [usersMovedEmail])).toBe(true)
+
+    // The view is back, reads through the rebuilt column, and the reader kept access.
+    await db.exec(`set role reader`)
+    try {
+      const rows = await db.query<{ email: string }>(`select email from workos.users_live`)
+      expect(rows.rows).toEqual([{ email: 'new@x' }])
+    } finally {
+      await db.exec(`reset role`)
+    }
+    const comment = await db.query<{ c: string | null }>(
+      `select obj_description(to_regclass('workos.users_live'), 'pg_class') as c`,
+    )
+    expect(comment.rows[0]?.c).toContain('@workos/sync-postgres')
   })
 
   it('logs every drifted column at error with its repair DDL, and orphans at warn', async () => {
