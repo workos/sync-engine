@@ -6,8 +6,22 @@
 import { PGlite } from '@electric-sql/pglite'
 import type { SqlClient } from '../../src/db/client.js'
 
-export async function createTestDb(): Promise<SqlClient & { raw: PGlite }> {
+let emptyDataDir: Promise<Blob> | undefined
+
+async function createEmptyDataDir(): Promise<Blob> {
   const pg = new PGlite()
+  try {
+    await pg.waitReady
+    return await pg.dumpDataDir('none')
+  } finally {
+    await pg.close()
+  }
+}
+
+export async function createTestDb(): Promise<SqlClient & { raw: PGlite }> {
+  // Reuse initdb's output, not the database; each test still owns its state.
+  emptyDataDir ??= createEmptyDataDir()
+  const pg = new PGlite({ loadDataDir: await emptyDataDir })
   await pg.waitReady
 
   const client: SqlClient & { raw: PGlite } = {
