@@ -96,6 +96,7 @@ describe('RedactingDestination', () => {
       relink: (_s, _e, rows) => stats('relink', rows),
       liveIds: async () => ['invitation_1'],
       rawRows: async () => [invite()],
+      diffIds: async () => ({ matched: 0, localOnly: [], remoteOnly: [] }),
       freshness: async (s) => ({
         stream: s.name,
         rows: 1,

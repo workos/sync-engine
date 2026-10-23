@@ -5,6 +5,7 @@
 import type {
   Destination,
   FreshnessRow,
+  IdDiff,
   Logger,
   Row,
   StreamDef,
@@ -13,6 +14,7 @@ import type {
 } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows } from './db/upsert.js'
+import { diffIdsInSql } from './db/reconcile.js'
 import { migrate } from './schema/migrate.js'
 import { quoteIdent, safeIdentifier } from './schema/ddl.js'
 
@@ -99,6 +101,15 @@ export class PostgresDestination implements Destination {
       [env],
     )
     return r.rows.map((row) => row.raw)
+  }
+
+  /** Staged into a temp table and diffed in SQL; see `db/reconcile.ts`. */
+  diffIds(
+    stream: StreamDef,
+    env: string,
+    remote: AsyncIterable<Record<string, unknown>[]>,
+  ): Promise<IdDiff> {
+    return diffIdsInSql(this.client, this.writeOpts, stream, env, remote)
   }
 
   async freshness(stream: StreamDef, env: string, lagWindowHours: number): Promise<FreshnessRow> {

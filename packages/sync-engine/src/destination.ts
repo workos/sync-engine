@@ -55,6 +55,16 @@ export interface FreshnessRow {
   lagSampleSize: number
 }
 
+/** The reconcile set difference for one stream. See `Destination.diffIds`. */
+export interface IdDiff {
+  /** Live rows whose id is also upstream. */
+  matched: number
+  /** Ids of live rows absent upstream. Ids suffice: they are only ever tombstoned. */
+  localOnly: string[]
+  /** Upstream payloads with no live row. Whole payloads: they are re-inserted. */
+  remoteOnly: Record<string, unknown>[]
+}
+
 export interface Destination {
   /**
    * Connect if needed and create or upgrade the schema for `streams`. Called
@@ -73,6 +83,22 @@ export interface Destination {
   liveIds(stream: StreamDef, env: string): Promise<string[]>
   /** Stored payloads of every row, tombstoned or not. */
   rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>
+  /**
+   * The set difference between the live rows and the stream's list endpoint,
+   * for reconciliation. `remote` yields the endpoint one page at a time. The
+   * implementation must stage those pages in the database and compute the
+   * difference there, so memory is bounded by the size of the drift and not
+   * by the size of the stream; a million-row stream with ten missed deletes
+   * must cost ten ids. "Live" means non-tombstoned. `localOnly` are ids,
+   * because they are only ever tombstoned; `remoteOnly` are whole payloads,
+   * because they are re-inserted. A destination with nothing to stage into
+   * may delegate to `diffIdsInMemory` and accept the memory cost.
+   */
+  diffIds(
+    stream: StreamDef,
+    env: string,
+    remote: AsyncIterable<Record<string, unknown>[]>,
+  ): Promise<IdDiff>
   freshness(stream: StreamDef, env: string, lagWindowHours: number): Promise<FreshnessRow>
   /**
    * Erase every trace of one subject from the given streams and from the
