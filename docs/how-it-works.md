@@ -147,6 +147,9 @@ Two rules apply:
 
 Memberships are the exception: `group.member_added` after
 `group.member_removed` is a real re-add, so relinking clears the tombstone.
+Because a membership can come back, both its writes are staleness-gated: a
+re-add or a removal older than the row is a no-op. That matters when an event
+is replayed from quarantine after newer ones have landed.
 
 A `404` on any hydration fetch is also treated as a delete, which repairs
 deletes whose event you never received.

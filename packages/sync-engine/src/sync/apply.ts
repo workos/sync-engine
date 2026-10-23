@@ -169,7 +169,7 @@ export async function applyEvents(
           bump(streamName, await destination.relink(def, opts.env, rows))
           break
         case 'unlink':
-          bump(streamName, await destination.delete(def, opts.env, rows))
+          bump(streamName, await destination.unlink(def, opts.env, rows))
           break
       }
     }

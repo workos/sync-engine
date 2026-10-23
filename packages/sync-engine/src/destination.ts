@@ -15,9 +15,11 @@
  *   one; `replace` overwrites it. Event payloads are subsets of the REST
  *   objects, so event writes merge.
  * - **Deletion is terminal.** `delete` tombstones without a staleness check
- *   and never clears the tombstone; only `relink` (membership re-add) does,
- *   and only when the re-add is at least as new as the removal it undoes, so
- *   a replayed older link cannot resurrect a membership removed since.
+ *   and never clears the tombstone. Memberships are the exception, in both
+ *   directions and only when the write is at least as new as the row:
+ *   `relink` (a re-add) clears the tombstone and `unlink` (a removal) sets
+ *   it. Events can be replayed from quarantine after newer ones have landed,
+ *   and an older link or unlink must not undo what a newer one established.
  * - **Durable on return.** The engine checkpoints its cursor as soon as a
  *   write resolves, so a write must not be buffered past its own call.
  *
@@ -90,6 +92,12 @@ export interface Destination {
   delete(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
   /** Restore tombstoned membership rows (a re-add after a removal). */
   relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
+  /**
+   * Tombstone membership rows (a removal). Unlike `delete`, this is
+   * staleness-gated: a removal older than the row is a no-op, because a
+   * quarantined removal can be replayed after a newer re-add has landed.
+   */
+  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
 
   /** Primary key values of every non-tombstoned row, in a stable order. */
   liveIds(stream: StreamDef, env: string): Promise<string[]>

@@ -89,6 +89,10 @@ export class RedactingDestination implements Destination {
     return this.inner.relink(stream, env, redactRows(stream, rows))
   }
 
+  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats> {
+    return this.inner.unlink(stream, env, redactRows(stream, rows))
+  }
+
   liveIds(stream: StreamDef, env: string): Promise<string[]> {
     return this.inner.liveIds(stream, env)
   }

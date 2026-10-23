@@ -126,6 +126,7 @@ class MyDestination implements Destination {
   ): Promise<WriteStats>;
   delete(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
   relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
+  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
 
   liveIds(stream: StreamDef, env: string): Promise<string[]>;
   rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>;
@@ -165,10 +166,11 @@ because of a documented failure in a comparable sync engine.
    REST objects, so event writes merge and a whole-row replace would null out
    exactly the columns people join on.
 3. **Deletion is terminal.** `delete` tombstones without a staleness check and
-   never clears the tombstone; only `relink` (a membership re-add) does, and
-   only when the re-add is at least as new as the removal. Events can be
-   replayed from quarantine after newer ones have landed, and an older link
-   must not resurrect a membership removed since.
+   never clears the tombstone. Memberships are the exception, in both
+   directions and only when the write is at least as new as the row: `relink`
+   (a re-add) clears the tombstone and `unlink` (a removal) sets it. Events
+   can be replayed from quarantine after newer ones have landed, and an older
+   link or unlink must not undo what a newer one established.
 4. **Durable on return.** The engine checkpoints its cursor as soon as a write
    resolves. A write must not be buffered past its own call.
 5. **`init` is called before every operation.** It must be idempotent and

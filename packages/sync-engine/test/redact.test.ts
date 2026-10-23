@@ -94,6 +94,7 @@ describe('RedactingDestination', () => {
       upsert: (_s, _e, rows) => stats('upsert', rows),
       delete: (_s, _e, rows) => stats('delete', rows),
       relink: (_s, _e, rows) => stats('relink', rows),
+      unlink: (_s, _e, rows) => stats('unlink', rows),
       liveIds: async () => ['invitation_1'],
       rawRows: async () => [invite()],
       freshness: async (s) => ({
@@ -125,8 +126,9 @@ describe('RedactingDestination', () => {
     await dest.upsert(invitations, 'prod', rows, 'merge')
     await dest.delete(invitations, 'prod', rows)
     await dest.relink(invitations, 'prod', rows)
+    await dest.unlink(invitations, 'prod', rows)
 
-    expect(calls.map((c) => c.method)).toEqual(['upsert', 'upsert', 'delete', 'relink'])
+    expect(calls.map((c) => c.method)).toEqual(['upsert', 'upsert', 'delete', 'relink', 'unlink'])
     for (const call of calls) {
       expect(JSON.stringify(call.rows)).not.toContain(TOKEN)
       expect(call.rows[0]!.data['email']).toBe('ada@example.com')

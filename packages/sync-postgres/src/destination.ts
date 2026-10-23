@@ -14,7 +14,7 @@ import type {
   WriteStats,
 } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
-import { upsertRows, deleteRows, relinkRows } from './db/upsert.js'
+import { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 import { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
 import { isTransientPgError } from './db/errors.js'
 import { migrate } from './schema/migrate.js'
@@ -89,6 +89,10 @@ export class PostgresDestination implements Destination {
 
   relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats> {
     return relinkRows(this.client, this.writeOpts, stream, env, rows)
+  }
+
+  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats> {
+    return unlinkRows(this.client, this.writeOpts, stream, env, rows)
   }
 
   async liveIds(stream: StreamDef, env: string): Promise<string[]> {

@@ -1050,6 +1050,44 @@ describe('poison events', () => {
     expect(await count('_rejected')).toBe(0)
   })
 
+  it('does not hide a membership re-added after a quarantined removal', async () => {
+    // The mirror image: an older removal replayed after a newer re-add must
+    // not tombstone a membership that is active now. Object deletes are
+    // terminal and not staleness-gated; membership removals have to be.
+    const at = (ms: number) => new Date(Date.now() - 50_000 + ms).toISOString()
+    const pair = { group_id: 'group_01', organization_membership_id: 'om_01' }
+    const push = (event: string, created_at: string) => {
+      const e = { id: id('event_'), event, data: pair, created_at }
+      fake.events.push(e)
+      return e
+    }
+    push('group.member_added', at(0))
+    const removal = push('group.member_removed', at(1_000))
+    push('group.member_added', at(2_000))
+    const { engine, destination } = makeFaulty({ streams: ['group_memberships', 'events'] })
+    const live = async () => {
+      const r = await db.query<{ n: string }>(
+        `select count(*)::text as n from workos.group_memberships where "_deleted_at" is null`,
+      )
+      return Number(r.rows[0]!.n)
+    }
+
+    destination.poison = removal.id
+    await engine.tick()
+    expect(await engine.tick()).toMatchObject({ processed: 3, rejected: 1 })
+    expect(await live()).toBe(1)
+
+    destination.poison = null
+    expect(await engine.replayRejected()).toEqual({ replayed: 1, stillRejected: [] })
+    expect(await live()).toBe(1)
+    expect(await count('_rejected')).toBe(0)
+
+    // A removal that really is newer than the re-add still lands.
+    push('group.member_removed', at(3_000))
+    expect(await engine.tick()).toMatchObject({ processed: 1, rejected: 0 })
+    expect(await live()).toBe(0)
+  })
+
   it('quarantines an event whose own timestamp Postgres cannot store', async () => {
     // A `created_at` that has the ISO-8601 shape but is not a real instant
     // fails the archive write's cast. The quarantine row stores the same
