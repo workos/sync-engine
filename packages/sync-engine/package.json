@@ -1,6 +1,6 @@
 {
   "name": "@workos/sync-engine",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Engine-agnostic core for mirroring WorkOS data: stream catalog, event routing, backfill, tail and reconcile. Pair with a destination package such as @workos/sync-postgres.",
   "type": "module",
   "license": "MIT",
