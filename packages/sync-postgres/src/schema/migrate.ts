@@ -39,8 +39,9 @@ export function fingerprint(streams: StreamDef[], schema: string): string {
 export interface MigrateOptions {
   /**
    * Rebuild drifted generated columns from `_raw` instead of only reporting
-   * them. Key columns, non-generated columns and orphans are still only
-   * reported; see `repairColumnDrift`.
+   * them. Key columns, non-generated columns, columns with your own indexes
+   * or constraints on them, and orphans are still only reported; see
+   * `repairColumnDrift`.
    */
   repair?: boolean
 }
@@ -58,7 +59,11 @@ export interface MigrateResult {
    * engine will never drop one.
    */
   drift: ColumnDrift[]
-  /** Columns rebuilt from `_raw` by this run. Only with `repair: true`. */
+  /**
+   * Columns that match the catalog because of this run's repair pass: rebuilt
+   * from `_raw` here, or found already rebuilt by a concurrent process. Only
+   * with `repair: true`.
+   */
   repaired: ColumnDrift[]
 }
 
@@ -97,10 +102,21 @@ export async function migrate(
   let repaired: ColumnDrift[] = []
   const failures = new Map<ColumnDrift, string>()
   if (options.repair && drift.length > 0) {
-    const r = await repairColumnDrift(db, drift, logger)
+    const r = await repairColumnDrift(db, drift, schema, logger)
     repaired = r.repaired
     for (const f of r.failed) failures.set(f.drift, f.error)
     drift = drift.filter((d) => !repaired.includes(d))
+  }
+
+  // A recorded fingerprint means "the live columns were checked against this
+  // catalog". Rebuilding a column breaks that promise for every catalog
+  // recorded before now: roll back to one of them and the early return above
+  // would trust a fingerprint the live table no longer satisfies, with no
+  // detection to say so. So the moment columns change, every other
+  // fingerprint is forgotten, and a rollback re-runs detection like any other
+  // catalog change. Additive-only runs keep theirs: no column changed.
+  if (repaired.length > 0) {
+    await db.query(`delete from ${quoteIdent(schema)}."_migrations" where fingerprint <> $1`, [fp])
   }
 
   for (const d of drift) {

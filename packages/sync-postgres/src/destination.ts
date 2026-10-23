@@ -33,8 +33,9 @@ export interface PostgresDestinationOptions {
    * During `init()`, rebuild from `_raw` any generated column whose expression
    * or type no longer matches the catalog. Off by default: drift is then
    * reported at error level and the schema fingerprint withheld until it is
-   * fixed. Key columns and orphans are never touched either way; see
-   * docs/schema.md, "Changing a column".
+   * fixed. Key columns, columns carrying your own indexes or constraints, and
+   * orphans are never touched either way; see docs/schema.md, "Changing a
+   * column".
    */
   repairColumns?: boolean
 }

@@ -208,12 +208,25 @@ expression for every row already present, so this is also the backfill, and
 nothing is lost because `_raw` holds all of it. As a library, pass
 `repairColumns: true` to `PostgresDestination`.
 
-Three things are never repaired automatically. The DDL is printed and the
+Rebuilding a column also forgets every fingerprint recorded before it. A
+fingerprint says the live columns were checked against that catalog, and that
+is no longer true of any catalog checked before the rebuild. Rolling back to
+an earlier release therefore runs the check again and reports the columns it
+would need back, instead of trusting a fingerprint the table no longer
+satisfies. Several processes sharing a database can start with `--repair` at
+once: each column is rebuilt under a lock, and a process that arrives second
+finds it already done and leaves it alone.
+
+Four things are never repaired automatically. The DDL is printed and the
 fingerprint stays withheld until an operator acts:
 
 - **Key columns.** Dropping one drops the primary key, and between the drop
   and the re-add the table accepts duplicates. Run the printed DDL, which
   re-adds the key, in a maintenance window with ingest stopped.
+- **A column with your own index or constraint on it.** `DROP COLUMN` takes
+  a `UNIQUE`, a `CHECK`, or an index you added with it, silently, and the
+  engine only knows how to put back the index the catalog declares. The
+  report lists them under `dependents`. Drop them, repair, recreate them.
 - **A column a view depends on.** `DROP COLUMN` fails rather than cascades,
   because cascading would silently remove the view. Drop the view, repair,
   recreate the view.

@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTestDb } from './helpers/pg.js'
 import { migrate, fingerprint } from '../src/schema/migrate.js'
-import { detectColumnDrift } from '../src/schema/drift.js'
+import { detectColumnDrift, repairColumnDrift } from '../src/schema/drift.js'
 import { main } from '../src/cli.js'
 import { STREAMS, streamByName, type ColumnDef, type Logger, type StreamDef } from '@workos/sync-engine'
 import type { SqlClient } from '../src/db/client.js'
@@ -178,6 +178,7 @@ describe('column drift detection', () => {
         expected: null,
         actual: `(_raw ->> 'nickname'::text)`,
         key: false,
+        dependents: [],
         ddl: [`alter table "workos"."users" drop column "nickname";`],
       },
     ])
@@ -185,6 +186,121 @@ describe('column drift detection', () => {
     // An orphan is harmless, so it does not hold the schema hostage: the
     // fingerprint is recorded and the next init is a single SELECT.
     expect(await recorded(db, [users])).toBe(true)
+  })
+
+  it('forgets earlier fingerprints when a repair changes columns, so a rollback re-checks', async () => {
+    // A is recorded, B is repaired and recorded. Roll back to A: the live
+    // column is B's, and the fingerprint for A must not vouch for it.
+    await migrate(db, [users], 'workos')
+    await migrate(db, [usersMovedEmail], 'workos', undefined, { repair: true })
+    expect(await recorded(db, [usersMovedEmail])).toBe(true)
+    expect(await recorded(db, [users])).toBe(false)
+
+    const back = await migrate(db, [users], 'workos')
+    expect(back.applied).toBe(true)
+    expect(back.drift).toEqual([
+      expect.objectContaining({
+        column: 'email',
+        kind: 'expression',
+        expected: `(_raw ->> 'email'::text)`,
+        actual: `(_raw ->> 'primary_email'::text)`,
+      }),
+    ])
+    expect(await recorded(db, [users])).toBe(false)
+
+    // Repairing on the way back restores A and, in turn, forgets B.
+    const restored = await migrate(db, [users], 'workos', undefined, { repair: true })
+    expect(restored.repaired).toHaveLength(1)
+    expect(await recorded(db, [users])).toBe(true)
+    expect(await recorded(db, [usersMovedEmail])).toBe(false)
+  })
+
+  it('keeps earlier fingerprints when a change is only additive', async () => {
+    // Nothing was rebuilt, so A still describes the live columns: rolling
+    // back to it stays a single SELECT, and a rolling deploy does not ping-pong.
+    const extended: StreamDef = {
+      ...users,
+      columns: [...users.columns, { name: 'nickname', type: 'text', path: 'nickname' }],
+    }
+    await migrate(db, [users], 'workos')
+    await migrate(db, [extended], 'workos', undefined, { repair: true })
+    expect(await recorded(db, [users])).toBe(true)
+    expect(await recorded(db, [extended])).toBe(true)
+  })
+
+  it('treats paths that differ only by whitespace inside the key as drift', async () => {
+    // `'a b'` and `'a  b'` are different JSON keys. A comparison that collapsed
+    // whitespace would call them equal and record the fingerprint over a stale column.
+    const oneSpace = withColumn(users, { name: 'email', type: 'text', path: 'a b' })
+    const twoSpaces = withColumn(users, { name: 'email', type: 'text', path: 'a  b' })
+    await migrate(db, [oneSpace], 'workos')
+
+    const r = await migrate(db, [twoSpaces], 'workos', undefined, { repair: true })
+    expect(r.repaired).toHaveLength(1)
+    expect(r.repaired[0]).toMatchObject({
+      column: 'email',
+      kind: 'expression',
+      expected: `(_raw ->> 'a  b'::text)`,
+      actual: `(_raw ->> 'a b'::text)`,
+    })
+    expect(await detectColumnDrift(db, [twoSpaces], 'workos')).toEqual([])
+  })
+
+  it('refuses to repair a column that carries an index or constraint of yours', async () => {
+    await migrate(db, [users], 'workos')
+    await db.exec(`alter table workos.users add constraint users_email_unique unique (email)`)
+    await db.exec(`create index users_email_lower on workos.users (lower(email))`)
+
+    const r = await migrate(db, [usersMovedEmail], 'workos', undefined, { repair: true })
+    expect(r.repaired).toEqual([])
+    expect(r.drift).toHaveLength(1)
+    const d = r.drift[0]!
+    // Listed so the operator knows what to put back; the catalog's own
+    // `users_email_idx` is not, because repair recreates it.
+    expect(d.dependents).toEqual([
+      expect.stringContaining('users_email_unique'),
+      expect.stringContaining('users_email_lower'),
+    ])
+    expect(d.dependents.join(' ')).not.toContain('users_email_idx')
+    expect(await recorded(db, [usersMovedEmail])).toBe(false)
+
+    // Nothing was dropped: the constraint and the index are still there.
+    const cons = await db.query(`select 1 from pg_constraint where conname = 'users_email_unique'`)
+    expect(cons.rows).toHaveLength(1)
+    const idx = await db.query(`select 1 from pg_indexes where indexname = 'users_email_lower'`)
+    expect(idx.rows).toHaveLength(1)
+
+    const { logger, lines } = capture()
+    await migrate(db, [usersMovedEmail], 'workos', logger)
+    const err = lines.find((l) => l.level === 'error' && l.fields?.['column'] === 'email')
+    expect(err?.fields?.['reason']).toContain('users_email_unique')
+  })
+
+  it('does not rebuild a column another process already rebuilt', async () => {
+    await migrate(db, [users], 'workos')
+    // Two processes detect the same drift before either repairs it.
+    const seenByFirst = await detectColumnDrift(db, [usersMovedEmail], 'workos')
+    const seenBySecond = await detectColumnDrift(db, [usersMovedEmail], 'workos')
+    expect(seenByFirst).toHaveLength(1)
+
+    const first = await repairColumnDrift(db, seenByFirst, 'workos')
+    expect(first.repaired).toHaveLength(1)
+    const attnum = async () =>
+      (
+        await db.query<{ attnum: number }>(
+          `select attnum from pg_attribute where attrelid = 'workos.users'::regclass and attname = 'email'`,
+        )
+      ).rows[0]!.attnum
+    const after = await attnum()
+
+    // The second arrives with its stale report, takes the lock, sees the
+    // column already matches, and leaves it: a re-add would have moved attnum.
+    const { logger, lines } = capture()
+    const second = await repairColumnDrift(db, seenBySecond, 'workos', logger)
+    expect(second.repaired).toHaveLength(1)
+    expect(second.failed).toEqual([])
+    expect(await attnum()).toBe(after)
+    expect(lines.map((l) => l.msg)).toContain('column already rebuilt by another process')
   })
 
   it('does not cascade through a view that depends on the column', async () => {

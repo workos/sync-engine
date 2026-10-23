@@ -268,8 +268,9 @@ npx workos-sync-postgres backfill --resume
 * **`init` exits 2 after a deploy.** A catalog column changed its path or type
   and the database still has the old projection; the rows are right in `_raw`,
   the typed column is stale. The log and the printed report carry the exact
-  DDL. `init --repair` rebuilds non-key columns from `_raw`; key columns and
-  columns a view depends on are left for you, with the DDL to run. See
+  DDL. `init --repair` rebuilds non-key columns from `_raw`; key columns,
+  columns a view depends on, and columns carrying an index or constraint of
+  your own are left for you, with the DDL to run. See
   [Changing a column](schema.md#changing-a-column).
 
 ## Deletion requests

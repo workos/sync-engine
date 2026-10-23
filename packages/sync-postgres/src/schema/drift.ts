@@ -37,12 +37,19 @@ export interface ColumnDrift {
    *   never dropped.
    */
   kind: DriftKind
-  /** What the catalog calls for: the normalized expression, or the type. `null` for an orphan. */
+  /** What the catalog calls for: the expression as Postgres renders it, or the type. `null` for an orphan. */
   expected: string | null
   /** What the table has. `null` when the column exists but is not a generated column. */
   actual: string | null
   /** Part of the primary key. Dropping it drops the key, so repair is refused and left to an operator. */
   key: boolean
+  /**
+   * Indexes, constraints and other objects of yours that `DROP COLUMN` takes
+   * with it silently, as Postgres describes them. The catalog's own index is
+   * not listed because repair puts it back. Anything here means repair is
+   * refused: the engine cannot know how to recreate what it did not create.
+   */
+  dependents: string[]
   /**
    * The DDL that brings the column in line. Printed for every item so the
    * report is actionable on its own; run only by `repairColumnDrift`, and only
@@ -53,6 +60,8 @@ export interface ColumnDrift {
 
 interface LiveColumn {
   name: string
+  /** `pg_attribute.attnum`, which is how `pg_depend` refers to a column. */
+  num: number
   type: string
   expr: string | null
   generated: boolean
@@ -67,6 +76,7 @@ interface LiveColumn {
  */
 const COLUMNS_SQL = `
 select a.attname as name,
+       a.attnum as num,
        format_type(a.atttypid, a.atttypmod) as type,
        pg_get_expr(d.adbin, d.adrelid) as expr,
        a.attgenerated = 's' as generated
@@ -80,11 +90,36 @@ async function liveColumns(db: SqlClient, relation: string): Promise<Map<string,
   return new Map(r.rows.map((c) => [c.name, c]))
 }
 
-/** Only whitespace is normalized: everything else already went through the server's deparser on both sides. */
-const normalize = (expr: string | null): string | null => (expr === null ? null : expr.replace(/\s+/g, ' ').trim())
+/**
+ * What `DROP COLUMN` would silently take with the column: every auto
+ * dependency (`deptype = 'a'`) on it. Normal dependencies — a view, a foreign
+ * key from another table — make the drop fail instead, so they need no
+ * lookup. The column's own generation expression is an attrdef dependency
+ * (auto or internal depending on the server version) and is excluded, as is
+ * the index the catalog declares for the column, which repair recreates.
+ */
+const DEPENDENTS_SQL = `
+select distinct pg_describe_object(d.classid, d.objid, d.objsubid) as what
+  from pg_depend d
+ where d.refclassid = 'pg_class'::regclass
+   and d.refobjid = $1::regclass
+   and d.refobjsubid = $2
+   and d.deptype = 'a'
+   and d.classid <> 'pg_attrdef'::regclass
+   and not (d.classid = 'pg_class'::regclass and d.objid = coalesce(to_regclass($3)::oid, 0))
+ order by 1`
 
-const tableRef = (stream: StreamDef, schema: string): string =>
-  `${quoteIdent(schema)}.${quoteIdent(safeIdentifier(stream.name))}`
+async function dependents(db: SqlClient, table: string, column: LiveColumn, ownIndex: string): Promise<string[]> {
+  const r = await db.query<{ what: string }>(DEPENDENTS_SQL, [table, column.num, ownIndex])
+  return r.rows.map((row) => row.what)
+}
+
+const tableRef = (stream: string, schema: string): string =>
+  `${quoteIdent(schema)}.${quoteIdent(safeIdentifier(stream))}`
+
+/** The name `createIndexesSql` gives a column's index; qualified, for `to_regclass`. */
+const ownIndexRef = (stream: string, column: string, schema: string): string =>
+  `${quoteIdent(schema)}.${quoteIdent(safeIdentifier(`${safeIdentifier(stream)}_${column}_idx`))}`
 
 /**
  * The catalog's columns as Postgres would store them: a temp table built from
@@ -112,7 +147,7 @@ async function expectedColumns(db: SqlClient, stream: StreamDef, schema: string)
  * and the re-add fails if the new expression yields any.
  */
 function repairSql(stream: StreamDef, schema: string, col: ColumnDef, key: boolean): string[] {
-  const table = tableRef(stream, schema)
+  const table = tableRef(stream.name, schema)
   const out = [
     `alter table ${table} drop column ${quoteIdent(safeIdentifier(col.name))};`,
     `alter table ${table} add column ${generatedColumnSql(col, schema)};`,
@@ -130,11 +165,17 @@ function repairSql(stream: StreamDef, schema: string, col: ColumnDef, key: boole
  * Compare every stream's table against the catalog. Columns the table lacks
  * entirely are not drift — `addColumnsSql` owns those — so on a fresh schema
  * this returns nothing, and a test holds it to that for the whole catalog.
+ *
+ * Expressions compare byte for byte. Both sides came out of the same
+ * deparser in the same session, so any difference is real; collapsing
+ * whitespace would also collapse it inside string literals, and a JSON key
+ * that differs only by a space is a different key.
  */
 export async function detectColumnDrift(db: SqlClient, streams: StreamDef[], schema: string): Promise<ColumnDrift[]> {
   const out: ColumnDrift[] = []
   for (const stream of streams) {
-    const actual = await liveColumns(db, tableRef(stream, schema))
+    const table = tableRef(stream.name, schema)
+    const actual = await liveColumns(db, table)
     const expected = await expectedColumns(db, stream, schema)
     const declared = new Set<string>()
 
@@ -145,22 +186,25 @@ export async function detectColumnDrift(db: SqlClient, streams: StreamDef[], sch
       if (!have) continue
       const want = expected.get(name)!
       const key = stream.key.includes(col.name)
-      const item = (kind: 'expression' | 'type', exp: string | null, act: string | null): ColumnDrift => ({
+      const item = async (
+        kind: 'expression' | 'type',
+        exp: string | null,
+        act: string | null,
+      ): Promise<ColumnDrift> => ({
         stream: stream.name,
         column: name,
         kind,
         expected: exp,
         actual: act,
         key,
+        dependents: await dependents(db, table, have, ownIndexRef(stream.name, col.name, schema)),
         ddl: repairSql(stream, schema, col, key),
       })
       // A type change usually changes the expression too; report the type,
       // which is the more useful of the two to read.
-      if (!have.generated) out.push(item('expression', normalize(want.expr), null))
-      else if (have.type !== want.type) out.push(item('type', want.type, have.type))
-      else if (normalize(have.expr) !== normalize(want.expr)) {
-        out.push(item('expression', normalize(want.expr), normalize(have.expr)))
-      }
+      if (!have.generated) out.push(await item('expression', want.expr, null))
+      else if (have.type !== want.type) out.push(await item('type', want.type, have.type))
+      else if (have.expr !== want.expr) out.push(await item('expression', want.expr, have.expr))
     }
 
     for (const have of actual.values()) {
@@ -170,9 +214,10 @@ export async function detectColumnDrift(db: SqlClient, streams: StreamDef[], sch
         column: have.name,
         kind: 'orphan',
         expected: null,
-        actual: normalize(have.expr),
+        actual: have.expr,
         key: stream.key.includes(have.name),
-        ddl: [`alter table ${tableRef(stream, schema)} drop column ${quoteIdent(have.name)};`],
+        dependents: await dependents(db, table, have, ownIndexRef(stream.name, have.name, schema)),
+        ddl: [`alter table ${table} drop column ${quoteIdent(have.name)};`],
       })
     }
   }
@@ -187,11 +232,17 @@ export function unrepairableReason(d: ColumnDrift): string | null {
   if (d.kind === 'orphan') return 'not in the catalog; drop it by hand if it is no longer wanted'
   if (d.key) return 'key column: dropping it drops the primary key; run the DDL in a maintenance window'
   if (d.actual === null) return 'not a generated column: dropping it would discard data that is not in _raw'
+  if (d.dependents.length > 0) {
+    return `dropping it would also drop ${d.dependents.join(', ')}; drop those first, repair, then recreate them`
+  }
   return null
 }
 
 export interface RepairResult {
-  /** Rebuilt from `_raw`; the live column now matches the catalog. */
+  /**
+   * Now match the catalog: rebuilt from `_raw` here, or found already rebuilt
+   * by another process that got to the table first.
+   */
   repaired: ColumnDrift[]
   /**
    * Accepted for repair, but the DDL failed — typically a view depends on the
@@ -203,22 +254,47 @@ export interface RepairResult {
 
 /**
  * Rebuild the drifted columns that can be rebuilt safely: non-key
- * `expression`/`type` drift on a generated column. Everything else is left for
- * an operator with the DDL in hand; see `unrepairableReason`.
+ * `expression`/`type` drift on a generated column nothing else depends on.
+ * Everything else is left for an operator with the DDL in hand; see
+ * `unrepairableReason`.
+ *
+ * Several processes can share one database and start together, each
+ * detecting the same drift before any of them repairs it. Each column's
+ * transaction therefore takes an advisory lock on the table and reads the
+ * column again before dropping it: the second process to arrive finds the
+ * column already rebuilt and leaves it alone, rather than rewriting the whole
+ * table a second time behind an exclusive lock. A transaction-scoped
+ * advisory lock is used rather than a table lock so that nothing is blocked
+ * until the drop itself.
  *
  * A dependent view makes `DROP COLUMN` fail rather than cascade. Cascading
  * would silently remove the view, and the error names what to drop first.
  */
-export async function repairColumnDrift(db: SqlClient, drift: ColumnDrift[], logger?: Logger): Promise<RepairResult> {
+export async function repairColumnDrift(
+  db: SqlClient,
+  drift: ColumnDrift[],
+  schema: string,
+  logger?: Logger,
+): Promise<RepairResult> {
   const result: RepairResult = { repaired: [], failed: [] }
   for (const d of drift) {
     if (unrepairableReason(d) !== null) continue
+    const table = tableRef(d.stream, schema)
     try {
-      await db.transaction(async (tx) => {
+      const rebuilt = await db.transaction(async (tx) => {
+        await tx.query(`select pg_advisory_xact_lock(hashtext($1))`, [`workos-sync-postgres:drift:${table}`])
+        const live = (await liveColumns(tx, table)).get(d.column)
+        const current = d.kind === 'type' ? live?.type : live?.expr
+        if (live?.generated && current === d.expected) return false
         for (const sql of d.ddl) await tx.exec(sql)
+        return true
       })
       result.repaired.push(d)
-      logger?.info('column rebuilt from _raw', { stream: d.stream, column: d.column, kind: d.kind })
+      logger?.info(rebuilt ? 'column rebuilt from _raw' : 'column already rebuilt by another process', {
+        stream: d.stream,
+        column: d.column,
+        kind: d.kind,
+      })
     } catch (err) {
       result.failed.push({ drift: d, error: err instanceof Error ? err.message : String(err) })
     }
