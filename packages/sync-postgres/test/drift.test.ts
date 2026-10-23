@@ -177,6 +177,7 @@ describe('column drift detection', () => {
         kind: 'orphan',
         expected: null,
         actual: `(_raw ->> 'nickname'::text)`,
+        catalog: null,
         key: false,
         dependents: [],
         ddl: [`alter table "workos"."users" drop column "nickname";`],
@@ -301,6 +302,27 @@ describe('column drift detection', () => {
     expect(second.failed).toEqual([])
     expect(await attnum()).toBe(after)
     expect(lines.map((l) => l.msg)).toContain('column already rebuilt by another process')
+  })
+
+  it('rebuilds when another process changed the type but reads a different path', async () => {
+    // Two releases both turn first_name into a boolean, from different keys.
+    // Each sees `type` drift against the original text column. After the
+    // first rebuilds, the type alone looks right to the second; the
+    // expression does not, and recording a fingerprint over it would hide the
+    // wrong path behind "schema up to date".
+    await migrate(db, [users], 'workos')
+    const fromA = withColumn(users, { name: 'first_name', type: 'boolean', path: 'flag_a' })
+    const fromB = withColumn(users, { name: 'first_name', type: 'boolean', path: 'flag_b' })
+    const seenByA = await detectColumnDrift(db, [fromA], 'workos')
+    const seenByB = await detectColumnDrift(db, [fromB], 'workos')
+    expect(seenByB[0]).toMatchObject({ column: 'first_name', kind: 'type', expected: 'boolean' })
+
+    await repairColumnDrift(db, seenByA, 'workos')
+    const { logger, lines } = capture()
+    const r = await repairColumnDrift(db, seenByB, 'workos', logger)
+    expect(r.repaired).toHaveLength(1)
+    expect(lines.map((l) => l.msg)).toEqual(['column rebuilt from _raw'])
+    expect(await detectColumnDrift(db, [fromB], 'workos')).toEqual([])
   })
 
   it('does not cascade through a view that depends on the column', async () => {

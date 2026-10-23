@@ -37,10 +37,17 @@ export interface ColumnDrift {
    *   never dropped.
    */
   kind: DriftKind
-  /** What the catalog calls for: the expression as Postgres renders it, or the type. `null` for an orphan. */
+  /** What the catalog calls for: the one of `catalog`'s two values that `kind` names. `null` for an orphan. */
   expected: string | null
   /** What the table has. `null` when the column exists but is not a generated column. */
   actual: string | null
+  /**
+   * The catalog's column in full, as Postgres renders it. `kind` reports the
+   * one of these that differs, but a repair has to check both: a column that
+   * another process just rebuilt to the right type from a different catalog
+   * still has the wrong expression. `null` for an orphan.
+   */
+  catalog: { type: string; expr: string } | null
   /** Part of the primary key. Dropping it drops the key, so repair is refused and left to an operator. */
   key: boolean
   /**
@@ -196,6 +203,8 @@ export async function detectColumnDrift(db: SqlClient, streams: StreamDef[], sch
         kind,
         expected: exp,
         actual: act,
+        // Every column on the temp table is generated, so `want.expr` is never null.
+        catalog: { type: want.type, expr: want.expr! },
         key,
         dependents: await dependents(db, table, have, ownIndexRef(stream.name, col.name, schema)),
         ddl: repairSql(stream, schema, col, key),
@@ -215,6 +224,7 @@ export async function detectColumnDrift(db: SqlClient, streams: StreamDef[], sch
         kind: 'orphan',
         expected: null,
         actual: have.expr,
+        catalog: null,
         key: stream.key.includes(have.name),
         dependents: await dependents(db, table, have, ownIndexRef(stream.name, have.name, schema)),
         ddl: [`alter table ${table} drop column ${quoteIdent(have.name)};`],
@@ -284,8 +294,10 @@ export async function repairColumnDrift(
       const rebuilt = await db.transaction(async (tx) => {
         await tx.query(`select pg_advisory_xact_lock(hashtext($1))`, [`workos-sync-postgres:drift:${table}`])
         const live = (await liveColumns(tx, table)).get(d.column)
-        const current = d.kind === 'type' ? live?.type : live?.expr
-        if (live?.generated && current === d.expected) return false
+        // Both halves, not only the one `kind` reports; see `ColumnDrift.catalog`.
+        if (live?.generated && d.catalog && live.type === d.catalog.type && live.expr === d.catalog.expr) {
+          return false
+        }
         for (const sql of d.ddl) await tx.exec(sql)
         return true
       })
