@@ -94,6 +94,14 @@ export async function diffStream(
   // went through the pool from inside the generator would wait for a free
   // connection while the diff waited for the next page. With a pool of one
   // that is a deadlock, and the reconcile never finishes.
+  //
+  // The cost of reading them here, rather than after the destination has
+  // captured its live set, is a window of a few statements in which the tail
+  // can land a new parent and its first child: the child is then in the live
+  // set, the parent is not in this list, and the child reports `localOnly`.
+  // The window is milliseconds against a listing that takes minutes; closing
+  // it needs a parent read on the diff's own connection, which the interface
+  // does not offer.
   const parent = list.parent
   const parents = parent ? await destination.liveIds(streamByName(parent.stream)!, env) : []
 

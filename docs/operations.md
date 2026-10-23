@@ -169,8 +169,8 @@ directory with ten missed deletes costs ten ids, plus one page of the list at
 a time. The live ids are captured into a second temporary table before the
 first page is requested, so a row the tail writes while the list is in
 progress is never a deletion candidate: `--repair` only tombstones a row that
-was already in the mirror when the listing began and is absent upstream. Both
-tables live in a single transaction and are dropped when it commits, so
+was already in the mirror when the listing began and is absent from the list.
+Both tables live in a single transaction and are dropped when it commits, so
 nothing is left behind in the schema.
 
 Streams that cannot be reconciled say so explicitly rather than reporting a
