@@ -117,7 +117,10 @@ export class SyncEngine {
    * pid on a restarted host) from passing as the same holder.
    */
   private readonly holder = `${os.hostname()}:${process.pid}:${randomBytes(3).toString('hex')}`
-  /** Environments whose lease `listen()` currently holds. */
+  /**
+   * Environments whose lease this engine currently holds, through `listen()`
+   * or a standalone `tick()`. The heartbeat renews exactly these.
+   */
   private held = new Set<string>()
   private heartbeat: NodeJS.Timeout | undefined
   /** The heartbeat renewal in flight, so a release can wait for it rather than race it. */
@@ -294,16 +297,23 @@ export class SyncEngine {
     await this.init()
     return this.serialized(async () => {
       const taken: string[] = []
+      // A standalone tick has no loop renewing for it, and the checkpoint is
+      // refused once the lease lapses, so it runs the heartbeat itself: a
+      // cron tick slower than the TTL would otherwise replay the same batch
+      // forever. One running under the listener is covered by the listener's.
+      const own = this.heartbeat ? undefined : this.startHeartbeat()
       try {
         for (const env of this.config.environments) {
           if (this.held.has(env.name)) continue
           const r = await this.destination.acquireLease(env.name, this.holder, this.leaseTtlMs)
           if (!r.acquired) throw new LeaseHeldError(env.name, r.holder, r.expiresAt)
           taken.push(env.name)
+          this.held.add(env.name)
         }
         return await this.poll()
       } finally {
-        for (const env of taken) await this.destination.releaseLease(env, this.holder)
+        if (own) this.stopHeartbeat(own)
+        await this.release(taken)
       }
     })
   }
@@ -467,15 +477,8 @@ export class SyncEngine {
     // than the TTL (a backlog, a slow database), so a background heartbeat
     // keeps the lease alive mid-tick as well. It is not cleared by `stop()`
     // on purpose: the final batch after a SIGTERM must stay covered until it
-    // is written. Unref'd so it never keeps a finished process alive. One
-    // renewal at a time: a slow database must not pile them up behind itself.
-    clearInterval(this.heartbeat)
-    this.heartbeat = setInterval(() => {
-      this.renewal ??= this.renewHeld().finally(() => {
-        this.renewal = undefined
-      })
-    }, Math.max(1, Math.floor(ttl / 3)))
-    this.heartbeat.unref()
+    // is written.
+    const own = this.startHeartbeat()
     try {
       while (!this.stopping) {
         // Waiting happens outside the serialised section so a webhook nudge
@@ -495,8 +498,7 @@ export class SyncEngine {
         if (!this.stopping && outcome.processed === 0) await sleep(interval)
       }
     } finally {
-      clearInterval(this.heartbeat)
-      this.heartbeat = undefined
+      this.stopHeartbeat(own)
       // Hand over immediately. Without this a replacement waits a full TTL.
       await this.serialized(() => this.releaseHeld())
     }
@@ -504,6 +506,33 @@ export class SyncEngine {
 
   stop(): void {
     this.stopping = true
+  }
+
+  /**
+   * Renew everything in `held` every third of the TTL, in the background.
+   * Unref'd so it never keeps a finished process alive. One renewal at a
+   * time: a slow database must not pile them up behind itself. Returns the
+   * timer so the caller stops only the one it started: a listener starting
+   * while a standalone tick runs replaces the tick's timer and must outlive it.
+   */
+  private startHeartbeat(): NodeJS.Timeout {
+    clearInterval(this.heartbeat)
+    const timer = setInterval(
+      () => {
+        this.renewal ??= this.renewHeld().finally(() => {
+          this.renewal = undefined
+        })
+      },
+      Math.max(1, Math.floor(this.leaseTtlMs / 3)),
+    )
+    timer.unref()
+    this.heartbeat = timer
+    return timer
+  }
+
+  private stopHeartbeat(timer: NodeJS.Timeout): void {
+    clearInterval(timer)
+    if (this.heartbeat === timer) this.heartbeat = undefined
   }
 
   /**
@@ -556,14 +585,17 @@ export class SyncEngine {
     this.logger.error('lost the events tail lease; another process took over', { env, holder })
   }
 
-  private async releaseHeld(): Promise<void> {
+  private releaseHeld(): Promise<void> {
+    return this.release([...this.held])
+  }
+
+  private async release(envs: string[]): Promise<void> {
     // Acquiring is an upsert, so a renewal still in flight would put back a
     // row deleted here and the replacement would wait a full TTL after a
     // clean stop. Let it finish first. Then forget everything before the
-    // first await, so a heartbeat firing mid-release finds nothing to renew.
+    // first release, so a heartbeat firing mid-release finds nothing to renew.
     await this.renewal
-    const envs = [...this.held]
-    this.held.clear()
+    for (const env of envs) this.held.delete(env)
     for (const env of envs) {
       try {
         await this.destination.releaseLease(env, this.holder)

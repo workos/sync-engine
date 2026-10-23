@@ -354,7 +354,8 @@ lease. They are idempotent and safe to run while a listener is tailing.
 */5 * * * * workos-sync-postgres tick
 ```
 
-`tick` takes the lease for the duration of the poll and releases it on exit.
+`tick` takes the lease for the duration of the poll, renews it while the poll
+runs, and releases it on exit.
 If a listener holds it, `tick` exits 3 without polling and names the holder
 on stderr; that usually means both deployment styles are running at once.
 

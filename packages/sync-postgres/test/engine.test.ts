@@ -881,6 +881,26 @@ describe('single-writer lease', () => {
     expect(await other.getLease('prod')).toMatchObject({ holder: 'replacement' })
   })
 
+  it('keeps a slow standalone tick covered so it can still checkpoint', async () => {
+    fake.createUser()
+    const other = new PostgresDestination({ db, schema: 'workos' })
+    let slowed = false
+    // A cron tick with no listener: nothing else renews for it. The fetch
+    // outlasts the TTL, which must not cost it the lease and its checkpoint.
+    const engine = makeEngine(db, fake, TIER1, { leaseTtlMs: 150 }, async () => {
+      if (slowed) return
+      slowed = true
+      await sleep(400)
+    })
+    await engine.init()
+    const r = await engine.tick()
+
+    expect(r.processed).toBe(1)
+    expect((await engine.status())['prod']!.cursor).not.toBeNull()
+    // And it gives the lease back when it is done, as any tick does.
+    expect(await other.getLease('prod')).toBeNull()
+  })
+
   it('does not overwrite a position that moved under it, even while it holds the lease', async () => {
     fake.createUser()
     const other = new PostgresDestination({ db, schema: 'workos' })
