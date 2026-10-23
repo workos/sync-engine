@@ -75,7 +75,9 @@ Things to know:
   `select *` over its table, which was rebuilt by hand. A view and its comment
   are created in one transaction, so an interrupted `init` cannot leave one
   without the other; should a view with exactly the generated definition and
-  no comment exist anyway, `init` recognises it as its own and finishes it.
+  no comment at all exist anyway, `init` recognises it as its own and finishes
+  it. One carrying another tool's comment is never adopted, whatever its
+  definition: that comment is the other tool's claim on it.
 - **Append-only streams have no view.** `events` and `auth_attempts` have no
   `_deleted_at` column, so there is nothing to filter.
 

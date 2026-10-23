@@ -126,9 +126,15 @@ export async function applyViewStatement(
   options: ApplyViewOptions = {},
 ): Promise<void> {
   const { view, table, body, create, comment } = parseViewStatement(sql)
-  if ((await commentOn(db, view)) === 'foreign' && !(await hasGeneratedDefinition(db, view, body))) {
-    throw foreignView(view)
-  }
+  // A view that is not ours is refused before Postgres can overwrite it in
+  // place. One with no comment at all may be ours, left half-made by a
+  // process that died between the create and the comment; the definition
+  // decides. One carrying another tool's comment is somebody else's claim,
+  // whatever its definition says, and adopting it would silently replace
+  // that claim with ours.
+  const existing = await commentOn(db, view)
+  if (existing === 'foreign') throw foreignView(view)
+  if (existing === 'uncommented' && !(await hasGeneratedDefinition(db, view, body))) throw foreignView(view)
   let created = false
   try {
     await db.transaction(async (tx) => {
@@ -146,7 +152,7 @@ export async function applyViewStatement(
       const existing = await commentOn(tx, view)
       // Nothing there to repair: the create failed for some other reason.
       if (existing === 'missing') throw err
-      if (existing === 'foreign') throw foreignView(view, reason)
+      if (existing !== 'commented') throw foreignView(view, reason)
       if (!(await isSelectStarSnapshot(tx, view, table))) {
         throw new Error(
           `${view} carries the @workos/sync-postgres comment but is not the generated definition of ` +
@@ -209,19 +215,27 @@ async function hasGeneratedDefinition(db: SqlClient, view: string, body: string)
 }
 
 /**
- * Whether anything is at `view` and, if so, whether it carries the comment
- * `liveViewSql` puts on every generated view. `create or replace` keeps the
- * comment, so it survives every in-place update since the view was first
- * created. It is a claim, not a proof; `isSelectStarSnapshot` is the check.
+ * Whether anything is at `view` and, if so, what its comment says about who
+ * owns it: the comment `liveViewSql` puts on every generated view
+ * (`commented`), no comment at all (`uncommented`), or somebody else's
+ * (`foreign`). `create or replace` keeps the comment, so ours survives every
+ * in-place update since the view was first created. It is a claim, not a
+ * proof; `isSelectStarSnapshot` is the check. The uncommented case is kept
+ * apart from the foreign one because only it can be an interrupted creation
+ * of ours; another tool's comment is that tool's claim and is never adopted.
  */
-async function commentOn(db: SqlClient, view: string): Promise<'missing' | 'foreign' | 'commented'> {
+async function commentOn(
+  db: SqlClient,
+  view: string,
+): Promise<'missing' | 'uncommented' | 'foreign' | 'commented'> {
   const r = await db.query<{ comment: string | null }>(
     `select obj_description(c.oid, 'pg_class') as comment from pg_class c where c.oid = to_regclass($1)`,
     [view],
   )
   const row = r.rows[0]
   if (!row) return 'missing'
-  return (row.comment ?? '').startsWith(GENERATED_BY) ? 'commented' : 'foreign'
+  if (row.comment === null) return 'uncommented'
+  return row.comment.startsWith(GENERATED_BY) ? 'commented' : 'foreign'
 }
 
 /**
