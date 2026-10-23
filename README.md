@@ -100,7 +100,7 @@ the same setting, the flag wins.
 | `WORKOS_SYNC_POLL_MS`             | `5000`                              | Idle wait between polls, in ms, when the last poll returned nothing.                                                         |
 | `WORKOS_SYNC_LAG_MS`              | `5000`                              | Hold back events younger than this, in ms, before advancing the cursor.                                                      |
 | `WORKOS_SYNC_MAX_EVENTS_PER_TICK` | one page (100)                      | Events to apply per poll, fetched across as many pages as needed.                                                            |
-| `WORKOS_SYNC_LEASE_TTL_MS`        | `60000`                             | How long the tail lease outlives a crashed listener, in ms. The most lag a crash can add before a replacement takes over.    |
+| `WORKOS_SYNC_LEASE_TTL_MS`        | `60000`                             | How long the tail lease outlives a crashed listener, in ms; at least 1. The most lag a crash can add before a replacement takes over. |
 | `LOG_LEVEL`                       | `info`                              | `debug`, `info`, `warn`, `error` or `silent`. Logs are JSON lines on stdout.                                                 |
 
 ### Commands

@@ -67,7 +67,7 @@ and the staleness gate decides which version wins.
 | `lagWindowMs`      | `5000`                              | Never advance the cursor past events younger than this.                                                                                       |
 | `pageSize`         | `100`                               | Page size for list and event calls.                                                                                                           |
 | `maxEventsPerTick` | one page                            | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive.                       |
-| `leaseTtlMs`       | `60000`                             | How long the events-tail lease outlives a crashed process. `listen` renews it every third of this; a clean stop releases it immediately.      |
+| `leaseTtlMs`       | `60000`                             | How long the events-tail lease outlives a crashed process; at least 1. `listen` renews it every third of this; a clean stop releases it immediately. |
 | `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                               |
 
 Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
@@ -79,9 +79,16 @@ The tail has one writer per environment. `listen()` takes a lease in the
 destination before polling and renews it while it runs; if another process
 holds it, `listen()` waits, which is what a rolling deploy needs. `tick()`
 takes the lease for one poll and throws `LeaseHeldError` (with `holder` and
-`expiresAt`) instead of waiting. `backfill`, `reconcile`, `refresh`, `status`
-and `redact` do not take it; they are idempotent and run safely alongside a
-tail.
+`expiresAt`) instead of waiting; on an engine that is also listening, it runs
+after the listener's current poll, under the listener's lease. With several
+environments, `listen()` claims all of them, in name order, before polling,
+and gives partial claims back while it waits for the rest, so two engines
+whose lists overlap cannot block each other. A process that stalls past the
+TTL loses the lease to its replacement: it still applies the batch it had
+fetched, which is idempotent, but does not checkpoint, so the replacement's
+cursor is never rewound. `backfill`, `reconcile`, `refresh`, `status` and
+`redact` do not take the lease; they are idempotent and run safely alongside
+a tail.
 
 `status()` reports, per environment, the cursor, `pollAgeSeconds` (time since
 the last successful poll; alert on this), `cursorAgeDays` (age of the newest

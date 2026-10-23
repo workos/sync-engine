@@ -70,7 +70,7 @@ different label each; cursors are kept per label, so they never collide.
 | `WORKOS_SYNC_POLL_MS`             | `5000`                              | Idle wait between polls.                                           |
 | `WORKOS_SYNC_LAG_MS`              | `5000`                              | Hold back events younger than this.                                |
 | `WORKOS_SYNC_MAX_EVENTS_PER_TICK` | one page                            | Events to apply per poll.                                          |
-| `WORKOS_SYNC_LEASE_TTL_MS`        | `60000`                             | How long the tail lease outlives a crashed listener.               |
+| `WORKOS_SYNC_LEASE_TTL_MS`        | `60000`                             | How long the tail lease outlives a crashed listener; at least 1.   |
 | `WORKOS_API_URL`                  | `https://api.workos.com`            | API base URL.                                                      |
 | `LOG_LEVEL`                       | `info`                              | `debug`, `info`, `warn`, `error` or `silent`.                      |
 

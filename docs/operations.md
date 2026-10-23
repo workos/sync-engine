@@ -339,8 +339,11 @@ after `WORKOS_SYNC_LEASE_TTL_MS` (default 60 s) and the replacement takes
 over then, which is the most lag a crash can add. Set the TTL comfortably
 above the longest tick you expect: a process that stalls past it loses the
 lease to its replacement and logs `lost the events tail lease` when it
-notices. Two syncs that genuinely must tail the same environment take
-different `WORKOS_SYNC_ID`s, which gives each its own cursor and its own lease.
+notices. It still applies the batch it had already fetched, which is
+idempotent, but it does not checkpoint it, so the replacement's cursor is
+never rewound; it then waits for the lease like any other process. Two syncs
+that genuinely must tail the same environment take different
+`WORKOS_SYNC_ID`s, which gives each its own cursor and its own lease.
 
 `backfill`, `reconcile`, `refresh`, `status` and `redact` do not take the
 lease. They are idempotent and safe to run while a listener is tailing.

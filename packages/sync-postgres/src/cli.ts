@@ -94,6 +94,21 @@ export function parseHydrate(value: string | undefined): SyncEngineConfig['hydra
   return out
 }
 
+/**
+ * `WORKOS_SYNC_LEASE_TTL_MS` is a number of milliseconds, at least 1. Unset
+ * or empty means the engine default. Anything else is refused here rather
+ * than further down: an empty value would otherwise become zero, and a lease
+ * that expires on arrival excludes nobody.
+ */
+export function parseLeaseTtl(value: string | undefined): number | undefined {
+  if (!value || !value.trim()) return undefined
+  const n = Number(value)
+  if (!Number.isFinite(n) || Math.floor(n) < 1) {
+    throw new Error(`invalid WORKOS_SYNC_LEASE_TTL_MS "${value}": expected a number of milliseconds of at least 1`)
+  }
+  return n
+}
+
 function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfig {
   const databaseUrl = (flags['database-url'] as string) ?? process.env['DATABASE_URL']
   if (!databaseUrl) throw new Error('set DATABASE_URL (or pass --database-url)')
@@ -112,7 +127,7 @@ function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfi
     maxEventsPerTick: process.env['WORKOS_SYNC_MAX_EVENTS_PER_TICK']
       ? Number(process.env['WORKOS_SYNC_MAX_EVENTS_PER_TICK'])
       : undefined,
-    leaseTtlMs: Number(process.env['WORKOS_SYNC_LEASE_TTL_MS'] ?? 60_000),
+    leaseTtlMs: parseLeaseTtl(process.env['WORKOS_SYNC_LEASE_TTL_MS']),
     logger: createLogger((process.env['LOG_LEVEL'] as LogLevel) ?? 'info'),
   }
 }
@@ -152,7 +167,7 @@ Environment
   WORKOS_SYNC_POLL_MS          Idle wait between polls (default: 5000)
   WORKOS_SYNC_LAG_MS           Hold back events younger than this (default: 5000)
   WORKOS_SYNC_MAX_EVENTS_PER_TICK  Events to apply per poll (default: one page)
-  WORKOS_SYNC_LEASE_TTL_MS     How long the tail lease outlives a crashed listener (default: 60000)
+  WORKOS_SYNC_LEASE_TTL_MS     How long the tail lease outlives a crashed listener, at least 1 (default: 60000)
   LOG_LEVEL                    debug | info | warn | error | silent
 `
 
