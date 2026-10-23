@@ -6,6 +6,8 @@ import type {
   Destination,
   FreshnessRow,
   IdDiff,
+  Lease,
+  LeaseResult,
   Logger,
   Row,
   StreamDef,
@@ -15,6 +17,7 @@ import type {
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows } from './db/upsert.js'
 import { diffIdsInSql } from './db/reconcile.js'
+import { acquireLease, releaseLease, getLease, setStateIfHeld } from './db/lease.js'
 import { migrate, type MigrateResult } from './schema/migrate.js'
 import { quoteIdent, safeIdentifier } from './schema/ddl.js'
 
@@ -219,5 +222,21 @@ export class PostgresDestination implements Destination {
          set state = excluded.state, updated_at = now()`,
       [this.syncId, env, stream, JSON.stringify(state)],
     )
+  }
+
+  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean> {
+    return setStateIfHeld(this.client, this.schema, this.syncId, env, stream, state, holder, expected)
+  }
+
+  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult> {
+    return acquireLease(this.client, this.schema, this.syncId, env, holder, ttlMs)
+  }
+
+  releaseLease(env: string, holder: string): Promise<void> {
+    return releaseLease(this.client, this.schema, this.syncId, env, holder)
+  }
+
+  getLease(env: string): Promise<Lease | null> {
+    return getLease(this.client, this.schema, this.syncId, env)
   }
 }

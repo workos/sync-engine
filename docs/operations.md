@@ -25,6 +25,10 @@ npx workos-sync-postgres status
     "cursorAgeDays": 0.0004,
     "lastPolledAt": "2026-10-22T18:04:11.902Z",
     "pollAgeSeconds": 3.1,
+    "lease": {
+      "holder": "sync-7f9c4:1:a3f1b2",
+      "expiresAt": "2026-10-22T18:05:11.902Z"
+    },
     "streams": [
       {
         "stream": "users",
@@ -50,6 +54,11 @@ Two of these numbers look similar but mean different things:
   happens for a week will show seven days here while being perfectly healthy.
   It is `null` until the first event is applied. The engine warns at 75 days
   and logs an error past 90. Alert well before that.
+
+`lease` names the process currently tailing this environment, as
+`hostname:pid:suffix`, and when its claim lapses if it stops renewing. It is
+`null` when nothing is listening, which alongside a climbing `pollAgeSeconds`
+tells you the poller is gone rather than stuck.
 
 `status` opens a database connection and queries every stream, which is the
 wrong shape for something that runs every few seconds. The same poll age is
@@ -147,6 +156,7 @@ SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS events
 | Drift detected         | `reconcile` exits 2                                            | Missed creates or deletes.                                                                     |
 | Column drift           | `init` exits 2 after a deploy                                  | A generated column no longer matches the catalog; the projection is stale until repaired.      |
 | Process exited         | `listen` returned or crashed                                   | A rejected credential or a backwards-paging cursor stops the engine on purpose.                |
+| Lease lost             | `lost the events tail lease` in the logs                       | The process stalled for longer than the lease TTL and another one took over. Check for a hung tick or an undersized `WORKOS_SYNC_LEASE_TTL_MS`. |
 
 The engine emits structured JSON logs with per-batch counts:
 
@@ -439,20 +449,40 @@ Add a `prometheus.io/scrape: "true"` annotation (or a `ServiceMonitor`) on
 port `health` to collect `/metrics`.
 
 Run **one listener per environment**, each with its own `WORKOS_API_KEY` and
-`WORKOS_ENVIRONMENT_NAME`; they can share a database. Two processes tailing the
-same environment with the same `syncId` will both advance the same cursor and
-duplicate work. If you genuinely need that, give each its own `WORKOS_SYNC_ID`.
-The library form is the exception: one embedded engine can hold several
-environments in its `environments` array.
+`WORKOS_ENVIRONMENT_NAME`; they can share a database. The library form is the
+exception: one embedded engine can hold several environments in its
+`environments` array.
 
-`listen` handles `SIGINT` and `SIGTERM` by finishing the current batch and
-stopping, so a rolling deploy does not interrupt a write mid-flight.
+Only one process tails a given environment and `WORKOS_SYNC_ID` at a time. The
+tail runs under a **single-writer lease** held in the database
+(`_sync_lease`), so a rolling deploy is safe: the new process starts, finds
+the lease held, logs a warning once a minute and waits; the old one receives
+`SIGTERM`, finishes its current batch, releases the lease and exits; the new
+one takes over on its next poll. Nothing is double-applied and the cursor has
+one writer throughout. If the old process crashes instead, the lease expires
+after `WORKOS_SYNC_LEASE_TTL_MS` (default 60 s) and the replacement takes
+over then, which is the most lag a crash can add. Set the TTL comfortably
+above the longest tick you expect: a process that stalls past it loses the
+lease to its replacement and logs `lost the events tail lease` when it
+notices. It still applies the batch it had already fetched, which is
+idempotent, but it does not checkpoint it, so the replacement's cursor is
+never rewound; it then waits for the lease like any other process. Two syncs
+that genuinely must tail the same environment take different
+`WORKOS_SYNC_ID`s, which gives each its own cursor and its own lease.
+
+`backfill`, `reconcile`, `refresh`, `status` and `redact` do not take the
+lease. They are idempotent and safe to run while a listener is tailing.
 
 **As a scheduled job**, if a few minutes of lag is acceptable:
 
 ```bash
 */5 * * * * workos-sync-postgres tick
 ```
+
+`tick` takes the lease for the duration of the poll, renews it while the poll
+runs, and releases it on exit.
+If a listener holds it, `tick` exits 3 without polling and names the holder
+on stderr; that usually means both deployment styles are running at once.
 
 ## Database sizing
 

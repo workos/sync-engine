@@ -48,8 +48,8 @@ npx workos-sync-postgres listen     # tail the Events API, forever
 | ---------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `init [--repair]`      | Create the schema. Idempotent; safe to run on every deploy. Exits 2 on column drift, and fails if a generated `_live` view must be rebuilt; `--repair` rebuilds columns from `_raw` and views with their grants. |
 | `backfill [--resume]`  | Page the REST list endpoints for current state.                                                                 |
-| `listen [--health-port <n>]` | Poll the Events API and apply changes continuously. With a port, serve `GET /healthz` and `/metrics` on it.  |
-| `tick`                 | One poll, then exit — for a cron job instead of a process.                                                      |
+| `listen [--health-port <n>]` | Poll the Events API and apply changes continuously, as the sole writer; waits if another listener has the lease. With a port, serve `GET /healthz` and `/metrics` on it. |
+| `tick`                 | One poll, then exit — for a cron job instead of a process. Exits 3 if a listener holds the lease.               |
 | `reconcile [--repair]` | Diff ids against the API; `--repair` tombstones and inserts. Exits 2 on drift unless repairing.                 |
 | `refresh`              | Re-list top-level streams to refresh fields that event payloads omit. Re-run `backfill` for per-parent streams. |
 | `status`               | Cursor, time since the last successful poll, and per-stream row counts and lag.                                 |
@@ -73,6 +73,7 @@ different label each; cursors are kept per label, so they never collide.
 | `WORKOS_SYNC_HEALTH_PORT`         | off (`8080` in the image)           | `listen` only: serve `/healthz` and `/metrics` on this port.       |
 | `WORKOS_SYNC_HEALTH_HOST`         | `0.0.0.0`                           | Interface the health server binds.                                 |
 | `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` | `60000`                          | `/healthz` is 503 once the last successful poll is older than this. |
+| `WORKOS_SYNC_LEASE_TTL_MS`        | `60000`                             | How long the tail lease outlives a crashed listener; at least 1.   |
 | `WORKOS_API_URL`                  | `https://api.workos.com`            | API base URL.                                                      |
 | `LOG_LEVEL`                       | `info`                              | `debug`, `info`, `warn`, `error` or `silent`.                      |
 

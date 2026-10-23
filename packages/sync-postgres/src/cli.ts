@@ -14,6 +14,7 @@
  */
 import {
   SyncEngine,
+  LeaseHeldError,
   STREAMS,
   DEFAULT_HYDRATE,
   defaultStreams,
@@ -130,6 +131,21 @@ function destinationFromEnv(
   })
 }
 
+/**
+ * `WORKOS_SYNC_LEASE_TTL_MS` is a number of milliseconds, at least 1. Unset
+ * or empty means the engine default. Anything else is refused here rather
+ * than further down: an empty value would otherwise become zero, and a lease
+ * that expires on arrival excludes nobody.
+ */
+export function parseLeaseTtl(value: string | undefined): number | undefined {
+  if (!value || !value.trim()) return undefined
+  const n = Number(value)
+  if (!Number.isFinite(n) || Math.floor(n) < 1) {
+    throw new Error(`invalid WORKOS_SYNC_LEASE_TTL_MS "${value}": expected a number of milliseconds of at least 1`)
+  }
+  return n
+}
+
 function configFromEnv(
   flags: Record<string, string | boolean>,
   destination: PostgresDestination,
@@ -145,6 +161,7 @@ function configFromEnv(
     maxEventsPerTick: process.env['WORKOS_SYNC_MAX_EVENTS_PER_TICK']
       ? Number(process.env['WORKOS_SYNC_MAX_EVENTS_PER_TICK'])
       : undefined,
+    leaseTtlMs: parseLeaseTtl(process.env['WORKOS_SYNC_LEASE_TTL_MS']),
     logger: createLogger((process.env['LOG_LEVEL'] as LogLevel) ?? 'info'),
   }
 }
@@ -161,9 +178,11 @@ Commands
                        with their grants carried over
   backfill [--resume]  Load current state from the REST list endpoints
   listen [--health-port <n>]
-                       Tail the Events API and apply changes continuously;
+                       Tail the Events API and apply changes continuously
+                       (waits while another listener holds the lease);
                        with a port, serve GET /healthz and /metrics on it
-  tick                 One poll of the Events API, then exit (for a cron job)
+  tick                 One poll of the Events API, then exit (for a cron job);
+                       exits 3 if a listener holds the lease
   reconcile [--repair] Compare the mirror against the API; --repair fixes drift
   refresh              Re-list top-level streams (refreshes fields events omit)
   status               Cursor position, poll age, and per-stream freshness
@@ -187,6 +206,7 @@ Environment
   WORKOS_SYNC_POLL_MS          Idle wait between polls (default: 5000)
   WORKOS_SYNC_LAG_MS           Hold back events younger than this (default: 5000)
   WORKOS_SYNC_MAX_EVENTS_PER_TICK  Events to apply per poll (default: one page)
+  WORKOS_SYNC_LEASE_TTL_MS     How long the tail lease outlives a crashed listener, at least 1 (default: 60000)
   WORKOS_SYNC_HEALTH_PORT      listen only: serve /healthz and /metrics on this port (default: off)
   WORKOS_SYNC_HEALTH_HOST      Interface the health server binds (default: 0.0.0.0)
   WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS
@@ -270,9 +290,19 @@ export async function main(argv = process.argv.slice(2), deps: MainDeps = {}): P
         return 0
       }
       case 'tick': {
-        const r = await engine.tick()
-        process.stdout.write(JSON.stringify(r, null, 2) + '\n')
-        return 0
+        try {
+          const r = await engine.tick()
+          process.stdout.write(JSON.stringify(r, null, 2) + '\n')
+          return 0
+        } catch (err) {
+          // Distinct from a failure (1) and from drift (2): the sync is fine,
+          // something else is tailing it. Usually a `listen` left running.
+          if (err instanceof LeaseHeldError) {
+            process.stderr.write(`${err.message}; nothing to do\n`)
+            return 3
+          }
+          throw err
+        }
       }
       case 'reconcile': {
         const r = await engine.reconcile({ repair: Boolean(flags['repair']) })

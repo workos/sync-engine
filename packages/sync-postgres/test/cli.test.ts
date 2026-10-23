@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { main, parseHydrate, repairRequested } from '../src/cli.js'
+import { main, parseHydrate, parseLeaseTtl, repairRequested } from '../src/cli.js'
 
 describe('WORKOS_SYNC_HYDRATE', () => {
   it('leaves the engine default in place when unset', () => {
@@ -43,5 +43,25 @@ describe('init --repair', () => {
       spy.mockRestore()
     }
     expect(out.join('')).toContain('init [--repair]')
+  })
+})
+
+describe('WORKOS_SYNC_LEASE_TTL_MS', () => {
+  it('leaves the engine default in place when unset or empty', () => {
+    expect(parseLeaseTtl(undefined)).toBeUndefined()
+    expect(parseLeaseTtl('')).toBeUndefined()
+    expect(parseLeaseTtl('  ')).toBeUndefined()
+  })
+
+  it('accepts a number of milliseconds', () => {
+    expect(parseLeaseTtl('250')).toBe(250)
+  })
+
+  it('refuses a value that would expire on arrival or fail in SQL', () => {
+    // Number('') is 0 and Number('abc') is NaN. A zero TTL is a lease that
+    // excludes nobody, so neither may reach the engine.
+    for (const bad of ['0', '-1', '0.5', 'abc', 'Infinity']) {
+      expect(() => parseLeaseTtl(bad)).toThrow(/invalid WORKOS_SYNC_LEASE_TTL_MS/)
+    }
   })
 })

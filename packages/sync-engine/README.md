@@ -67,6 +67,7 @@ and the staleness gate decides which version wins.
 | `lagWindowMs`      | `5000`                              | Never advance the cursor past events younger than this.                                                                                       |
 | `pageSize`         | `100`                               | Page size for list and event calls.                                                                                                           |
 | `maxEventsPerTick` | one page                            | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive.                       |
+| `leaseTtlMs`       | `60000`                             | How long the events-tail lease outlives a crashed process; at least 1. Renewed every third of this while polling; a clean stop releases it immediately. |
 | `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                               |
 
 Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
@@ -74,10 +75,27 @@ Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
 `redact(userId)`, `processWebhook()`, `close()`. Every method except
 `health()` applies the schema first, so `init()` is optional.
 
+The tail has one writer per environment. `listen()` takes a lease in the
+destination before polling and renews it while it runs; if another process
+holds it, `listen()` waits, which is what a rolling deploy needs. `tick()`
+takes the lease for one poll, renewing it while the poll runs, and throws
+`LeaseHeldError` (with `holder` and `expiresAt`) instead of waiting; on an
+engine that is also listening, it runs
+after the listener's current poll, under the listener's lease. With several
+environments, `listen()` claims all of them, in name order, before polling,
+and gives partial claims back while it waits for the rest, so two engines
+whose lists overlap cannot block each other. A process that stalls past the
+TTL loses the lease to its replacement: it still applies the batch it had
+fetched, which is idempotent, but the destination refuses its checkpoint, so
+the replacement's cursor is never rewound. `backfill`, `reconcile`, `refresh`, `status` and
+`redact` do not take the lease; they are idempotent and run safely alongside
+a tail.
+
 `status()` reports, per environment, the cursor, `pollAgeSeconds` (time since
 the last successful poll; alert on this), `cursorAgeDays` (age of the newest
-event applied; distance from the 90-day retention cliff, not liveness), and
-per-stream row counts, tombstones, staleness and lag.
+event applied; distance from the 90-day retention cliff, not liveness),
+`lease` (who is tailing it now, or `null`), and per-stream row counts,
+tombstones, staleness and lag.
 
 `health()` is the same liveness picture without the database: a synchronous
 snapshot of in-memory state (`starting` / `listening` / `stopped`, any fatal
@@ -112,6 +130,8 @@ import type {
   Destination,
   FreshnessRow,
   IdDiff,
+  Lease,
+  LeaseResult,
   Logger,
   Row,
   StreamDef,
@@ -152,10 +172,15 @@ class MyDestination implements Destination {
 
   getState<T>(env: string, stream: string): Promise<T | null>;
   setState(env: string, stream: string, state: unknown): Promise<void>;
+  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean>;
+
+  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult>;
+  releaseLease(env: string, holder: string): Promise<void>;
+  getLease(env: string): Promise<Lease | null>;
 }
 ```
 
-The engine relies on five properties of your implementation. Each one exists
+The engine relies on seven properties of your implementation. Each one exists
 because of a documented failure in a comparable sync engine.
 
 1. **Staleness gate, `>=` not `>`.** `upsert` rejects a row whose `updatedAt`
@@ -171,6 +196,22 @@ because of a documented failure in a comparable sync engine.
    resolves. A write must not be buffered past its own call.
 5. **`init` is called before every operation.** It must be idempotent and
    cheap once the schema is current — cache that, rather than re-querying.
+6. **`acquireLease` is atomic.** Of two processes asking for the same
+   `(env)` at once, exactly one gets `acquired: true`; the other is told the
+   holder. It succeeds when the lease is free, expired by the _database's_
+   clock, or already held by `holder` (a renewal). `releaseLease` is a no-op
+   for anyone but the holder, and `getLease` returns `null` for an expired
+   row. Without this, a rolling deploy has two processes advancing one cursor.
+   In SQL it is one `INSERT ... ON CONFLICT DO UPDATE ... WHERE` on a row
+   keyed by `(syncId, env)`; see `db/lease.ts` in the Postgres destination.
+7. **The checkpoint is fenced by the lease.** `setStateIfHeld` writes only
+   if `holder` holds the unexpired lease for `env` _and_ the stored state
+   still equals `expected` (`null` for no row), with both checked in the same
+   statement as the write. The engine saves the tail cursor through it, so a
+   process that stalled past its lease, or whose position a backfill
+   re-captured meanwhile, is refused by the database rather than by a check
+   made a moment earlier. In SQL it is an `INSERT ... SELECT ... WHERE EXISTS
+   (lease) ... ON CONFLICT DO UPDATE ... WHERE`; also in `db/lease.ts`.
 
 `WriteStats` (`created` / `updated` / `skipped` / `deleted`) is a health metric
 the engine logs but never branches on; a database that cannot tell an insert

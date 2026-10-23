@@ -179,6 +179,16 @@ export interface SyncEngineConfig {
    * after a mid-tick crash.
    */
   maxEventsPerTick?: number
+  /**
+   * How long the events-tail lease lasts without renewal, in ms. Defaults to
+   * 60 000 and must be at least 1. The engine renews it every third of this
+   * while it polls, in `listen` and `tick` alike, so it only expires when the
+   * holder has crashed or stalled; that makes it the worst-case delay before
+   * a replacement process takes over after a crash. A clean stop releases
+   * the lease immediately. A process that stalls past it loses the lease to
+   * its replacement, and the batch it was applying is not checkpointed.
+   */
+  leaseTtlMs?: number
   logger?: Logger
 }
 
