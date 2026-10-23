@@ -256,7 +256,13 @@ first page is requested, so a row the tail writes while the list is in
 progress is never a deletion candidate: `--repair` only tombstones a row that
 was already in the mirror when the listing began and is absent from the list.
 Both tables live in a single transaction and are dropped when it commits, so
-nothing is left behind in the schema.
+nothing is left behind in the schema. One gap remains, for streams listed
+through a parent (memberships, directory users and groups): the parent ids
+are read a few statements before the live snapshot, so a parent and its first
+child that the tail writes in that gap put the child in the snapshot with no
+parent to list it under, and `--repair` tombstones it. Run `--repair` for
+those streams in a quiet moment, or run `reconcile` without it first and read
+the report.
 
 Streams that cannot be reconciled say so explicitly rather than reporting a
 misleading zero:

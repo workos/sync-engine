@@ -224,8 +224,15 @@ the same events again. So the checkpoint is **fenced in the database**: one
 statement that writes the new position only if this process still holds the
 lease and the stored position is still the one the poll started from. A
 former holder's checkpoint is simply refused, and the batch is counted as not
-done. `backfill`, `reconcile`, `refresh` and `status` take no lease; they are
-idempotent and run safely beside a tail.
+done. `backfill`, `reconcile`, `refresh` and `status` take no lease: their
+writes are idempotent and staleness-gated, so they run beside a tail. The one
+thing to keep apart is `reconcile --repair` on a stream listed through its
+parent (memberships, directory users and groups) while that tail is busy:
+the parent ids are read a few statements before the live snapshot is taken,
+and a parent plus its first child landing in that gap leaves the child in
+the snapshot with no parent to list it under, so repair tombstones a live
+row that no later update will revive. Run that repair in a quiet moment, or
+`reconcile` without `--repair` first and read the report.
 
 ### The stream is always oldest-first
 
