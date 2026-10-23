@@ -93,6 +93,13 @@ export interface Destination {
    * because they are only ever tombstoned; `remoteOnly` are whole payloads,
    * because they are re-inserted. A destination with nothing to stage into
    * may delegate to `diffIdsInMemory` and accept the memory cost.
+   *
+   * The live set must be captured before the first page is consumed. Listing
+   * takes time and the tail keeps writing throughout, so a row inserted
+   * mid-listing that the pages never show must not become `localOnly`: repair
+   * would tombstone an object that exists upstream, and deletion is terminal.
+   * The engine reads nothing from the destination while this runs, so an
+   * implementation may hold one pinned connection for the duration.
    */
   diffIds(
     stream: StreamDef,

@@ -88,21 +88,29 @@ export async function diffStream(
         ? 'user_management'
         : 'global'
 
+  // The parent ids are read here, before the diff starts, never from inside
+  // the generator below. The destination drains the pages while holding one
+  // pinned connection (its staging table is per session), so a read that
+  // went through the pool from inside the generator would wait for a free
+  // connection while the diff waited for the next page. With a pool of one
+  // that is a deadlock, and the reconcile never finishes.
+  const parent = list.parent
+  const parents = parent ? await destination.liveIds(streamByName(parent.stream)!, env) : []
+
   /**
    * The remote side, one page at a time. The pagination — the per-parent
    * loop, the rate keys — is exactly what it was when the diff ran here in
    * memory; it is a generator so the destination can consume each page as it
-   * arrives instead of this function collecting them all first.
+   * arrives instead of this function collecting them all first. It talks to
+   * the API only, for the reason above.
    */
   async function* remotePages(): AsyncGenerator<Record<string, unknown>[]> {
-    if (list.parent) {
-      const parentDef = streamByName(list.parent.stream)!
-      const parents = await destination.liveIds(parentDef, env)
+    if (parent) {
       for (const pid of parents) {
-        const usePath = list.parent.from === 'path'
-        const path = usePath ? list.path.replace(`{${list.parent.param}}`, pid) : list.path
+        const usePath = parent.from === 'path'
+        const path = usePath ? list.path.replace(`{${parent.param}}`, pid) : list.path
         const params: Record<string, string> = { ...(list.params ?? {}) }
-        if (!usePath) params[list.parent.param] = pid
+        if (!usePath) params[parent.param] = pid
         const key = rateKey === 'directory' ? `directory:${pid}` : rateKey
         for await (const page of api.paginate(path, params, key, list.shape ?? 'list')) {
           yield page.rows as Record<string, unknown>[]

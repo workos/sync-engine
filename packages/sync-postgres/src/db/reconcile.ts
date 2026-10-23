@@ -8,9 +8,10 @@
  * and Airbyte stage the remote side into a table and diff in SQL, and so does
  * this.
  *
- * The remote pages are written into a temp table as they arrive, then three
- * queries produce the answer: a join for `matched`, an anti-join from the
- * mirror for `localOnly`, an anti-join from the staging table for
+ * The live ids are copied into one temp table before the first page is
+ * requested, the remote pages are written into another as they arrive, then
+ * three queries produce the answer: a join for `matched`, an anti-join from
+ * the local table for `localOnly`, an anti-join from the remote table for
  * `remoteOnly`. Node holds one page of remote rows at a time, plus the drift.
  */
 import type { IdDiff, StreamDef } from '@workos/sync-engine'
@@ -19,10 +20,12 @@ import { chunk, readPath, type WriteOptions } from './upsert.js'
 import { quoteIdent, safeIdentifier } from '../schema/ddl.js'
 
 /**
- * Always qualified with `pg_temp`, so neither the lookups nor the drop below
- * can resolve to a real table of the same name somewhere on the search path.
+ * Both always qualified with `pg_temp`, so neither the lookups nor the drops
+ * below can resolve to a real table of the same name somewhere on the search
+ * path.
  */
 const STAGING = 'pg_temp."_reconcile_remote"'
+const LOCAL = 'pg_temp."_reconcile_local"'
 
 export interface SqlDiff extends IdDiff {
   /** Remote rows with no value at the key path. Counted rather than thrown. */
@@ -50,11 +53,33 @@ export async function diffIdsInSql(
       stream.mode === 'append' ? `l."_env" = $1` : `l."_env" = $1 and l."_deleted_at" is null`
 
     // A call nested inside an outer transaction would find the previous
-    // staging table still there, because ON COMMIT DROP waits for that outer
+    // tables still there, because ON COMMIT DROP waits for that outer
     // commit. Dropping first makes the function re-entrant.
+    await tx.exec(`drop table if exists ${LOCAL}`)
     await tx.exec(`drop table if exists ${STAGING}`)
+    await tx.exec(`create temp table "_reconcile_local" (id text primary key) on commit drop`)
     await tx.exec(
       `create temp table "_reconcile_remote" (id text primary key, raw jsonb not null) on commit drop`,
+    )
+
+    // The live ids are frozen before the first page is requested, not read
+    // once the pages are in. Listing a large stream takes minutes under the
+    // API's rate limits and the tail keeps writing throughout: a row it
+    // inserts after the listing has passed that object's position would be
+    // live in the mirror and absent from the pages, and `--repair` would
+    // tombstone an object that exists upstream. Deletion is terminal, so no
+    // later event would undo that. Captured here, such a row is simply not a
+    // candidate, which is how the in-memory diff behaved when it read
+    // `liveIds` first.
+    //
+    // Composite-key streams diff on their first key column alone, as the
+    // engine always has, so several live rows can share one id and are
+    // captured once. Single-key streams have a unique key per environment
+    // and skip the aggregate.
+    const distinct = stream.key.length > 1 ? 'distinct ' : ''
+    await tx.query(
+      `insert into ${LOCAL} (id) select ${distinct}l.${key} from ${table} l where ${live}`,
+      [env],
     )
 
     let skipped = 0
@@ -86,32 +111,22 @@ export async function diffIdsInSql(
     }
 
     // Fresh statistics, so the anti-joins are planned against the real size
-    // of the staging table rather than the planner's guess for a new one.
+    // of each table rather than the planner's guess for a new one.
+    await tx.exec(`analyze ${LOCAL}`)
     await tx.exec(`analyze ${STAGING}`)
 
-    // Composite-key streams diff on their first key column alone, as the
-    // engine always has, so several live rows can share one id and must be
-    // counted once. Single-key streams have a unique key per environment, and
-    // skip the aggregate.
-    const distinct = stream.key.length > 1 ? 'distinct ' : ''
     const matched = await tx.query<{ n: string }>(
-      `select count(${distinct}l.${key})::text as n
-       from ${table} l join ${STAGING} r on r.id = l.${key}
-       where ${live}`,
-      [env],
+      `select count(*)::text as n from ${LOCAL} l join ${STAGING} r on r.id = l.id`,
     )
     const localOnly = await tx.query<{ id: string }>(
-      `select ${distinct}l.${key} as id from ${table} l
-       where ${live}
-         and not exists (select 1 from ${STAGING} r where r.id = l.${key})
-       order by id`,
-      [env],
+      `select l.id from ${LOCAL} l
+       where not exists (select 1 from ${STAGING} r where r.id = l.id)
+       order by l.id`,
     )
     const remoteOnly = await tx.query<{ raw: Record<string, unknown> }>(
       `select r.raw from ${STAGING} r
-       where not exists (select 1 from ${table} l where ${live} and l.${key} = r.id)
+       where not exists (select 1 from ${LOCAL} l where l.id = r.id)
        order by r.id`,
-      [env],
     )
 
     return {

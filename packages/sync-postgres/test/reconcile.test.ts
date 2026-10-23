@@ -95,6 +95,24 @@ describe('diff in sql', () => {
     expect(diff.remoteOnly.map((r) => r['id'])).toEqual([user(2).id])
   })
 
+  it('is not fooled by a row the tail writes while the list is in progress', async () => {
+    await seed([user(1), user(2)])
+    // Between two pages the tail lands a user the list never shows: created
+    // upstream after the listing passed its position. It exists upstream, so
+    // tombstoning it would be wrong, and deletion is terminal.
+    async function* remote() {
+      yield [user(1)]
+      await seed([user(3)])
+      yield [user(2), user(4)]
+    }
+
+    const diff = await diffIdsInSql(db, opts, users, 'prod', remote())
+
+    expect(diff.matched).toBe(2)
+    expect(diff.localOnly).toEqual([])
+    expect(diff.remoteOnly.map((r) => r['id'])).toEqual([user(4).id])
+  })
+
   it('skips remote rows without a key instead of throwing', async () => {
     await seed([user(1)])
     const remote = [user(1), { object: 'user', email: 'no-id@example.com' }, user(2, { id: '' })]
@@ -126,10 +144,11 @@ describe('diff in sql', () => {
     const first = await destination.diffIds(users, 'prod', pages([user(1), user(2)]))
     expect(first.remoteOnly.map((r) => r['id'])).toEqual([user(2).id])
 
-    const leftover = await db.query<{ oid: string | null }>(
-      `select to_regclass('pg_temp._reconcile_remote')::text as oid`,
+    const leftover = await db.query<{ remote: string | null; local: string | null }>(
+      `select to_regclass('pg_temp._reconcile_remote')::text as remote,
+              to_regclass('pg_temp._reconcile_local')::text as local`,
     )
-    expect(leftover.rows[0]!.oid).toBeNull()
+    expect(leftover.rows[0]).toEqual({ remote: null, local: null })
 
     const second = await destination.diffIds(users, 'prod', pages([user(3)]))
     expect(second.matched).toBe(0)

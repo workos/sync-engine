@@ -166,8 +166,12 @@ list is streamed into a temporary table one page at a time and the set
 difference is a pair of anti-joins in SQL, so the memory `reconcile` needs is
 bounded by the size of the drift, not the size of the stream. A million-user
 directory with ten missed deletes costs ten ids, plus one page of the list at
-a time. The temporary table lives in a single transaction and is dropped when
-it commits, so nothing is left behind in the schema.
+a time. The live ids are captured into a second temporary table before the
+first page is requested, so a row the tail writes while the list is in
+progress is never a deletion candidate: `--repair` only tombstones a row that
+was already in the mirror when the listing began and is absent upstream. Both
+tables live in a single transaction and are dropped when it commits, so
+nothing is left behind in the schema.
 
 Streams that cannot be reconciled say so explicitly rather than reporting a
 misleading zero:

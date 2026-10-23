@@ -164,9 +164,14 @@ list endpoint to it one page at a time; the destination must stage those pages
 in the database and diff them there against the live rows, so memory is
 bounded by the drift rather than the stream. It returns `matched`, the
 `localOnly` ids (only ever tombstoned) and the `remoteOnly` payloads (only
-ever re-inserted). A destination with nothing to stage into can delegate to
-the exported `diffIdsInMemory`, which is the old in-process algorithm, and
-accept that its memory grows with the stream.
+ever re-inserted). The live set must be captured before the first page is
+consumed: listing takes time and the tail keeps writing, so a row inserted
+mid-listing must not become `localOnly` and be tombstoned by repair. The
+engine reads nothing from the destination while `diffIds` runs, so an
+implementation may hold one pinned connection for the duration. A destination
+with nothing to stage into can delegate to the exported `diffIdsInMemory`,
+which is the old in-process algorithm, and accept that its memory grows with
+the stream.
 
 The reference implementation is
 [`PostgresDestination`](https://github.com/workos/workos-pg-sync/blob/main/packages/sync-postgres/src/destination.ts)
