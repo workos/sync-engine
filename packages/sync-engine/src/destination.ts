@@ -15,7 +15,9 @@
  *   one; `replace` overwrites it. Event payloads are subsets of the REST
  *   objects, so event writes merge.
  * - **Deletion is terminal.** `delete` tombstones without a staleness check
- *   and never clears the tombstone; only `relink` (membership re-add) does.
+ *   and never clears the tombstone; only `relink` (membership re-add) does,
+ *   and only when the re-add is at least as new as the removal it undoes, so
+ *   a replayed older link cannot resurrect a membership removed since.
  * - **Durable on return.** The engine checkpoints its cursor as soon as a
  *   write resolves, so a write must not be buffered past its own call.
  *
@@ -113,6 +115,11 @@ export interface Destination {
   reject(env: string, rows: { event: WorkOSEvent; error: string }[]): Promise<void>
   /** Quarantined events, oldest first by event id; only `ids` when given. */
   rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]>
+  /**
+   * How many events are quarantined. `status` calls this on every monitoring
+   * poll, so it must not fetch the payloads the way `rejected` does.
+   */
+  rejectedCount(env: string): Promise<number>
   /** Forget quarantined events once they have been replayed. Returns how many were removed. */
   clearRejected(env: string, ids: string[]): Promise<number>
   /**

@@ -280,7 +280,9 @@ Then, in order:
    that succeed are forgotten; those that fail again stay, with the error
    updated, and the command exits 2. The staleness gate still applies, so a
    replayed event older than the row it targets is a no-op: later events
-   already carried the newer state, and the row is already correct.
+   already carried the newer state, and the row is already correct. That
+   holds for tombstones too: a membership link replayed after a newer
+   removal leaves the membership removed.
 
 The quarantine holds whole event payloads, which embed personal data; `redact`
 scrubs it along with the `events` archive.

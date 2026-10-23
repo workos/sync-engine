@@ -107,7 +107,17 @@ describe('migrations against real Postgres', () => {
       ['2026-08-06T17:44:03.481Z', '2026-08-06T17:44:03.481Z'],
       ['2026-01-01T00:00:00Z', '2026-01-01T00:00:00.000Z'],
       ['2026-01-01T05:00:00+02:00', '2026-01-01T03:00:00.000Z'],
+      ['2024-02-29T00:00:00Z', '2024-02-29T00:00:00.000Z'],
       ['not-a-timestamp', null],
+      // These match the pattern but are not real instants. `make_timestamp`
+      // raises on them, and a generated column that raises rejects the whole
+      // row — including the quarantine write that would set that row aside.
+      ['2026-02-30T12:00:00Z', null],
+      ['2026-02-29T00:00:00Z', null],
+      ['2026-13-01T00:00:00Z', null],
+      ['2026-01-01T24:00:00Z', null],
+      ['2026-01-01T23:60:00Z', null],
+      ['0000-01-01T00:00:00Z', null],
     ]
     for (const [input, expected] of cases) {
       await db.query(

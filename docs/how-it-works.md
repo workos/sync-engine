@@ -176,7 +176,9 @@ primitives (`regexp_match`, `make_timestamp`, `timezone('UTC', ...)`,
 `make_interval`). It handles the formats WorkOS emits, with and without
 fractional seconds, `Z` or a numeric offset, and returns `NULL` on anything it
 cannot parse rather than raising, because a generated column that throws would
-reject the whole row.
+reject the whole row. That includes values that have the right shape but are
+not real instants, such as `2026-02-30T12:00:00Z`: each field is range-checked
+before `make_timestamp` sees it, because `make_timestamp` raises on those.
 
 ### No foreign keys
 

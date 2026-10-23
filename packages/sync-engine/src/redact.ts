@@ -124,6 +124,10 @@ export class RedactingDestination implements Destination {
     return this.inner.rejected(env, opts)
   }
 
+  rejectedCount(env: string): Promise<number> {
+    return this.inner.rejectedCount(env)
+  }
+
   clearRejected(env: string, ids: string[]): Promise<number> {
     return this.inner.clearRejected(env, ids)
   }

@@ -21,7 +21,7 @@ export { migrate, fingerprint } from './schema/migrate.js'
 export { buildSchemaSql, createTableSql, columnExpression, parseIso8601Function } from './schema/ddl.js'
 
 export { upsertRows, deleteRows, relinkRows, dedupeByKey, keyValues, buildUpsert } from './db/upsert.js'
-export { rejectEvents, listRejected, clearRejected } from './db/rejected.js'
+export { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
 export { isTransientPgError } from './db/errors.js'
 export { connect, fromPgPool } from './db/client.js'
 export type { SqlClient } from './db/client.js'

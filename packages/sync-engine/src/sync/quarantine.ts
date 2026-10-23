@@ -100,6 +100,13 @@ export async function applyWithQuarantine(
     }
   }
 
+  // Suspects that did not fail this time were transient after all. This has
+  // to happen before either early return below: a suspect that succeeds alone
+  // on a poll that fails for some other reason has broken its streak, and
+  // "two consecutive polls" means exactly that.
+  const failedIds = new Set(failed.map((r) => r.event.id))
+  for (const e of events) if (!failedIds.has(e.id)) suspects.delete(e.id)
+
   if (failed.length === 0) {
     // Every event succeeds alone, so the batch failure was not any one event's
     // fault: an interaction between rows, or a transient the classifier
@@ -128,9 +135,6 @@ export async function applyWithQuarantine(
     else firstSightings.push(row)
     suspects.set(row.event.id, { error: row.error, seenAt: now })
   }
-  // Suspects that did not fail this time were transient after all.
-  const failedIds = new Set(failed.map((r) => r.event.id))
-  for (const e of events) if (!failedIds.has(e.id)) suspects.delete(e.id)
 
   if (firstSightings.length > 0) {
     for (const row of firstSightings) {

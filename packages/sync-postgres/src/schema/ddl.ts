@@ -78,6 +78,13 @@ const PG_TYPE: Record<ColumnDef['type'], string> = {
  * legal in a generated column. Returns NULL rather than raising on input it
  * cannot parse — a generated column that throws would reject the whole row and
  * poison the batch.
+ *
+ * Matching the pattern is not enough for that promise: `make_timestamp`
+ * raises on a field that is out of range (`2026-02-30`, month 13, hour 25),
+ * so each field is range-checked first. The checks are successive CASE
+ * branches rather than one `AND`, because Postgres evaluates CASE branches in
+ * order and makes no such guarantee for the operands of `AND`; the
+ * day-of-month check relies on the month having been validated already.
  */
 export function parseIso8601Function(schema: string): string {
   return `
@@ -85,7 +92,13 @@ create or replace function ${quoteIdent(schema)}.parse_iso8601(iso text)
 returns timestamptz
 language sql immutable strict parallel safe
 as $fn$
-  select case when p is null then null else
+  select case
+    when p is null then null
+    when p[1]::int < 1 or p[2]::int not between 1 and 12 then null
+    when p[3]::int not between 1 and
+      extract(day from (make_date(p[1]::int, p[2]::int, 1) + interval '1 month' - interval '1 day')) then null
+    when p[4]::int > 23 or p[5]::int > 59 or p[6]::double precision > 60 then null
+    else
     timezone('UTC', make_timestamp(
       p[1]::int, p[2]::int, p[3]::int, p[4]::int, p[5]::int, p[6]::double precision))
     - case when p[8] is null then interval '0'

@@ -101,6 +101,15 @@ export async function listRejected(
   }))
 }
 
+/** How many events are quarantined, without reading their payloads. */
+export async function countRejected(db: SqlClient, opts: RejectedOptions, env: string): Promise<number> {
+  const r = await db.query<{ n: string }>(
+    `select count(*)::text as n from ${table(opts.schema)} where sync_id = $1 and env = $2`,
+    [opts.syncId, env],
+  )
+  return Number(r.rows[0]?.n ?? 0)
+}
+
 export async function clearRejected(
   db: SqlClient,
   opts: RejectedOptions,

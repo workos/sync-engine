@@ -22,7 +22,7 @@ import {
   CursorDirectionError,
   EVENT_RETENTION_DAYS,
 } from './workos/events.js'
-import { applyEvents } from './sync/apply.js'
+import { applyEvents, HydrationError } from './sync/apply.js'
 import { applyWithQuarantine, eventObjectId, isTransientError, type SuspectMap } from './sync/quarantine.js'
 import { backfillStream, type BackfillStreamResult } from './sync/backfill.js'
 import { diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
@@ -430,7 +430,9 @@ export class SyncEngine {
         cursorAgeDays: cursorAgeDays(tail?.lastEventAt),
         lastPolledAt: tail?.lastPolledAt ?? null,
         pollAgeSeconds: Number.isFinite(polled) ? (Date.now() - polled) / 1000 : null,
-        rejected: (await this.destination.rejected(env.name)).length,
+        // A count, not a listing: `status` runs on every monitoring poll, and
+        // each rejected row carries a whole event payload.
+        rejected: await this.destination.rejectedCount(env.name),
         streams: await freshness(this.destination, env.name, this.streams),
       }
     }
@@ -527,6 +529,10 @@ export class SyncEngine {
  * process that looks alive while writing nothing.
  */
 function isFatal(err: unknown): boolean {
+  // A hydration GET wraps whatever the API answered. A denied credential is
+  // no less fatal for having been met on an object GET than on the events
+  // page, and without unwrapping it the tail would retry it forever.
+  if (err instanceof HydrationError) return isFatal(err.cause)
   return err instanceof WorkOSApiError && (err.status === 401 || err.status === 403)
 }
 

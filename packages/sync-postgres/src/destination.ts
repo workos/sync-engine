@@ -15,7 +15,7 @@ import type {
 } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows } from './db/upsert.js'
-import { rejectEvents, listRejected, clearRejected } from './db/rejected.js'
+import { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
 import { isTransientPgError } from './db/errors.js'
 import { migrate } from './schema/migrate.js'
 import { quoteIdent, safeIdentifier } from './schema/ddl.js'
@@ -185,6 +185,10 @@ export class PostgresDestination implements Destination {
 
   rejected(env: string, opts: { ids?: string[] } = {}): Promise<RejectedEvent[]> {
     return listRejected(this.client, this.bookkeepingOpts, env, opts.ids)
+  }
+
+  rejectedCount(env: string): Promise<number> {
+    return countRejected(this.client, this.bookkeepingOpts, env)
   }
 
   clearRejected(env: string, ids: string[]): Promise<number> {

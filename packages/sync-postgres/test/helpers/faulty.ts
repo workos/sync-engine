@@ -16,6 +16,12 @@ export class FaultyDestination extends PostgresDestination {
   poison: string | null = null
   /** Fail every write, as an outage would. */
   failAll = false
+  /**
+   * Fail only multi-row writes: the batch attempt fails, every event succeeds
+   * alone. That is what an interaction between rows, or a transient error the
+   * classifier does not know, looks like to the quarantine.
+   */
+  failBatches = false
   /** What the fault throws; defaults to the shape of a Postgres cast error. */
   fault: () => Error = () =>
     Object.assign(new Error('invalid input syntax for type boolean: "maybe"'), { code: '22P02' })
@@ -24,7 +30,9 @@ export class FaultyDestination extends PostgresDestination {
 
   override async upsert(stream: StreamDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats> {
     const hit =
-      this.failAll || (this.poison !== null && rows.some((r) => r.data['id'] === this.poison))
+      this.failAll ||
+      (this.failBatches && rows.length > 1) ||
+      (this.poison !== null && rows.some((r) => r.data['id'] === this.poison))
     if (hit) {
       this.faults++
       throw this.fault()

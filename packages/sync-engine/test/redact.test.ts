@@ -110,6 +110,7 @@ describe('RedactingDestination', () => {
       setState: async () => {},
       reject: async () => {},
       rejected: async () => [],
+      rejectedCount: async () => 0,
       clearRejected: async () => 0,
     }
     return { inner, calls }

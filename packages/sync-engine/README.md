@@ -148,6 +148,7 @@ class MyDestination implements Destination {
     rows: { event: WorkOSEvent; error: string }[],
   ): Promise<void>;
   rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]>;
+  rejectedCount(env: string): Promise<number>;
   clearRejected(env: string, ids: string[]): Promise<number>;
   isTransientError?(err: unknown): boolean; // optional
 }
@@ -164,7 +165,10 @@ because of a documented failure in a comparable sync engine.
    REST objects, so event writes merge and a whole-row replace would null out
    exactly the columns people join on.
 3. **Deletion is terminal.** `delete` tombstones without a staleness check and
-   never clears the tombstone; only `relink` (a membership re-add) does.
+   never clears the tombstone; only `relink` (a membership re-add) does, and
+   only when the re-add is at least as new as the removal. Events can be
+   replayed from quarantine after newer ones have landed, and an older link
+   must not resurrect a membership removed since.
 4. **Durable on return.** The engine checkpoints its cursor as soon as a write
    resolves. A write must not be buffered past its own call.
 5. **`init` is called before every operation.** It must be idempotent and
@@ -175,12 +179,14 @@ the engine logs but never branches on; a database that cannot tell an insert
 from an update may approximate the split. `liveIds` means non-tombstoned rows,
 in a stable order. `rawRows` returns stored payloads, tombstoned or not.
 
-The last four methods are the **quarantine store**, separate from the mirror.
+The last five methods are the **quarantine store**, separate from the mirror.
 `reject` stores whole raw events keyed by `(env, eventId)` — the archive write
 may itself be what failed, so a reference into it is not enough — and replaces
 the error when an id is rejected again. `rejected` returns them oldest first by
-event id, and `clearRejected` forgets them after a replay. Because they embed
-payloads, `redact` must scrub this store as well as the archive. `isTransientError`
+event id, `rejectedCount` is what `status()` reports on every monitoring poll
+(a count, so it must not fetch the payloads), and `clearRejected` forgets them
+after a replay. Because they embed payloads, `redact` must scrub this store as
+well as the archive. `isTransientError`
 is optional: return `true` for errors that mean the database had a bad moment (a
 dropped connection, a deadlock, a full disk), never for a verdict on the row,
 and the engine will retry instead of ever quarantining on them. Without it,
