@@ -100,6 +100,7 @@ the same setting, the flag wins.
 | `WORKOS_SYNC_POLL_MS`             | `5000`                              | Idle wait between polls, in ms, when the last poll returned nothing.                                                         |
 | `WORKOS_SYNC_LAG_MS`              | `5000`                              | Hold back events younger than this, in ms, before advancing the cursor.                                                      |
 | `WORKOS_SYNC_MAX_EVENTS_PER_TICK` | one page (100)                      | Events to apply per poll, fetched across as many pages as needed.                                                            |
+| `WORKOS_SYNC_LEASE_TTL_MS`        | `60000`                             | How long the tail lease outlives a crashed listener, in ms. The most lag a crash can add before a replacement takes over.    |
 | `LOG_LEVEL`                       | `info`                              | `debug`, `info`, `warn`, `error` or `silent`. Logs are JSON lines on stdout.                                                 |
 
 ### Commands
@@ -108,8 +109,8 @@ the same setting, the flag wins.
 | ----------- | ------------- | ------------------------------------------------------------------------------------------------------------ |
 | `init`      |               | Create the schema and bookkeeping tables. Idempotent; safe on every deploy.                                  |
 | `backfill`  | `--resume`    | Load current state from the REST list endpoints. `--resume` continues from the last checkpoint.              |
-| `listen`    |               | Poll the Events API continuously. Finishes the current batch on `SIGINT` or `SIGTERM`.                       |
-| `tick`      |               | One poll, then exit. For a cron job instead of a long-running process.                                       |
+| `listen`    |               | Poll the Events API continuously as the sole writer; waits if another listener holds the lease. Finishes the current batch on `SIGINT` or `SIGTERM`. |
+| `tick`      |               | One poll, then exit. For a cron job instead of a long-running process. Exits 3 if a listener holds the lease. |
 | `reconcile` | `--repair`    | Diff ids against the API. Exits 2 on drift; `--repair` tombstones missed deletes and inserts missed creates. |
 | `refresh`   |               | Re-list top-level streams to refresh fields that event payloads omit.                                        |
 | `status`    |               | Cursor, time since the last successful poll, and per-stream row counts, tombstones and lag.                  |

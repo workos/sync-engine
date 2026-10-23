@@ -48,8 +48,8 @@ npx workos-sync-postgres listen     # tail the Events API, forever
 | ---------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `init`                 | Create the schema. Idempotent; safe to run on every deploy.                                                     |
 | `backfill [--resume]`  | Page the REST list endpoints for current state.                                                                 |
-| `listen`               | Poll the Events API and apply changes continuously.                                                             |
-| `tick`                 | One poll, then exit — for a cron job instead of a process.                                                      |
+| `listen`               | Poll the Events API and apply changes continuously, as the sole writer; waits if another listener has the lease. |
+| `tick`                 | One poll, then exit — for a cron job instead of a process. Exits 3 if a listener holds the lease.               |
 | `reconcile [--repair]` | Diff ids against the API; `--repair` tombstones and inserts. Exits 2 on drift unless repairing.                 |
 | `refresh`              | Re-list top-level streams to refresh fields that event payloads omit. Re-run `backfill` for per-parent streams. |
 | `status`               | Cursor, time since the last successful poll, and per-stream row counts and lag.                                 |
@@ -70,6 +70,7 @@ different label each; cursors are kept per label, so they never collide.
 | `WORKOS_SYNC_POLL_MS`             | `5000`                              | Idle wait between polls.                                           |
 | `WORKOS_SYNC_LAG_MS`              | `5000`                              | Hold back events younger than this.                                |
 | `WORKOS_SYNC_MAX_EVENTS_PER_TICK` | one page                            | Events to apply per poll.                                          |
+| `WORKOS_SYNC_LEASE_TTL_MS`        | `60000`                             | How long the tail lease outlives a crashed listener.               |
 | `WORKOS_API_URL`                  | `https://api.workos.com`            | API base URL.                                                      |
 | `LOG_LEVEL`                       | `info`                              | `debug`, `info`, `warn`, `error` or `silent`.                      |
 

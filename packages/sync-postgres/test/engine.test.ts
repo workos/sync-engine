@@ -3,7 +3,7 @@
  * fake WorkOS API and a real Postgres.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
+import { SyncEngine, WorkOSClient, LeaseHeldError, silentLogger } from '@workos/sync-engine'
 import { createTestDb } from './helpers/pg.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
 import { PostgresDestination } from '../src/destination.js'
@@ -705,6 +705,94 @@ describe('reconciliation', () => {
     row = await db.query<{ external_id: string | null }>(`select external_id from workos.users`)
     expect(row.rows[0]!.external_id).toMatch(/^ext_/)
     expect(user['id']).toBeTruthy()
+  })
+})
+
+describe('single-writer lease', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+  })
+  afterEach(async () => {
+    await db.close()
+  })
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const until = async (ok: () => Promise<boolean>, timeoutMs = 5_000) => {
+    const deadline = Date.now() + timeoutMs
+    while (!(await ok())) {
+      if (Date.now() > deadline) throw new Error('condition not met in time')
+      await sleep(10)
+    }
+  }
+  const count = async (table: string) => {
+    const r = await db.query<{ n: string }>(`select count(*)::text as n from workos.${table}`)
+    return Number(r.rows[0]!.n)
+  }
+
+  it('tick() refuses to run while another process holds the lease', async () => {
+    fake.createUser()
+    const engine = makeEngine(db, fake)
+    await engine.init()
+    // Another process, as far as the database can tell.
+    const other = new PostgresDestination({ db, schema: 'workos' })
+    const theirs = await other.acquireLease('prod', 'other-host:42:abc', 60_000)
+
+    const err = await engine.tick().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LeaseHeldError)
+    expect((err as LeaseHeldError).holder).toBe('other-host:42:abc')
+    expect((err as LeaseHeldError).expiresAt).toBe(theirs.expiresAt)
+    expect((err as LeaseHeldError).message).toContain('other-host:42:abc')
+    // Nothing was applied, and the other process still holds the lease.
+    expect(await count('users')).toBe(0)
+    expect(await other.getLease('prod')).toMatchObject({ holder: 'other-host:42:abc' })
+
+    // Once it lets go, a cron tick runs and leaves the lease free behind it.
+    await other.releaseLease('prod', 'other-host:42:abc')
+    expect((await engine.tick()).processed).toBe(1)
+    expect(await other.getLease('prod')).toBeNull()
+  })
+
+  it('listen() waits for the lease, takes over when it is released, and gives it back on stop', async () => {
+    fake.createUser()
+    const warnings: Record<string, unknown>[] = []
+    const engine = makeEngine(db, fake, TIER1, {
+      pollIntervalMs: 20,
+      leaseTtlMs: 2_000,
+      logger: { ...silentLogger, warn: (_m: string, f?: Record<string, unknown>) => warnings.push(f ?? {}) },
+    })
+    await engine.init()
+    const other = new PostgresDestination({ db, schema: 'workos' })
+    await other.acquireLease('prod', 'old-process', 60_000)
+
+    // The rolling-deploy case: the new process starts while the old one is
+    // still tailing. It must idle, not fail and not write.
+    const listening = engine.listen()
+    await sleep(150)
+    expect(await count('users')).toBe(0)
+    expect(warnings).toContainEqual(expect.objectContaining({ env: 'prod', holder: 'old-process' }))
+    // Waiting is logged once, not once per poll.
+    expect(warnings.filter((w) => w['holder'] === 'old-process')).toHaveLength(1)
+
+    // The old process stops and releases; the new one picks up within a poll.
+    await other.releaseLease('prod', 'old-process')
+    await until(async () => (await count('users')) === 1)
+    const mine = await other.getLease('prod')
+    expect(mine?.holder).toMatch(/^.+:\d+:[0-9a-f]{6}$/)
+    expect((await engine.status())['prod']!.lease).toEqual(mine)
+
+    // While it is tailing, a cron tick elsewhere is refused.
+    expect((await other.acquireLease('prod', 'cron', 60_000)).holder).toBe(mine!.holder)
+
+    engine.stop()
+    await listening
+    // Released immediately, not left to expire: the replacement need not wait.
+    expect(await other.getLease('prod')).toBeNull()
+    expect((await engine.status())['prod']!.lease).toBeNull()
   })
 })
 

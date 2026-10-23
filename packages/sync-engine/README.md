@@ -67,6 +67,7 @@ and the staleness gate decides which version wins.
 | `lagWindowMs`      | `5000`                              | Never advance the cursor past events younger than this.                                                                                       |
 | `pageSize`         | `100`                               | Page size for list and event calls.                                                                                                           |
 | `maxEventsPerTick` | one page                            | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive.                       |
+| `leaseTtlMs`       | `60000`                             | How long the events-tail lease outlives a crashed process. `listen` renews it every third of this; a clean stop releases it immediately.      |
 | `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                               |
 
 Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
@@ -74,10 +75,19 @@ Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
 `processWebhook()`, `close()`. Every method applies the schema first, so
 `init()` is optional.
 
+The tail has one writer per environment. `listen()` takes a lease in the
+destination before polling and renews it while it runs; if another process
+holds it, `listen()` waits, which is what a rolling deploy needs. `tick()`
+takes the lease for one poll and throws `LeaseHeldError` (with `holder` and
+`expiresAt`) instead of waiting. `backfill`, `reconcile`, `refresh`, `status`
+and `redact` do not take it; they are idempotent and run safely alongside a
+tail.
+
 `status()` reports, per environment, the cursor, `pollAgeSeconds` (time since
 the last successful poll; alert on this), `cursorAgeDays` (age of the newest
-event applied; distance from the 90-day retention cliff, not liveness), and
-per-stream row counts, tombstones, staleness and lag.
+event applied; distance from the 90-day retention cliff, not liveness),
+`lease` (who is tailing it now, or `null`), and per-stream row counts,
+tombstones, staleness and lag.
 
 A rejected credential (401 or 403) and a cursor that pages backwards are
 fatal: the engine stops rather than retrying. Everything else is retried or
@@ -93,6 +103,8 @@ entirely yours.
 import type {
   Destination,
   FreshnessRow,
+  Lease,
+  LeaseResult,
   Logger,
   Row,
   StreamDef,
@@ -128,10 +140,14 @@ class MyDestination implements Destination {
 
   getState<T>(env: string, stream: string): Promise<T | null>;
   setState(env: string, stream: string, state: unknown): Promise<void>;
+
+  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult>;
+  releaseLease(env: string, holder: string): Promise<void>;
+  getLease(env: string): Promise<Lease | null>;
 }
 ```
 
-The engine relies on five properties of your implementation. Each one exists
+The engine relies on six properties of your implementation. Each one exists
 because of a documented failure in a comparable sync engine.
 
 1. **Staleness gate, `>=` not `>`.** `upsert` rejects a row whose `updatedAt`
@@ -147,6 +163,14 @@ because of a documented failure in a comparable sync engine.
    resolves. A write must not be buffered past its own call.
 5. **`init` is called before every operation.** It must be idempotent and
    cheap once the schema is current — cache that, rather than re-querying.
+6. **`acquireLease` is atomic.** Of two processes asking for the same
+   `(env)` at once, exactly one gets `acquired: true`; the other is told the
+   holder. It succeeds when the lease is free, expired by the _database's_
+   clock, or already held by `holder` (a renewal). `releaseLease` is a no-op
+   for anyone but the holder, and `getLease` returns `null` for an expired
+   row. Without this, a rolling deploy has two processes advancing one cursor.
+   In SQL it is one `INSERT ... ON CONFLICT DO UPDATE ... WHERE` on a row
+   keyed by `(syncId, env)`; see `db/lease.ts` in the Postgres destination.
 
 `WriteStats` (`created` / `updated` / `skipped` / `deleted`) is a health metric
 the engine logs but never branches on; a database that cannot tell an insert

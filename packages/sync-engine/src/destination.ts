@@ -18,6 +18,10 @@
  *   and never clears the tombstone; only `relink` (membership re-add) does.
  * - **Durable on return.** The engine checkpoints its cursor as soon as a
  *   write resolves, so a write must not be buffered past its own call.
+ * - **One writer per cursor.** `acquireLease` is atomic: of two processes
+ *   asking at once, exactly one is told it holds the lease. The tail runs
+ *   under it so a rolling deploy cannot have both the old and the new process
+ *   advancing the same cursor.
  *
  * The `created`/`updated`/`skipped` split in `WriteStats` is a health metric
  * the engine logs but never branches on; an engine that cannot tell an insert
@@ -55,6 +59,24 @@ export interface FreshnessRow {
   lagSampleSize: number
 }
 
+/** Who holds the events-tail lease for one environment, and until when (ISO-8601). */
+export interface Lease {
+  holder: string
+  expiresAt: string
+}
+
+export interface LeaseResult {
+  /** True when `holder` now holds the lease, whether freshly taken or renewed. */
+  acquired: boolean
+  /**
+   * The current holder. When `acquired` is false this names the process to
+   * wait for; it is null if the lease was released between the attempt and
+   * the read, in which case the next attempt will succeed.
+   */
+  holder: string | null
+  expiresAt: string | null
+}
+
 export interface Destination {
   /**
    * Connect if needed and create or upgrade the schema for `streams`. Called
@@ -83,4 +105,18 @@ export interface Destination {
   /** Cursor and run state, keyed by `(env, stream)`. */
   getState<T>(env: string, stream: string): Promise<T | null>
   setState(env: string, stream: string, state: unknown): Promise<void>
+
+  /**
+   * Take or renew the single-writer lease for `env`, atomically. Succeeds when
+   * the lease is free, expired, or already held by `holder`; otherwise it is
+   * left alone and the result names who holds it. A lease is scoped to this
+   * destination's sync identifier, so two syncs sharing a database never
+   * contend. It is held in the database, not the connection, so it survives
+   * pool churn and needs no pinned session.
+   */
+  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult>
+  /** Give the lease back, only if `holder` holds it. A no-op for anyone else. */
+  releaseLease(env: string, holder: string): Promise<void>
+  /** The current, unexpired lease for `env`, or null when it is free. Read-only. */
+  getLease(env: string): Promise<Lease | null>
 }

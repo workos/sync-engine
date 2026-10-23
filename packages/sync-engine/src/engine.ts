@@ -10,8 +10,16 @@
  *
  * Steps 2 and 3 overlap on purpose. Anything that changes mid-backfill is
  * replayed in step 3, and the staleness gate decides which version wins.
+ *
+ * Step 4 runs under a single-writer lease held in the destination. Without
+ * it, a rolling deploy has the old and the new process both advancing the
+ * same cursor for as long as they overlap. Everything else — backfill,
+ * reconcile, refresh, status, redact — is idempotent and runs alongside the
+ * tail without taking it.
  */
-import type { Destination, FreshnessRow } from './destination.js'
+import os from 'node:os'
+import { randomBytes } from 'node:crypto'
+import type { Destination, FreshnessRow, Lease } from './destination.js'
 import { StateStore } from './state.js'
 import { STREAMS, streamByName, defaultStreams, subscribedEventTypes } from './catalog.js'
 import { WorkOSClient, WorkOSApiError } from './workos/client.js'
@@ -55,6 +63,8 @@ export interface EnvironmentStatus {
   lastPolledAt: string | null
   /** Seconds since `lastPolledAt`. This is the number to alert on for a stalled sync. */
   pollAgeSeconds: number | null
+  /** Which process is tailing this environment right now. Null when nothing is. */
+  lease: Lease | null
   streams: FreshnessRow[]
 }
 
@@ -63,6 +73,30 @@ export interface EngineDeps {
   clientFor?: (env: EnvironmentConfig) => WorkOSClient
 }
 
+/**
+ * Thrown by `tick()` when another process holds the events-tail lease. A
+ * cron-driven tick must not wait — the next run is minutes away anyway — so
+ * it fails fast and names the holder, which is usually a `listen` that
+ * someone forgot was running.
+ */
+export class LeaseHeldError extends Error {
+  constructor(
+    readonly env: string,
+    readonly holder: string | null,
+    readonly expiresAt: string | null,
+  ) {
+    super(
+      `events tail lease for environment "${env}" is held by ${holder ?? 'another process'}` +
+        (expiresAt ? ` until ${expiresAt}` : ''),
+    )
+    this.name = 'LeaseHeldError'
+  }
+}
+
+const DEFAULT_LEASE_TTL_MS = 60_000
+/** Waiting on a lease is the normal state during a deploy, not an incident; one line a minute is plenty. */
+const LEASE_WARN_INTERVAL_MS = 60_000
+
 export class SyncEngine {
   readonly streams: StreamDef[]
   private destination: Destination
@@ -70,6 +104,16 @@ export class SyncEngine {
   private logger: Logger
   private clients = new Map<string, WorkOSClient>()
   private stopping = false
+  /**
+   * The identity leases are held under. Host and pid make it recognisable in
+   * logs; the random suffix keeps two engines in one process (or a recycled
+   * pid on a restarted host) from passing as the same holder.
+   */
+  private readonly holder = `${os.hostname()}:${process.pid}:${randomBytes(3).toString('hex')}`
+  /** Environments whose lease `listen()` currently holds. */
+  private held = new Set<string>()
+  private heartbeat: NodeJS.Timeout | undefined
+  private lastLeaseWarn = 0
   /** Event types passed to `GET /events`, which requires them. */
   readonly eventTypes: string[]
   /** Effective hydration setting, after defaults. */
@@ -215,9 +259,34 @@ export class SyncEngine {
     return results
   }
 
-  /** One poll of the events tail across every environment. */
+  /**
+   * One poll of the events tail across every environment, under the lease.
+   * Throws `LeaseHeldError` rather than waiting when another process has it.
+   * The lease is released on return unless `listen()` in this engine already
+   * holds it, so a webhook nudge never drops the tail's own lease.
+   */
   async tick(): Promise<{ processed: number; stats: WriteStats }> {
     await this.init()
+    const taken: string[] = []
+    try {
+      for (const env of this.config.environments) {
+        if (this.held.has(env.name)) continue
+        const r = await this.destination.acquireLease(env.name, this.holder, this.leaseTtlMs)
+        if (!r.acquired) throw new LeaseHeldError(env.name, r.holder, r.expiresAt)
+        taken.push(env.name)
+      }
+      return await this.poll()
+    } finally {
+      for (const env of taken) await this.destination.releaseLease(env, this.holder)
+    }
+  }
+
+  private get leaseTtlMs(): number {
+    return this.config.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS
+  }
+
+  /** The poll itself, with no lease handling: the caller guarantees exclusivity. */
+  private async poll(): Promise<{ processed: number; stats: WriteStats }> {
     let processed = 0
     let stats = emptyStats()
 
@@ -310,25 +379,115 @@ export class SyncEngine {
     return { processed, stats }
   }
 
-  /** Poll until `stop()`. */
+  /**
+   * Poll until `stop()`, as the sole writer. While another process holds the
+   * lease this waits rather than failing: that is the rolling-deploy case,
+   * where the new process must idle until the old one stops.
+   */
   async listen(): Promise<void> {
     await this.init()
     this.stopping = false
     const interval = this.config.pollIntervalMs ?? 5_000
+    const ttl = this.leaseTtlMs
     this.logger.info('listening', {
       environments: this.config.environments.map((e) => e.name),
       streams: this.streams.length,
       pollIntervalMs: interval,
+      holder: this.holder,
+      leaseTtlMs: ttl,
     })
-    while (!this.stopping) {
-      const { processed } = await this.tick()
-      // Drain fast when there is a backlog; idle politely when there is not.
-      if (!this.stopping && processed === 0) await sleep(interval)
+    // The loop renews before every poll, but a single poll can run longer
+    // than the TTL (a backlog, a slow database), so a background heartbeat
+    // keeps the lease alive mid-tick as well. It is not cleared by `stop()`
+    // on purpose: the final batch after a SIGTERM must stay covered until it
+    // is written. Unref'd so it never keeps a finished process alive.
+    clearInterval(this.heartbeat)
+    this.heartbeat = setInterval(() => void this.renewHeld(), Math.max(1, Math.floor(ttl / 3)))
+    this.heartbeat.unref()
+    try {
+      while (!this.stopping) {
+        if (!(await this.acquireAll(interval))) break
+        const { processed } = await this.poll()
+        // Drain fast when there is a backlog; idle politely when there is not.
+        if (!this.stopping && processed === 0) await sleep(interval)
+      }
+    } finally {
+      clearInterval(this.heartbeat)
+      this.heartbeat = undefined
+      // Hand over immediately. Without this a replacement waits a full TTL.
+      await this.releaseHeld()
     }
   }
 
   stop(): void {
     this.stopping = true
+  }
+
+  /**
+   * Take or renew the lease for every environment, polling at the listen
+   * interval until all are held or `stop()` is called. Returns false in the
+   * latter case. Renewing the ones already held on every pass means nothing
+   * we hold lapses while we wait for the rest.
+   */
+  private async acquireAll(interval: number): Promise<boolean> {
+    while (!this.stopping) {
+      const blocked: { env: string; holder: string | null; expiresAt: string | null }[] = []
+      for (const env of this.config.environments) {
+        const r = await this.destination.acquireLease(env.name, this.holder, this.leaseTtlMs)
+        if (r.acquired) {
+          this.held.add(env.name)
+          continue
+        }
+        if (this.held.delete(env.name)) {
+          // We had it and it lapsed: this process stalled for longer than the
+          // TTL. The other process is now the writer; fall back to waiting.
+          this.logger.error('lost the events tail lease; another process took over', {
+            env: env.name,
+            holder: r.holder,
+          })
+        }
+        blocked.push({ env: env.name, holder: r.holder, expiresAt: r.expiresAt })
+      }
+      if (blocked.length === 0) return true
+      if (Date.now() - this.lastLeaseWarn >= LEASE_WARN_INTERVAL_MS) {
+        this.lastLeaseWarn = Date.now()
+        for (const b of blocked) {
+          this.logger.warn('events tail lease is held by another process; waiting', b)
+        }
+      }
+      await sleep(interval)
+    }
+    return false
+  }
+
+  /** Heartbeat body. Failures are logged, not thrown: the next loop pass renews again. */
+  private async renewHeld(): Promise<void> {
+    for (const env of [...this.held]) {
+      try {
+        const r = await this.destination.acquireLease(env, this.holder, this.leaseTtlMs)
+        if (!r.acquired) {
+          this.held.delete(env)
+          this.logger.error('lost the events tail lease; another process took over', {
+            env,
+            holder: r.holder,
+          })
+        }
+      } catch (err) {
+        this.logger.warn('lease renewal failed', { env, error: String(err) })
+      }
+    }
+  }
+
+  private async releaseHeld(): Promise<void> {
+    for (const env of [...this.held]) {
+      this.held.delete(env)
+      try {
+        await this.destination.releaseLease(env, this.holder)
+      } catch (err) {
+        // Not worth failing a shutdown over: the lease expires by itself.
+        this.logger.warn('lease release failed; it will expire on its own', { env, error: String(err) })
+      }
+    }
   }
 
   async reconcile(options: { repair?: boolean; streams?: string[] } = {}): Promise<{
@@ -393,6 +552,7 @@ export class SyncEngine {
         cursorAgeDays: cursorAgeDays(tail?.lastEventAt),
         lastPolledAt: tail?.lastPolledAt ?? null,
         pollAgeSeconds: Number.isFinite(polled) ? (Date.now() - polled) / 1000 : null,
+        lease: await this.destination.getLease(env.name),
         streams: await freshness(this.destination, env.name, this.streams),
       }
     }
@@ -420,6 +580,7 @@ export class SyncEngine {
 
   async close(): Promise<void> {
     this.stop()
+    await this.releaseHeld()
     await this.destination.close()
   }
 }

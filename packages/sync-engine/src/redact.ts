@@ -14,7 +14,7 @@
  *
  * Not to be confused with `Destination.redact`, which erases one subject.
  */
-import type { Destination, FreshnessRow, Row, WriteMode } from './destination.js'
+import type { Destination, FreshnessRow, Lease, LeaseResult, Row, WriteMode } from './destination.js'
 import type { Logger, StreamDef, WriteStats } from './types.js'
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -111,6 +111,18 @@ export class RedactingDestination implements Destination {
 
   setState(env: string, stream: string, state: unknown): Promise<void> {
     return this.inner.setState(env, stream, state)
+  }
+
+  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult> {
+    return this.inner.acquireLease(env, holder, ttlMs)
+  }
+
+  releaseLease(env: string, holder: string): Promise<void> {
+    return this.inner.releaseLease(env, holder)
+  }
+
+  getLease(env: string): Promise<Lease | null> {
+    return this.inner.getLease(env)
   }
 }
 

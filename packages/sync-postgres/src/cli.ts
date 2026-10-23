@@ -14,6 +14,7 @@
  */
 import {
   SyncEngine,
+  LeaseHeldError,
   STREAMS,
   DEFAULT_HYDRATE,
   defaultStreams,
@@ -111,6 +112,7 @@ function configFromEnv(flags: Record<string, string | boolean>): SyncEngineConfi
     maxEventsPerTick: process.env['WORKOS_SYNC_MAX_EVENTS_PER_TICK']
       ? Number(process.env['WORKOS_SYNC_MAX_EVENTS_PER_TICK'])
       : undefined,
+    leaseTtlMs: Number(process.env['WORKOS_SYNC_LEASE_TTL_MS'] ?? 60_000),
     logger: createLogger((process.env['LOG_LEVEL'] as LogLevel) ?? 'info'),
   }
 }
@@ -124,7 +126,9 @@ Commands
   init                 Create the schema and bookkeeping tables
   backfill [--resume]  Load current state from the REST list endpoints
   listen               Tail the Events API and apply changes continuously
-  tick                 One poll of the Events API, then exit (for a cron job)
+                       (waits while another listener holds the lease)
+  tick                 One poll of the Events API, then exit (for a cron job);
+                       exits 3 if a listener holds the lease
   reconcile [--repair] Compare the mirror against the API; --repair fixes drift
   refresh              Re-list top-level streams (refreshes fields events omit)
   status               Cursor position, poll age, and per-stream freshness
@@ -148,6 +152,7 @@ Environment
   WORKOS_SYNC_POLL_MS          Idle wait between polls (default: 5000)
   WORKOS_SYNC_LAG_MS           Hold back events younger than this (default: 5000)
   WORKOS_SYNC_MAX_EVENTS_PER_TICK  Events to apply per poll (default: one page)
+  WORKOS_SYNC_LEASE_TTL_MS     How long the tail lease outlives a crashed listener (default: 60000)
   LOG_LEVEL                    debug | info | warn | error | silent
 `
 
@@ -196,9 +201,19 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         return 0
       }
       case 'tick': {
-        const r = await engine.tick()
-        process.stdout.write(JSON.stringify(r, null, 2) + '\n')
-        return 0
+        try {
+          const r = await engine.tick()
+          process.stdout.write(JSON.stringify(r, null, 2) + '\n')
+          return 0
+        } catch (err) {
+          // Distinct from a failure (1) and from drift (2): the sync is fine,
+          // something else is tailing it. Usually a `listen` left running.
+          if (err instanceof LeaseHeldError) {
+            process.stderr.write(`${err.message}; nothing to do\n`)
+            return 3
+          }
+          throw err
+        }
       }
       case 'reconcile': {
         const r = await engine.reconcile({ repair: Boolean(flags['repair']) })

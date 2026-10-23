@@ -10,10 +10,10 @@
  * seconds. Read from it for joins, lists, dashboards, analytics and agents;
  * keep writes and authoritative post-signup checks on the WorkOS API.
  */
-export { SyncEngine } from './engine.js'
-export type { EngineDeps } from './engine.js'
+export { SyncEngine, LeaseHeldError } from './engine.js'
+export type { EngineDeps, EnvironmentStatus } from './engine.js'
 
-export type { Destination, FreshnessRow, Row, WriteMode } from './destination.js'
+export type { Destination, FreshnessRow, Lease, LeaseResult, Row, WriteMode } from './destination.js'
 export { StateStore } from './state.js'
 export { redactPayload, redactRows, RedactingDestination, redacting } from './redact.js'
 

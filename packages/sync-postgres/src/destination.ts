@@ -5,6 +5,8 @@
 import type {
   Destination,
   FreshnessRow,
+  Lease,
+  LeaseResult,
   Logger,
   Row,
   StreamDef,
@@ -13,6 +15,7 @@ import type {
 } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows } from './db/upsert.js'
+import { acquireLease, releaseLease, getLease } from './db/lease.js'
 import { migrate } from './schema/migrate.js'
 import { quoteIdent, safeIdentifier } from './schema/ddl.js'
 
@@ -179,5 +182,17 @@ export class PostgresDestination implements Destination {
          set state = excluded.state, updated_at = now()`,
       [this.syncId, env, stream, JSON.stringify(state)],
     )
+  }
+
+  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult> {
+    return acquireLease(this.client, this.schema, this.syncId, env, holder, ttlMs)
+  }
+
+  releaseLease(env: string, holder: string): Promise<void> {
+    return releaseLease(this.client, this.schema, this.syncId, env, holder)
+  }
+
+  getLease(env: string): Promise<Lease | null> {
+    return getLease(this.client, this.schema, this.syncId, env)
   }
 }

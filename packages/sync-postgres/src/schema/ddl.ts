@@ -106,7 +106,11 @@ export function createSchemaSql(schema: string): string {
   return `create schema if not exists ${quoteIdent(schema)};`
 }
 
-/** Engine bookkeeping: cursors and applied-schema fingerprints. */
+/**
+ * Engine bookkeeping: cursors, applied-schema fingerprints, and the
+ * single-writer lease for the events tail. These run before the fingerprint
+ * check, so a table added here reaches existing databases on the next start.
+ */
 export function bookkeepingSql(schema: string): string {
   const s = quoteIdent(schema)
   return `
@@ -123,6 +127,15 @@ create table if not exists ${s}."_migrations" (
   fingerprint text primary key,
   applied_at  timestamptz not null default now(),
   detail      jsonb
+);
+
+create table if not exists ${s}."_sync_lease" (
+  sync_id     text not null,
+  env         text not null,
+  holder      text not null,
+  acquired_at timestamptz not null default now(),
+  expires_at  timestamptz not null,
+  primary key (sync_id, env)
 );`.trim()
 }
 
