@@ -6,7 +6,7 @@
  * covered by the drift and repair cases in engine.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { streamByName, STREAMS } from '@workos/sync-engine'
+import { diffIdsInMemory, diffStream, streamByName, STREAMS, WorkOSClient } from '@workos/sync-engine'
 import { createTestDb } from './helpers/pg.js'
 import { migrate } from '../src/schema/migrate.js'
 import { upsertRows, deleteRows } from '../src/db/upsert.js'
@@ -64,6 +64,74 @@ describe('diff in sql', () => {
     expect(diff.localOnly).toEqual(['user_00001'])
     expect(diff.remoteOnly).toEqual([four])
     expect(diff.skipped).toBe(0)
+  })
+
+  it('compares complete composite keys in SQL and in memory', async () => {
+    const destination = new PostgresDestination({ db })
+    const roles = streamByName('organization_roles')!
+    const removed = { organization_id: 'org_1', slug: 'admin' }
+    const kept = { organization_id: 'org_1', slug: 'auditor' }
+    const elsewhere = { organization_id: 'org_2', slug: 'admin' }
+    const added = { organization_id: 'org_1', slug: 'member', permissions: ['read'] }
+    await destination.upsert(roles, 'prod', [removed, kept, elsewhere].map((data) => ({
+      data, updatedAt: '2026-01-01T00:00:00.000Z',
+    })), 'replace')
+    const remote = [kept, elsewhere, added, { ...added, permissions: [] },
+      { organization_id: 'org_1' }, { slug: 'admin' }, { organization_id: 'org_1', slug: '' }]
+
+    const diff = await diffIdsInSql(db, opts, roles, 'prod', pages(remote, 1))
+
+    expect(diff).toEqual({
+      matched: 2,
+      localOnly: ['["org_1","admin"]'],
+      remoteOnly: [added],
+      skipped: 3,
+    })
+    expect(await destination.liveIds(roles, 'prod')).toEqual([
+      '["org_1","admin"]', '["org_1","auditor"]', '["org_2","admin"]',
+    ])
+    expect(await diffIdsInMemory(destination, roles, 'prod', pages(remote, 1))).toEqual({
+      matched: diff.matched, localOnly: diff.localOnly, remoteOnly: diff.remoteOnly,
+    })
+  })
+
+  it('repairs a missing role and a missed deletion without touching sibling roles', async () => {
+    const destination = new PostgresDestination({ db })
+    const roles = streamByName('organization_roles')!
+    const removed = { organization_id: 'org_1', slug: 'admin' }
+    const kept = { organization_id: 'org_1', slug: 'auditor' }
+    const added = { organization_id: 'org_1', slug: 'member' }
+    const updatedAt = '2026-01-01T00:00:00.000Z'
+    await destination.upsert(streamByName('organizations')!, 'prod', [
+      { data: { id: 'org_1' }, updatedAt },
+    ], 'replace')
+    await destination.upsert(roles, 'prod', [removed, kept].map((data) => ({ data, updatedAt })), 'replace')
+    const api = new WorkOSClient({
+      apiKey: 'sk_test_1',
+      fetchImpl: async (input) => {
+        expect(new URL(String(input)).pathname).toBe('/authorization/organizations/org_1/roles')
+        return Response.json({ data: [kept, added] })
+      },
+    })
+
+    const result = await diffStream(destination, api, 'prod', roles, { repair: true })
+
+    expect(result).toMatchObject({
+      matched: 1,
+      localOnly: ['["org_1","admin"]'],
+      remoteOnly: ['["org_1","member"]'],
+      repaired: { deleted: 1, inserted: 1 },
+    })
+    const rows = await db.query(`select slug, "_deleted_at" is not null as deleted
+      from workos.organization_roles order by slug`)
+    expect(rows.rows).toEqual([
+      { slug: 'admin', deleted: true },
+      { slug: 'auditor', deleted: false },
+      { slug: 'member', deleted: false },
+    ])
+    expect(await diffStream(destination, api, 'prod', roles)).toMatchObject({
+      matched: 2, localOnly: [], remoteOnly: [],
+    })
   })
 
   it('stages in batches of 500 across pages, keeping the first copy of a repeated id', async () => {

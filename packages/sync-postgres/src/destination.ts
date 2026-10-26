@@ -16,6 +16,7 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
+import { encodeKey } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 import { diffIdsInSql } from './db/reconcile.js'
@@ -130,13 +131,13 @@ export class PostgresDestination implements Destination {
   }
 
   async liveIds(stream: StreamDef, env: string): Promise<string[]> {
-    const key = ident(stream.key[0]!)
-    const r = await this.client.query<{ id: string }>(
-      `select ${key} as id from ${this.table(stream)}
-       where "_env" = $1 and "_deleted_at" is null order by ${key}`,
+    const keys = stream.key.map((name) => `${ident(name)}::text`).join(', ')
+    const r = await this.client.query<{ id: string[] }>(
+      `select array[${keys}] as id from ${this.table(stream)}
+       where "_env" = $1 and "_deleted_at" is null order by id`,
       [env],
     )
-    return r.rows.map((row) => row.id)
+    return r.rows.map((row) => encodeKey(row.id))
   }
 
   async rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]> {

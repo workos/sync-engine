@@ -251,15 +251,24 @@ The engine relies on seven properties of your implementation.
 `WriteStats` (`created` / `updated` / `skipped` / `deleted`) is a health metric
 the engine logs but never branches on; a database that cannot tell an insert
 from an update may approximate the split. `liveIds` means non-tombstoned rows,
-in a stable order. `rawRows` returns stored payloads, tombstoned or not.
+in a stable order. Each id represents the **whole** `stream.key`: a plain
+string for a single-column key, or a JSON array of strings in key order for a
+composite key (for example, `'["org_1","admin"]'` for an organization role).
+Use the exported `encodeKey(values)` to serialize these consistently.
+`rawRows` returns stored payloads, tombstoned or not.
 
 `diffIds` is the reconcile set difference. The engine streams the stream's
 list endpoint to it one page at a time; the destination must stage those pages
 in the database and diff them there against the live rows, so memory is
 bounded by the drift rather than the stream. It returns `matched`, the
-`localOnly` ids (only ever tombstoned) and the `remoteOnly` payloads (only
-ever re-inserted). The live set must be captured before the first page is
-consumed: listing takes time and the tail keeps writing, so a row inserted
+`localOnly` keys in the same encoding as `liveIds` (only ever tombstoned) and
+the `remoteOnly` payloads (only ever re-inserted). Compare every key component,
+not just the first: two different roles in one organization are different
+rows. `diffStream` uses the same encoding for both sides of its report and
+reconstructs all key fields when repairing missed deletes.
+
+The live set must be captured before the first page is consumed: listing
+takes time and the tail keeps writing, so a row inserted
 mid-listing must not become `localOnly` and be tombstoned by repair. The
 engine reads nothing from the destination while `diffIds` runs, so an
 implementation may hold one pinned connection for the duration. A destination

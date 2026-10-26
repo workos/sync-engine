@@ -21,7 +21,7 @@ import { streamByName } from '../catalog.js'
 import type { WorkOSClient } from '../workos/client.js'
 import type { Logger, StreamDef } from '../types.js'
 import { redacting } from '../redact.js'
-import { remoteKey } from './diff.js'
+import { keyPayload, remoteKey } from './diff.js'
 
 export async function freshness(
   destination: Destination,
@@ -79,7 +79,6 @@ export async function diffStream(
   }
 
   const list = stream.list
-  const keyCol = stream.key[0]!
 
   const rateKey =
     list.rateKey === 'directory'
@@ -150,7 +149,7 @@ export async function diffStream(
       const s = await destination.delete(
         stream,
         env,
-        localOnly.map((id) => ({ data: { [keyCol]: id }, updatedAt: now })),
+        localOnly.map((id) => ({ data: keyPayload(stream, id), updatedAt: now })),
       )
       deleted = s.deleted
     }
