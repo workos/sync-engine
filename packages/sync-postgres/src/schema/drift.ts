@@ -141,7 +141,10 @@ async function expectedColumns(db: SqlClient, stream: StreamDef, schema: string)
     const tmp = quoteIdent(safeIdentifier(`_drift_${stream.name}`))
     const cols = [`${quoteIdent(RAW)} jsonb`, ...stream.columns.map((c) => generatedColumnSql(c, schema))]
     await tx.exec(`create temp table ${tmp} (${cols.join(', ')}) on commit drop;`)
-    return liveColumns(tx, `pg_temp.${tmp}`)
+    const columns = await liveColumns(tx, `pg_temp.${tmp}`)
+    // Migration savepoints do not trigger ON COMMIT DROP before the next drift check.
+    await tx.exec(`drop table pg_temp.${tmp};`)
+    return columns
   })
 }
 
@@ -258,7 +261,8 @@ export interface RepairResult {
   /**
    * Accepted for repair, but the DDL failed — typically a view depends on the
    * column (SQLSTATE 2BP01). Nothing changed for these: each column's DDL runs
-   * in its own transaction, so a failed re-add never leaves a column dropped.
+   * in its own transaction or migration savepoint, so a failed re-add never
+   * leaves a column dropped.
    */
   failed: { drift: ColumnDrift; error: string }[]
 }
@@ -271,10 +275,10 @@ export interface RepairResult {
  *
  * Several processes can share one database and start together, each
  * detecting the same drift before any of them repairs it. Each column's
- * transaction therefore takes an advisory lock on the table and reads the
- * column again before dropping it: the second process to arrive finds the
- * column already rebuilt and leaves it alone, rather than rewriting the whole
- * table a second time behind an exclusive lock. A transaction-scoped
+ * transaction or migration savepoint takes an advisory lock on the table and
+ * reads the column again before dropping it: the second process finds it
+ * already rebuilt and leaves it alone, rather than rewriting the whole table
+ * a second time behind an exclusive lock. A transaction-scoped
  * advisory lock is used rather than a table lock so that nothing is blocked
  * until the drop itself.
  *
