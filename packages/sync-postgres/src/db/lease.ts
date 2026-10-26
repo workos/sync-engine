@@ -14,7 +14,7 @@
  * session. A row with an expiry survives pool churn, is visible in `status`,
  * and times out on its own when the holder dies.
  *
- * Expiry is judged by the database clock (`now()`), never the client's, so
+ * Expiry is judged by the database clock, never the client's, so
  * two hosts with skewed clocks still agree on who holds it.
  */
 import type { Lease, LeaseResult } from '@workos/sync-engine'
@@ -77,11 +77,10 @@ export async function releaseLease(
 }
 
 /**
- * The write the lease exists to fence. One statement: the row is inserted or
- * updated only if `holder` has the unexpired lease for `env` and the stored
- * state is still `expected` (`null` for no row). The `on conflict ... where`
- * re-checks the stored state under the row lock, so a write that lands
- * between this statement's snapshot and its update is caught as well.
+ * Lock the cursor before the lease so waiting for an existing cursor row does
+ * not prevent takeover. The lease lock rechecks ownership and holds it through
+ * the write; clock_timestamp() checks expiry after waits too, unlike now().
+ * The conflict guard also catches a row inserted after the statement snapshot.
  */
 export async function setStateIfHeld(
   db: SqlClient,
@@ -95,18 +94,23 @@ export async function setStateIfHeld(
 ): Promise<boolean> {
   const s = quoteIdent(schema)
   const r = await db.query(
-    `insert into ${s}."_sync_state" as t (sync_id, env, stream, state, updated_at)
-     select $1, $2, $3, $4::jsonb, now()
-     where exists (
-       select 1 from ${s}."_sync_lease"
-       where sync_id = $1 and env = $2 and holder = $5 and expires_at > now()
+    `with current_state as materialized (
+       select state from ${s}."_sync_state"
+       where sync_id = $1 and env = $2 and stream = $3
+       for update
+     ), held_lease as materialized (
+       select expires_at from ${s}."_sync_lease"
+       where sync_id = $1 and env = $2 and holder = $5
+         and (select state from current_state) is not distinct from $6::jsonb
+       for update
      )
-     and (
-       select state from ${s}."_sync_state" where sync_id = $1 and env = $2 and stream = $3
-     ) is not distinct from $6::jsonb
+     insert into ${s}."_sync_state" as t (sync_id, env, stream, state, updated_at)
+     select $1, $2, $3, $4::jsonb, now() from held_lease
+     where expires_at > clock_timestamp()
      on conflict (sync_id, env, stream) do update
        set state = excluded.state, updated_at = now()
        where t.state = $6::jsonb
+         and (select expires_at from held_lease) > clock_timestamp()
      returning 1`,
     [syncId, env, stream, JSON.stringify(state), holder, expected == null ? null : JSON.stringify(expected)],
   )

@@ -1,7 +1,6 @@
 /**
- * The single-writer lease against real Postgres. Every case here is one that
- * a session-level advisory lock could not express or that PGlite's single
- * session could not exercise: contention, expiry, and release by a stranger.
+ * Lease semantics against PGlite. Multi-session races are exercised against
+ * standalone PostgreSQL in lease-postgres.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { streamByName } from '@workos/sync-engine'

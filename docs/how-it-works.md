@@ -227,9 +227,11 @@ harmless, because they are idempotent and staleness-gated, but its cursor is
 not: saving an older position would rewind the replacement and make it apply
 the same events again. So the checkpoint is **fenced in the database**: one
 statement that writes the new position only if this process still holds the
-lease and the stored position is still the one the poll started from. A
-former holder's checkpoint is simply refused, and the batch is counted as not
-done. `backfill`, `reconcile`, `refresh` and `status` take no lease: their
+lease and the stored position is still the one the poll started from. It locks
+the cursor row before the lease row, so waiting for an existing cursor does
+not block takeover, and checks expiry against the current database clock
+after waiting. A former holder's checkpoint is simply refused, and the batch
+is counted as not done. `backfill`, `reconcile`, `refresh` and `status` take no lease: their
 writes are idempotent and staleness-gated, so they run beside a tail. The one
 thing to keep apart is `reconcile --repair` on a stream listed through its
 parent (memberships, directory users and groups) while that tail is busy:
