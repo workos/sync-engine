@@ -4,6 +4,13 @@ Everything lives in a `workos` schema by default. Set `WORKOS_SYNC_SCHEMA` or
 pass `--schema` to change it; the setting applies to both the DDL and every
 query the engine issues.
 
+Initialization runs in one transaction under a per-schema advisory lock,
+taken before even creating the schema. Concurrent initializers wait, then
+check the committed fingerprint rather than racing to create catalog objects.
+Commit or rollback releases the lock; a fatal setup error rolls back its DDL.
+Repair attempts use savepoints, so a refused view replacement or column repair
+can still be handled without aborting the migration or releasing its lock.
+
 ## Columns every table has
 
 | Column        | Type          | Meaning                                                                                                                    |
@@ -86,7 +93,7 @@ Things to know:
 | Table         | Purpose                                                                                                                                                       |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `_sync_state` | Cursors and checkpoints, keyed by `(sync_id, env, stream)`. The tail position is the row with `stream = '__tail__'`; backfill progress is one row per stream. |
-| `_migrations` | Fingerprints of the schema versions that have been applied, so `init` is a single `SELECT` when nothing changed.                                              |
+| `_migrations` | Fingerprints of the schema versions that have been applied, so unchanged catalogs skip per-stream DDL.                                              |
 | `_sync_lease` | The single-writer lease for the events tail: one row per `(sync_id, env)` naming the holder and when its claim expires. `listen` and `tick` take it; the cursor checkpoint is refused unless the writer still holds it. See [Operations](operations.md#deployment). |
 | `_rejected`   | Events the tail could not apply: one row per event that failed deterministically on two consecutive polls, with the error and the whole event in `_raw`. Keyed by `(sync_id, env, event_id)`; `rejected --replay` drains it. |
 
@@ -268,10 +275,10 @@ replaced in place (see [Live views](#live-views)); as a library the two are
 separate options, `repairColumns` and `repairViews`.
 
 `--repair` drops each drifted column and adds it back from the catalog, each
-in its own transaction, then recreates its index. `STORED` recomputes the new
-expression for every row already present, so this is also the backfill, and
-nothing is lost because `_raw` holds all of it. As a library, pass
-`repairColumns: true` to `PostgresDestination`.
+in its own savepoint within the migration transaction, then recreates its
+index. `STORED` recomputes the new expression for every row already present,
+so this is also the backfill. Nothing is lost because `_raw` holds all of it.
+As a library, pass `repairColumns: true` to `PostgresDestination`.
 
 Rebuilding a column also forgets every fingerprint recorded before it. A
 fingerprint says the live columns were checked against that catalog, and that

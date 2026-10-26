@@ -112,11 +112,10 @@ export interface ApplyViewOptions {
  * place; the views are documented as not to be edited.
  *
  * The drop is not `cascade` — a user's view built on top of ours is theirs,
- * and taking it down silently would be worse than failing. This relies on
- * `migrate` running each statement outside a transaction; inside one, the
- * failed create would already have aborted it. The repair itself is one
- * transaction: DDL is transactional in Postgres, so a create that fails after
- * the drop — or a process that dies between the two — rolls back to the old
+ * and taking it down silently would be worse than failing. During migration,
+ * these inner transactions use savepoints so a failed create is rolled back
+ * before the repair starts. The repair itself is atomic: a create that fails
+ * after the drop — or a process that dies between the two — rolls back to the old
  * view instead of leaving readers with none.
  */
 export async function applyViewStatement(
