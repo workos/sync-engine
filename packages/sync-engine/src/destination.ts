@@ -75,7 +75,7 @@ export interface FreshnessRow {
 export interface IdDiff {
   /** Live rows whose id is also upstream. */
   matched: number
-  /** Ids of live rows absent upstream. Ids suffice: they are only ever tombstoned. */
+  /** Keys of live rows absent upstream, encoded like `liveIds`; only ever tombstoned. */
   localOnly: string[]
   /** Upstream payloads with no live row. Whole payloads: they are re-inserted. */
   remoteOnly: Record<string, unknown>[]
@@ -134,7 +134,11 @@ export interface Destination {
    */
   unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
 
-  /** Primary key values of every non-tombstoned row, in a stable order. */
+  /**
+   * Complete keys of non-tombstoned rows, in a stable order. Single-column
+   * keys are plain strings; composite keys are JSON arrays of strings in
+   * `stream.key` order, serialized with `encodeKey`.
+   */
   liveIds(stream: StreamDef, env: string): Promise<string[]>
   /** Stored payloads of every row, tombstoned or not. */
   rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>
@@ -144,9 +148,10 @@ export interface Destination {
    * implementation must stage those pages in the database and compute the
    * difference there, so memory is bounded by the size of the drift and not
    * by the size of the stream; a million-row stream with ten missed deletes
-   * must cost ten ids. "Live" means non-tombstoned. `localOnly` are ids,
-   * because they are only ever tombstoned; `remoteOnly` are whole payloads,
-   * because they are re-inserted. A destination with nothing to stage into
+   * must cost ten ids. "Live" means non-tombstoned. `localOnly` contains
+   * complete keys encoded like `liveIds`, because they are only tombstoned;
+   * `remoteOnly` contains whole payloads, because they are re-inserted.
+   * A destination with nothing to stage into
    * may delegate to `diffIdsInMemory` and accept the memory cost.
    *
    * The live set must be captured before the first page is consumed. Listing

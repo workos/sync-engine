@@ -59,7 +59,7 @@ export {
 export type { QuarantineResult, RejectedRow, Suspect, SuspectMap } from './sync/quarantine.js'
 export { backfillStream } from './sync/backfill.js'
 export { diffStream, freshness, refreshStream } from './sync/reconcile.js'
-export { diffIdsInMemory } from './sync/diff.js'
+export { diffIdsInMemory, encodeKey } from './sync/diff.js'
 
 export { createLogger, silentLogger } from './logger.js'
 export type { LogLevel } from './logger.js'

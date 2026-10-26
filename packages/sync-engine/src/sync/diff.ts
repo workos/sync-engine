@@ -11,21 +11,46 @@
 import type { Destination, IdDiff } from '../destination.js'
 import type { StreamDef } from '../types.js'
 
-/**
- * The id a remote payload is diffed on: the first key column, read at its
- * catalog path, the way the destination's own key extraction reads it.
- * `undefined` when the payload has no value there.
- */
+/** Keep scalar ids unchanged; encode composite keys without delimiter collisions. */
+export function encodeKey(values: string[]): string {
+  return values.length === 1 ? values[0]! : JSON.stringify(values)
+}
+
+/** The complete key at its catalog paths; undefined when any component is missing. */
 export function remoteKey(stream: StreamDef, data: Record<string, unknown>): string | undefined {
-  const keyName = stream.key[0]!
-  const path = stream.columns.find((c) => c.name === keyName)?.path ?? keyName
-  let cur: unknown = data
-  for (const p of Array.isArray(path) ? path : [path]) {
-    if (cur == null || typeof cur !== 'object') return undefined
-    cur = (cur as Record<string, unknown>)[p]
+  const values: string[] = []
+  for (const name of stream.key) {
+    const path = stream.columns.find((c) => c.name === name)?.path ?? name
+    let cur: unknown = data
+    for (const p of Array.isArray(path) ? path : [path]) {
+      if (cur == null || typeof cur !== 'object') return undefined
+      cur = (cur as Record<string, unknown>)[p]
+    }
+    if (cur == null || cur === '') return undefined
+    values.push(String(cur))
   }
-  if (cur == null || cur === '') return undefined
-  return String(cur)
+  return encodeKey(values)
+}
+
+/** Reconstruct a deletion payload at the same catalog paths used to read its key. */
+export function keyPayload(stream: StreamDef, id: string): Record<string, unknown> {
+  const values: unknown = stream.key.length === 1 ? [id] : JSON.parse(id)
+  if (!Array.isArray(values) || values.length !== stream.key.length ||
+      values.some((v) => typeof v !== 'string' || v === '')) {
+    throw new Error(`invalid reconciliation key for ${stream.name}: ${id}`)
+  }
+  const data: Record<string, unknown> = Object.create(null)
+  for (const [i, name] of stream.key.entries()) {
+    const path = stream.columns.find((c) => c.name === name)?.path ?? name
+    const parts = Array.isArray(path) ? path : [path]
+    let target = data
+    for (const part of parts.slice(0, -1)) {
+      target[part] ??= Object.create(null)
+      target = target[part] as Record<string, unknown>
+    }
+    target[parts[parts.length - 1]!] = values[i]
+  }
+  return data
 }
 
 export async function diffIdsInMemory(
