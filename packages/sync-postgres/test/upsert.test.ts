@@ -104,14 +104,35 @@ describe('write path', () => {
     expect((await readUser())!['email']).toBe('second@example.com')
   })
 
-  it('skips a write that would change nothing', async () => {
+  it('skips a write with the same payload and timestamp', async () => {
     await upsertRows(db, opts, users, 'prod', [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }], 'replace')
     const again = await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload(), updatedAt: '2026-01-02T00:00:00.000Z' },
+      { data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' },
     ], 'replace')
-    // Backfill and reconcile re-fetch mostly-unchanged rows; rewriting them all
-    // would bloat WAL and churn autovacuum for nothing.
+    // Rewriting an identical observation would bloat WAL for nothing.
     expect(again).toMatchObject({ created: 0, updated: 0, skipped: 1 })
+  })
+
+  it.each(['merge', 'replace'] as const)('advances the timestamp for unchanged payloads in %s mode', async (mode) => {
+    const roles = streamByName('roles')!
+    const data = { slug: 'admin', permissions: ['read'] }
+    await upsertRows(db, opts, roles, 'prod', [
+      { data, updatedAt: '2026-01-01T00:00:00.000Z' },
+    ], mode)
+    const newer = await upsertRows(db, opts, roles, 'prod', [
+      { data, updatedAt: '2026-01-03T00:00:00.000Z' },
+    ], mode)
+    const stale = await upsertRows(db, opts, roles, 'prod', [
+      { data: { ...data, permissions: ['write'] }, updatedAt: '2026-01-02T00:00:00.000Z' },
+    ], mode)
+
+    expect(newer).toMatchObject({ created: 0, updated: 1, skipped: 0 })
+    expect(stale).toMatchObject({ created: 0, updated: 0, skipped: 1 })
+    const result = await db.query(`select permissions, "_updated_at" from workos.roles`)
+    expect(result.rows).toEqual([{
+      permissions: ['read'],
+      _updated_at: new Date('2026-01-03T00:00:00.000Z'),
+    }])
   })
 
   it('merges event payloads instead of nulling the fields events omit', async () => {

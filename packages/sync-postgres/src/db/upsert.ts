@@ -120,7 +120,7 @@ on conflict (${conflict}) do update set
   "_updated_at" = excluded."_updated_at",
   "_synced_at" = now()
 where excluded."_updated_at" >= t."_updated_at"
-  and t.${raw} is distinct from (${newRaw})
+  and (excluded."_updated_at" > t."_updated_at" or t.${raw} is distinct from (${newRaw}))
 returning (xmax = 0) as _created`,
     params,
   }

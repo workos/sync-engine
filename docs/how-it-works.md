@@ -68,7 +68,8 @@ INSERT INTO workos.users AS t (_env, _raw, _updated_at)
       _updated_at = excluded._updated_at,
       _synced_at  = NOW()
    WHERE excluded._updated_at >= t._updated_at
-      AND t._raw IS DISTINCT FROM (t._raw || excluded._raw)
+      AND (excluded._updated_at > t._updated_at
+           OR t._raw IS DISTINCT FROM (t._raw || excluded._raw))
    RETURNING (xmax = 0) AS _created;
 ```
 
@@ -87,6 +88,10 @@ state with no error anywhere.
 `>=` makes ties last-writer-wins. That is not a guarantee of correctness for
 simultaneous events, because nothing can be, so reconciliation is the backstop
 rather than the comparison.
+
+A newer observation advances `_updated_at` even when its payload is unchanged,
+so a delayed event cannot overwrite it. Only an identical payload at the same
+timestamp is a no-op.
 
 ### The timestamp comes from the source, never the database
 
