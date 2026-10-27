@@ -3,7 +3,7 @@
 Keeping a copy of someone else's data correct is harder than it first appears.
 This page explains the design and, more usefully, why each piece is there.
 
-## Three subsystems, not one
+## Three subsystems
 
 A mirror needs all three of these functions:
 
