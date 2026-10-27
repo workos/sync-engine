@@ -6,8 +6,8 @@
  * files, one per upstream schema change, each needing a release; deriving the
  * DDL instead means adding a projected column is a catalog edit.
  *
- * Setup is gated on a fingerprint of the catalog, so a restart with no changes
- * is a single SELECT rather than dozens of DDL round trips.
+ * A fingerprint gates per-stream DDL, so unchanged catalogs skip that work.
+ * A per-schema transaction lock serializes setup, including the bootstrap DDL.
  *
  * The DDL is additive, which cannot change a column that already exists. So
  * after it runs, and only when the fingerprint is new, the live tables are
@@ -90,6 +90,44 @@ export async function migrate(
   schema: string,
   logger?: Logger,
   options: MigrateOptions = {},
+): Promise<MigrateResult> {
+  return db.transaction(async (tx) => {
+    // Lock before even CREATE SCHEMA: IF NOT EXISTS does not serialize catalog writes.
+    await tx.query(
+      `select pg_advisory_xact_lock(hashtext('workos-sync-postgres:migrate'), hashtext($1::name::text))`,
+      [schema],
+    )
+    // Repairs must recover from failed DDL without aborting the migration or releasing its lock.
+    const nested: SqlClient = {
+      query: tx.query.bind(tx),
+      exec: tx.exec.bind(tx),
+      close: tx.close.bind(tx),
+      async transaction<T>(fn: (client: SqlClient) => Promise<T>): Promise<T> {
+        await tx.exec('savepoint workos_sync_migrate')
+        try {
+          const result = await fn(nested)
+          await tx.exec('release savepoint workos_sync_migrate')
+          return result
+        } catch (err) {
+          try {
+            await tx.exec('rollback to savepoint workos_sync_migrate; release savepoint workos_sync_migrate')
+          } catch {
+            // The outer transaction still rolls back; preserve the original error.
+          }
+          throw err
+        }
+      },
+    }
+    return applySchema(nested, streams, schema, logger, options)
+  })
+}
+
+async function applySchema(
+  db: SqlClient,
+  streams: StreamDef[],
+  schema: string,
+  logger: Logger | undefined,
+  options: MigrateOptions,
 ): Promise<MigrateResult> {
   const fp = fingerprint(streams, schema)
 
