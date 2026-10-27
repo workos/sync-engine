@@ -1,7 +1,6 @@
 /**
- * The single-writer lease against real Postgres. Every case here is one that
- * a session-level advisory lock could not express or that PGlite's single
- * session could not exercise: contention, expiry, and release by a stranger.
+ * Lease semantics against PGlite. Multi-session races are exercised against
+ * standalone PostgreSQL in lease-postgres.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { streamByName } from '@workos/sync-engine'
@@ -120,6 +119,8 @@ describe('events tail lease', () => {
 
     it('refuses a write whose expected state is no longer the stored one', async () => {
       await dest.acquireLease('prod', 'a', 60_000)
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', { cursor: 'c0' })).toBe(false)
+      expect(await stored()).toBeNull()
       await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
       // A row appeared where none was expected, and a stale expectation: both
       // are how a holder would rewind a position someone else moved.

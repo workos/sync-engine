@@ -14,7 +14,7 @@
  * session. A row with an expiry survives pool churn, is visible in `status`,
  * and times out on its own when the holder dies.
  *
- * Expiry is judged by the database clock (`now()`), never the client's, so
+ * Expiry is judged by the database clock, never the client's, so
  * two hosts with skewed clocks still agree on who holds it.
  */
 import type { Lease, LeaseResult } from '@workos/sync-engine'
@@ -77,11 +77,10 @@ export async function releaseLease(
 }
 
 /**
- * The write the lease exists to fence. One statement: the row is inserted or
- * updated only if `holder` has the unexpired lease for `env` and the stored
- * state is still `expected` (`null` for no row). The `on conflict ... where`
- * re-checks the stored state under the row lock, so a write that lands
- * between this statement's snapshot and its update is caught as well.
+ * Write provisionally before locking the lease: even an invisible competing
+ * insert must finish before this writer can block takeover. Validate ownership
+ * and expiry after all waits, rolling back a refused write to its savepoint.
+ * The savepoint also protects callers already inside a transaction.
  */
 export async function setStateIfHeld(
   db: SqlClient,
@@ -94,23 +93,34 @@ export async function setStateIfHeld(
   expected: unknown,
 ): Promise<boolean> {
   const s = quoteIdent(schema)
-  const r = await db.query(
-    `insert into ${s}."_sync_state" as t (sync_id, env, stream, state, updated_at)
-     select $1, $2, $3, $4::jsonb, now()
-     where exists (
-       select 1 from ${s}."_sync_lease"
-       where sync_id = $1 and env = $2 and holder = $5 and expires_at > now()
-     )
-     and (
-       select state from ${s}."_sync_state" where sync_id = $1 and env = $2 and stream = $3
-     ) is not distinct from $6::jsonb
-     on conflict (sync_id, env, stream) do update
-       set state = excluded.state, updated_at = now()
-       where t.state = $6::jsonb
-     returning 1`,
-    [syncId, env, stream, JSON.stringify(state), holder, expected == null ? null : JSON.stringify(expected)],
-  )
-  return r.rows.length > 0
+  const params = [syncId, env, stream, JSON.stringify(state)]
+  const sql = expected == null
+    ? `insert into ${s}."_sync_state" (sync_id, env, stream, state, updated_at)
+       values ($1, $2, $3, $4::jsonb, now())
+       on conflict (sync_id, env, stream) do nothing returning 1`
+    : `update ${s}."_sync_state" set state = $4::jsonb, updated_at = now()
+       where sync_id = $1 and env = $2 and stream = $3 and state = $5::jsonb
+       returning 1`
+  if (expected != null) params.push(JSON.stringify(expected))
+  return db.transaction(async (tx) => {
+    await tx.exec('savepoint workos_sync_checkpoint')
+    const written = await tx.query(sql, params)
+    let held = false
+    if (written.rows.length > 0) {
+      const lease = await tx.query(
+        `with held_lease as materialized (
+           select expires_at from ${s}."_sync_lease"
+           where sync_id = $1 and env = $2 and holder = $3 for update
+         )
+         select 1 from held_lease where expires_at > clock_timestamp()`,
+        [syncId, env, holder],
+      )
+      held = lease.rows.length > 0
+    }
+    if (!held) await tx.exec('rollback to savepoint workos_sync_checkpoint')
+    await tx.exec('release savepoint workos_sync_checkpoint')
+    return held
+  })
 }
 
 export async function getLease(
