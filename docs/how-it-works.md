@@ -232,9 +232,9 @@ writes the cursor provisionally before locking the lease, so waiting for an
 existing cursor or an uncommitted first insert does not block takeover. It
 then checks ownership and expiry against the current database clock after
 waiting, rolling back a refused write. A former holder's checkpoint is simply
-refused, and the batch
-is counted as not done. `backfill`, `reconcile`, `refresh` and `status` take no lease: their
-writes are idempotent and staleness-gated, so they run beside a tail. The one
+refused, and the batch is counted as not done. `backfill`, `reconcile`,
+`refresh` and `status` take no lease: their writes are idempotent and
+staleness-gated, so they run beside a tail. The one
 thing to keep apart is `reconcile --repair` on a stream listed through its
 parent (memberships, directory users and groups) while that tail is busy:
 the parent ids are read a few statements before the live snapshot is taken,

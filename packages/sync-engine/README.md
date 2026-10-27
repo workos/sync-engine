@@ -241,12 +241,13 @@ The engine relies on seven properties of your implementation.
    keyed by `(syncId, env)`; see `db/lease.ts` in the Postgres destination.
 7. **The checkpoint is fenced by the lease.** `setStateIfHeld` writes only
    if `holder` holds the unexpired lease for `env` _and_ the stored state
-   still equals `expected` (`null` for no row), with both checked in the same
-   statement as the write. The engine saves the tail cursor through it, so a
-   process that stalled past its lease, or whose position a backfill
-   re-captured meanwhile, is refused by the database rather than by a check
-   made a moment earlier. In SQL it is an `INSERT ... SELECT ... WHERE EXISTS
-(lease) ... ON CONFLICT DO UPDATE ... WHERE`; also in `db/lease.ts`.
+   still equals `expected` (`null` for no row), with both checked atomically
+   with the write. The engine saves the tail cursor through it, so a process
+   that stalled past its lease, or whose position a backfill re-captured
+   meanwhile, is refused by the database rather than by a check made a moment
+   earlier. Postgres uses a transaction: provisionally write the cursor,
+   then lock and validate the lease after any cursor wait. A refused write
+   rolls back to a savepoint; see `db/lease.ts`.
 
 `WriteStats` (`created` / `updated` / `skipped` / `deleted`) is a health metric
 the engine logs but never branches on; a database that cannot tell an insert

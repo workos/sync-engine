@@ -26,7 +26,7 @@
  *   asking at once, exactly one is told it holds the lease. The tail runs
  *   under it so a rolling deploy cannot have both the old and the new process
  *   advancing the same cursor. `setStateIfHeld` makes the cursor write itself
- *   conditional on still holding it, in the same statement, so a process that
+ *   atomically conditional on still holding it, so a process that
  *   stalled past its lease is refused by the database rather than by a check
  *   made a moment earlier.
  *
@@ -180,8 +180,8 @@ export interface Destination {
    * Write `state` only if `holder` holds the unexpired lease for `env` and
    * the stored state for `(env, stream)` still equals `expected` (`null` for
    * no row), with both conditions checked atomically with the write.
-   * Returns whether it was written. The engine checkpoints the
-   * tail through this, so a former holder saving an older cursor, or a poll
+   * Returns whether it was written. The engine checkpoints the tail through
+   * this, so a former holder saving an older cursor, or a poll
    * racing a backfill that re-captured the position, is refused by the
    * database itself: there is no window between the check and the write.
    */
