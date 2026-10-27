@@ -179,8 +179,8 @@ export interface Destination {
   /**
    * Write `state` only if `holder` holds the unexpired lease for `env` and
    * the stored state for `(env, stream)` still equals `expected` (`null` for
-   * no row), with both conditions checked in the same atomic statement as
-   * the write. Returns whether it was written. The engine checkpoints the
+   * no row), with both conditions checked atomically with the write.
+   * Returns whether it was written. The engine checkpoints the
    * tail through this, so a former holder saving an older cursor, or a poll
    * racing a backfill that re-captured the position, is refused by the
    * database itself: there is no window between the check and the write.

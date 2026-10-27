@@ -119,6 +119,8 @@ describe('events tail lease', () => {
 
     it('refuses a write whose expected state is no longer the stored one', async () => {
       await dest.acquireLease('prod', 'a', 60_000)
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', { cursor: 'c0' })).toBe(false)
+      expect(await stored()).toBeNull()
       await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
       // A row appeared where none was expected, and a stale expectation: both
       // are how a holder would rewind a position someone else moved.

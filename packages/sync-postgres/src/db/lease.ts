@@ -77,10 +77,10 @@ export async function releaseLease(
 }
 
 /**
- * Lock the cursor before the lease so waiting for an existing cursor row does
- * not prevent takeover. The lease lock rechecks ownership and holds it through
- * the write; clock_timestamp() checks expiry after waits too, unlike now().
- * The conflict guard also catches a row inserted after the statement snapshot.
+ * Write provisionally before locking the lease: even an invisible competing
+ * insert must finish before this writer can block takeover. Validate ownership
+ * and expiry after all waits, rolling back a refused write to its savepoint.
+ * The savepoint also protects callers already inside a transaction.
  */
 export async function setStateIfHeld(
   db: SqlClient,
@@ -93,28 +93,34 @@ export async function setStateIfHeld(
   expected: unknown,
 ): Promise<boolean> {
   const s = quoteIdent(schema)
-  const r = await db.query(
-    `with current_state as materialized (
-       select state from ${s}."_sync_state"
-       where sync_id = $1 and env = $2 and stream = $3
-       for update
-     ), held_lease as materialized (
-       select expires_at from ${s}."_sync_lease"
-       where sync_id = $1 and env = $2 and holder = $5
-         and (select state from current_state) is not distinct from $6::jsonb
-       for update
-     )
-     insert into ${s}."_sync_state" as t (sync_id, env, stream, state, updated_at)
-     select $1, $2, $3, $4::jsonb, now() from held_lease
-     where expires_at > clock_timestamp()
-     on conflict (sync_id, env, stream) do update
-       set state = excluded.state, updated_at = now()
-       where t.state = $6::jsonb
-         and (select expires_at from held_lease) > clock_timestamp()
-     returning 1`,
-    [syncId, env, stream, JSON.stringify(state), holder, expected == null ? null : JSON.stringify(expected)],
-  )
-  return r.rows.length > 0
+  const params = [syncId, env, stream, JSON.stringify(state)]
+  const sql = expected == null
+    ? `insert into ${s}."_sync_state" (sync_id, env, stream, state, updated_at)
+       values ($1, $2, $3, $4::jsonb, now())
+       on conflict (sync_id, env, stream) do nothing returning 1`
+    : `update ${s}."_sync_state" set state = $4::jsonb, updated_at = now()
+       where sync_id = $1 and env = $2 and stream = $3 and state = $5::jsonb
+       returning 1`
+  if (expected != null) params.push(JSON.stringify(expected))
+  return db.transaction(async (tx) => {
+    await tx.exec('savepoint workos_sync_checkpoint')
+    const written = await tx.query(sql, params)
+    let held = false
+    if (written.rows.length > 0) {
+      const lease = await tx.query(
+        `with held_lease as materialized (
+           select expires_at from ${s}."_sync_lease"
+           where sync_id = $1 and env = $2 and holder = $3 for update
+         )
+         select 1 from held_lease where expires_at > clock_timestamp()`,
+        [syncId, env, holder],
+      )
+      held = lease.rows.length > 0
+    }
+    if (!held) await tx.exec('rollback to savepoint workos_sync_checkpoint')
+    await tx.exec('release savepoint workos_sync_checkpoint')
+    return held
+  })
 }
 
 export async function getLease(
