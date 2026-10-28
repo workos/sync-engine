@@ -72,7 +72,10 @@ organizations have admins), not to _enforce_ it.
 `updated_at`. The staleness gate uses `>=`, so the last one applied wins. That
 is deliberate, because a strict `>` would drop the second permanently, which is
 worse. But it means simultaneous events are resolved by arrival, not by truth.
-Reconciliation is the backstop.
+`refresh` is the backstop: it re-lists from the REST API and replaces each
+row, and the gate lets a REST object through at an equal timestamp when its
+payload differs. `reconcile` is not: it compares ids only, and a row present
+on both sides with the wrong payload is a match to it.
 
 ## Vendor state is not business truth
 
