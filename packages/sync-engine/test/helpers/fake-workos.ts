@@ -374,8 +374,9 @@ export class FakeWorkOS {
     const filter = url.searchParams.get('events')?.split(',')
 
     // The live endpoint requires this filter and rejects the request without
-    // it, even though the published OpenAPI spec marks it optional. Enforcing
-    // it here is what keeps the test suite honest about the real contract.
+    // it. The published OpenAPI spec once marked it optional and now marks it
+    // required. Enforcing it here is what keeps the test suite honest about
+    // the real contract.
     if (!filter || filter.length === 0) {
       return json(
         {
