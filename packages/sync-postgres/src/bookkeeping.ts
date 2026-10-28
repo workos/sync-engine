@@ -15,7 +15,7 @@ import type { Bookkeeping, Lease, LeaseResult, Logger, RejectedEvent, WorkOSEven
 import { connect, type SqlClient } from './db/client.js'
 import { acquireLease, releaseLease, getLease, setStateIfHeld } from './db/lease.js'
 import { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
-import { bookkeepingSql, createSchemaSql, quoteIdent } from './schema/ddl.js'
+import { bookkeepingSql, createSchemaSql, parseIso8601Function, quoteIdent } from './schema/ddl.js'
 
 export interface PostgresBookkeepingOptions {
   /** Connection string. Alternatively pass a pre-built `db`. */
@@ -39,6 +39,12 @@ export class PostgresBookkeeping implements Bookkeeping {
    * single most expensive thing a `tick` does.
    */
   private ready = false
+  /**
+   * The initialization in flight, shared by every caller until it settles.
+   * Two first calls racing — `status()` from a monitor while a poll starts —
+   * would otherwise each open a pool and keep only the last, leaking the first.
+   */
+  private initializing: Promise<void> | undefined
 
   constructor(private options: PostgresBookkeepingOptions) {
     if (!options.db && !options.databaseUrl) throw new Error('databaseUrl or db is required')
@@ -57,11 +63,19 @@ export class PostgresBookkeeping implements Bookkeeping {
   }
 
   async init(logger?: Logger): Promise<void> {
+    if (this.ready) return
+    // A failed attempt is forgotten, so the next call can try again.
+    this.initializing ??= this.initialize(logger).finally(() => {
+      this.initializing = undefined
+    })
+    return this.initializing
+  }
+
+  private async initialize(logger?: Logger): Promise<void> {
     if (!this.db) {
       this.db = await connect(this.options.databaseUrl!)
       this.ownsDb = true
     }
-    if (this.ready) return
     await this.db.transaction(async (tx) => {
       // The same lock the mirror's migration takes, because `if not exists`
       // does not serialise catalog writes: two processes starting together
@@ -71,6 +85,10 @@ export class PostgresBookkeeping implements Bookkeeping {
         [this.schema],
       )
       await tx.exec(createSchemaSql(this.schema))
+      // The quarantine insert parses `created_at` through this function in
+      // the store's own schema, so a store apart from the mirror needs its
+      // own copy; the mirror's, when they share a schema, is the same DDL.
+      await tx.exec(parseIso8601Function(this.schema))
       await tx.exec(bookkeepingSql(this.schema))
     })
     this.ready = true

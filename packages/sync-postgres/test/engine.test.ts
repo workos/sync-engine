@@ -717,6 +717,31 @@ describe('bookkeeping store', () => {
     expect(tables.rows.map((r) => r.table_name)).toEqual(['_rejected', '_sync_lease', '_sync_state'])
     // Nothing of the mirror's: no stream tables, and the fingerprint table is the mirror's own.
     expect(await store.getLease('prod')).toBeNull()
+
+    // The quarantine insert parses `created_at` in the store's own schema,
+    // so the function has to be installed there too, not only in the mirror's.
+    const event = { id: 'event_1', event: 'user.created', data: { id: 'user_1' }, created_at: '2026-01-01T00:00:00.000Z' }
+    await store.reject('prod', [{ event, error: 'boom' }])
+    expect(await store.rejectedCount('prod')).toBe(1)
+    expect((await store.rejected('prod'))[0]).toMatchObject({ eventId: 'event_1', error: 'boom' })
+  })
+
+  it('shares one initialization between concurrent first calls', async () => {
+    let transactions = 0
+    const counting: SqlClient = {
+      ...db,
+      transaction: <T>(fn: (tx: SqlClient) => Promise<T>) => {
+        transactions++
+        return db.transaction(fn)
+      },
+    }
+    const store = new PostgresBookkeeping({ db: counting, schema: 'elsewhere' })
+    // Racing first calls — a monitor's status() while a poll starts — must
+    // not each set the store up, or each open a connection of their own.
+    await Promise.all([store.init(), store.init(), store.init()])
+    expect(transactions).toBe(1)
+    await store.init()
+    expect(transactions).toBe(1)
   })
 
   it('scrubs the quarantine on redact, because it may hold the only copy of a payload', async () => {

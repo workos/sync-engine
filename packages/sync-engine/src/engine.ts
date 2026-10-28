@@ -869,8 +869,13 @@ export class SyncEngine {
   async close(): Promise<void> {
     this.stop()
     await this.serialized(() => this.releaseHeld())
-    await this.destination.close()
-    await this.bookkeeping.close()
+    // Both get a cleanup attempt: a standalone store owns a pool of its own,
+    // and a destination that fails to close must not keep it open.
+    try {
+      await this.destination.close()
+    } finally {
+      await this.bookkeeping.close()
+    }
   }
 }
 
