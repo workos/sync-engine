@@ -57,7 +57,8 @@ export {
   PoisonEventSuspectedError,
 } from './sync/quarantine.js'
 export type { QuarantineResult, RejectedRow, Suspect, SuspectMap } from './sync/quarantine.js'
-export { backfillStream } from './sync/backfill.js'
+export { backfillStream, pageBudget } from './sync/backfill.js'
+export type { BackfillOptions, BackfillStreamResult, PageBudget } from './sync/backfill.js'
 export { diffStream, freshness, refreshStream } from './sync/reconcile.js'
 export { diffIdsInMemory, encodeKey } from './sync/diff.js'
 

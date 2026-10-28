@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
-import { main, parseHydrate, parseLeaseTtl, repairRequested } from '../src/cli.js'
+import { main, parseHydrate, parseLeaseTtl, parseMaxPages, repairRequested } from '../src/cli.js'
 import { createTestDb } from './helpers/pg.js'
 import { FaultyDestination } from './helpers/faulty.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
@@ -25,6 +25,24 @@ describe('WORKOS_SYNC_HYDRATE', () => {
   it('rejects anything else loudly', () => {
     expect(() => parseHydrate('sometimes')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
     expect(() => parseHydrate('users=maybe')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
+  })
+})
+
+describe('backfill --max-pages', () => {
+  it('means unbounded when absent', () => {
+    expect(parseMaxPages(undefined)).toBeUndefined()
+  })
+
+  it('accepts a positive integer', () => {
+    expect(parseMaxPages('25')).toBe(25)
+    expect(parseMaxPages(' 1 ')).toBe(1)
+  })
+
+  it('refuses a bare flag, zero, a fraction, and anything that is not a number', () => {
+    // `--max-pages` with no value parses as `true`; it must not become a budget of nothing.
+    for (const bad of [true, '', '0', '-3', '1.5', 'ten']) {
+      expect(() => parseMaxPages(bad)).toThrow(/invalid --max-pages/)
+    }
   })
 })
 

@@ -42,6 +42,11 @@ export interface BackfillState {
   after?: string | null
   /** For N+1 streams: parents already fully listed. */
   doneParents?: string[]
+  /**
+   * For N+1 streams: the parent whose listing `after` belongs to, when a page
+   * budget stopped the run inside a parent. Absent at a parent boundary.
+   */
+  parent?: string | null
   count?: number
   startedAt?: string
   completedAt?: string

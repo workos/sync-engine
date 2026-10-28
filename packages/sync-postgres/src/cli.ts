@@ -3,7 +3,8 @@
  * workos-sync-postgres — command line interface.
  *
  *   workos-sync-postgres init [--repair]      create the schema; --repair rebuilds drifted columns and generated views
- *   workos-sync-postgres backfill [--resume]  page the list endpoints
+ *   workos-sync-postgres backfill [--resume] [--max-pages <n>]
+ *                                             page the list endpoints, optionally n pages at a time
  *   workos-sync-postgres listen               tail the Events API
  *   workos-sync-postgres tick                 one poll, then exit (for cron)
  *   workos-sync-postgres reconcile [--repair] detect (and optionally fix) drift
@@ -147,6 +148,21 @@ export function parseLeaseTtl(value: string | undefined): number | undefined {
   return n
 }
 
+/**
+ * `--max-pages <n>` is a positive integer. Absent means unbounded. A bare
+ * `--max-pages` with no value, zero, or a fraction is refused here, before the
+ * engine connects: a budget of nothing would stop before the first page and
+ * look like a backfill that found nothing.
+ */
+export function parseMaxPages(value: string | boolean | undefined): number | undefined {
+  if (value === undefined || value === false) return undefined
+  const n = typeof value === 'string' ? Number(value.trim()) : NaN
+  if (typeof value !== 'string' || !value.trim() || !Number.isInteger(n) || n < 1) {
+    throw new Error(`invalid --max-pages "${String(value)}": expected a positive integer`)
+  }
+  return n
+}
+
 function configFromEnv(
   flags: Record<string, string | boolean>,
   destination: PostgresDestination,
@@ -177,7 +193,12 @@ Commands
                        column has drifted from the catalog, and fails if a generated _live
                        view must be rebuilt; --repair rebuilds columns from _raw and views
                        with their grants carried over
-  backfill [--resume]  Load current state from the REST list endpoints
+  backfill [--resume] [--max-pages <n>]
+                       Load current state from the REST list endpoints.
+                       --resume continues each stream from its checkpoint and
+                       skips streams already complete; --max-pages stops after
+                       n pages across all streams, for hosts with a time limit
+                       (run again with --resume until every stream is complete)
   listen [--health-port <n>]
                        Tail the Events API and apply changes continuously
                        (waits while another listener holds the lease);
@@ -269,8 +290,13 @@ export async function main(argv = process.argv.slice(2), deps: MainDeps = {}): P
         return unresolved ? 2 : 0
       }
       case 'backfill': {
-        const results = await engine.backfill({ resume: Boolean(flags['resume']) })
+        const results = await engine.backfill({
+          resume: Boolean(flags['resume']),
+          maxPages: parseMaxPages(flags['max-pages']),
+        })
         process.stdout.write(JSON.stringify(results, null, 2) + '\n')
+        // A budget that stops short is the outcome asked for, not an error:
+        // the JSON says which streams are complete, and the next run resumes.
         return 0
       }
       case 'listen': {

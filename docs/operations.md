@@ -318,6 +318,44 @@ Backfill checkpoints after every page, so an interrupted run resumes:
 npx workos-sync-postgres backfill --resume
 ```
 
+## Backfill without a long-lived process
+
+`backfill` runs every stream to completion by default, which can take hours
+for a large directory. A host with a time limit — a cron job, a serverless
+function, a workflow activity — runs it in slices instead:
+
+```bash
+npx workos-sync-postgres backfill --max-pages 50             # first slice
+npx workos-sync-postgres backfill --resume --max-pages 50    # every later slice
+```
+
+Each slice fetches at most 50 pages across all streams, checkpoints after
+every page, and prints one result per stream with `complete` set to `true` or
+`false`. `--resume` continues each stream from its checkpoint, inside a
+parent for the per-parent streams, and skips the ones already complete, so
+repeated slices converge rather than re-listing what finished. Stop when every
+stream reports `complete`. The exit code is 0 either way: a slice that stops
+short is the outcome you asked for. The first slice runs without `--resume`,
+because `--resume` on a mirror whose last backfill completed skips everything;
+a fresh slice first forgets every stream's checkpoint, so a stream the budget
+never reaches is not mistaken for complete on the next resumed slice. A
+stream listed per parent is held back while its parent is incomplete, and a
+resumed slice reaches it once the parent finishes.
+
+From the library the loop is:
+
+```ts
+let results = await engine.backfill({ maxPages: 50 });
+while (results.some((r) => !r.complete)) {
+  results = await engine.backfill({ resume: true, maxPages: 50 });
+}
+```
+
+The tail's starting position is captured on the first slice and kept, so
+`tick` can run between slices and anything that changes during the backfill
+is replayed from there. One backfill slice and one `tick` per invocation is
+the natural shape for a scheduled host.
+
 ## Rejected events
 
 There is one cursor per environment. Without a quarantine, one event that fails

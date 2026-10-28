@@ -71,11 +71,23 @@ and the staleness gate decides which version wins.
 | `leaseTtlMs`       | `60000`                             | How long the events-tail lease outlives a crashed process; at least 1. Renewed every third of this while polling; a clean stop releases it immediately. |
 | `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                                         |
 
-Methods: `init()`, `backfill({ resume })`, `tick()`, `listen()`, `stop()`,
-`reconcile({ repair, streams })`, `refresh()`, `status()`, `health()`,
-`redact(userId)`, `rejected({ ids })`, `replayRejected({ ids })`,
+Methods: `init()`, `backfill({ resume, maxPages })`, `tick()`, `listen()`,
+`stop()`, `reconcile({ repair, streams })`, `refresh()`, `status()`,
+`health()`, `redact(userId)`, `rejected({ ids })`, `replayRejected({ ids })`,
 `processWebhook()`, `close()`. Every method except `health()` applies the
 schema first, so `init()` is optional.
+
+`backfill()` returns one result per stream, each with `complete`. With
+`maxPages`, the call stops after that many pages across every stream and
+environment, leaving each checkpoint where it stopped; with `resume`, it
+continues each stream from its checkpoint (inside a parent, for the
+per-parent streams) and skips the ones already complete. A call without
+`resume` first forgets every selected stream's checkpoint, so a stream the
+budget never reached is not mistaken for complete later, and a stream listed
+per parent is held back while its parent is incomplete. Together they let a
+host with a time limit — a cron job, an edge function, a workflow activity —
+finish a backfill over several calls: call `backfill({ maxPages })` once, then
+`backfill({ resume: true, maxPages })` until no result has `complete: false`.
 
 The tail has one writer per environment. `listen()` takes a lease in the
 destination before polling and renews it while it runs; if another process

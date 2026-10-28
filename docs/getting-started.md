@@ -66,7 +66,10 @@ incomplete.
 Large directories take a while: `/directory_users` is limited to 4 requests per
 second **per directory**, and that limit does not aggregate. The engine paces
 itself accordingly. If backfill is interrupted, `--resume` continues from the
-last checkpoint instead of starting over.
+last checkpoint instead of starting over. Where no process can stay up for the
+whole run, `--max-pages <n>` stops after `n` pages and reports which streams
+are complete; repeat with `--resume` until all of them are. See
+[Operations](operations.md#backfill-without-a-long-lived-process).
 
 ## Start syncing
 
