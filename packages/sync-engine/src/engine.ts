@@ -283,8 +283,35 @@ export class SyncEngine {
       // Parents before children: memberships need organizations, directory
       // users need directories.
       const ordered = [...this.streams].sort((a, b) => order(a) - order(b))
+      // A fresh run forgets every selected stream's checkpoint before it
+      // lists anything, the streams a budget never reaches included.
+      // Otherwise one of them keeps a `complete` left by an earlier run, and
+      // the next resumed call skips it instead of listing it.
+      if (!options.resume) {
+        for (const stream of ordered) {
+          if (stream.mode === 'append' || !stream.list) continue
+          await this.state.set(env.name, stream.name, { kind: 'backfill', status: 'pending' })
+        }
+      }
+      // Streams this call left unfinished, paused or failed. A stream listed
+      // per parent is held back while its parent is among them: run against
+      // a partial parent it would be marked complete, and a resumed call
+      // would then skip it with the missing children never fetched.
+      const unfinished = new Set<string>()
       for (const stream of ordered) {
         if (stream.mode === 'append') continue
+        const parent = stream.list?.parent?.stream
+        if (parent && unfinished.has(parent)) {
+          results.push({
+            stream: stream.name,
+            stats: emptyStats(),
+            pages: 0,
+            complete: false,
+            skippedReason: `parent stream ${parent} is incomplete — resume to continue`,
+          })
+          unfinished.add(stream.name)
+          continue
+        }
         try {
           const r = await backfillStream(this.destination, api, this.state, stream, {
             env: env.name,
@@ -293,6 +320,7 @@ export class SyncEngine {
             budget,
           })
           results.push(r)
+          if (!r.complete) unfinished.add(stream.name)
         } catch (err) {
           if (isFatal(err)) throw err
           // Stream-scoped failure: other streams continue, and this stream's
@@ -309,11 +337,14 @@ export class SyncEngine {
             complete: false,
             skippedReason: `failed: ${String(err)}`,
           })
+          unfinished.add(stream.name)
         }
       }
     }
+    // A stream can also be incomplete because it failed, with budget to
+    // spare; that is an error already logged above, not a pause.
     const incomplete = results.filter((r) => !r.complete).map((r) => r.stream)
-    if (budget && incomplete.length > 0) {
+    if (budget && budget.remaining <= 0 && incomplete.length > 0) {
       this.logger.info('backfill paused: page budget spent; resume to continue', {
         maxPages: options.maxPages,
         incomplete,

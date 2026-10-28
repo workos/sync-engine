@@ -336,7 +336,11 @@ parent for the per-parent streams, and skips the ones already complete, so
 repeated slices converge rather than re-listing what finished. Stop when every
 stream reports `complete`. The exit code is 0 either way: a slice that stops
 short is the outcome you asked for. The first slice runs without `--resume`,
-because `--resume` on a mirror whose last backfill completed skips everything.
+because `--resume` on a mirror whose last backfill completed skips everything;
+a fresh slice first forgets every stream's checkpoint, so a stream the budget
+never reaches is not mistaken for complete on the next resumed slice. A
+stream listed per parent is held back while its parent is incomplete, and a
+resumed slice reaches it once the parent finishes.
 
 From the library the loop is:
 

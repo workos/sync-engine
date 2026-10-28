@@ -148,12 +148,13 @@ export async function backfillStream(
         ? 'user_management'
         : 'global'
 
-  /** Spend one page of the budget. True when the stream has to stop here. */
-  const pause = (after: string | null): boolean => {
+  /**
+   * Charged as soon as a page is fetched, before its write: a page whose
+   * write fails still cost a request, and a budget that counted only
+   * successes would let a failing stream pull one extra page per call.
+   */
+  const charge = () => {
     if (budget) budget.remaining--
-    // A last page is completion whatever the budget says: there is nothing
-    // left that a later call would have to fetch.
-    return after !== null && spent()
   }
 
   const paused = (at: Record<string, unknown>): BackfillStreamResult => {
@@ -187,19 +188,22 @@ export async function backfillStream(
 
       for await (const page of api.paginate(path, params, key, stream.list.shape ?? 'list', startAfter)) {
         pages++
+        charge()
         Object.assign(stats, addStats(stats, await write(page.rows)))
-        if (pause(page.after)) {
-          // Checkpoint after the write, never before it.
-          await state.set(opts.env, stream.name, {
-            kind: 'backfill',
-            status: 'running',
-            doneParents: [...doneParents],
-            parent: pid,
-            after: page.after,
-            count: stats.created + stats.updated,
-          } satisfies BackfillState)
-          return paused({ parent: pid, after: page.after })
-        }
+        // A last page is completion whatever the budget says, and the parent
+        // boundary below records it. Every other page is checkpointed inside
+        // the parent — after the write, never before it — so a crash or a
+        // spent budget resumes at this page rather than the parent's first.
+        if (page.after === null) continue
+        await state.set(opts.env, stream.name, {
+          kind: 'backfill',
+          status: 'running',
+          doneParents: [...doneParents],
+          parent: pid,
+          after: page.after,
+          count: stats.created + stats.updated,
+        } satisfies BackfillState)
+        if (spent()) return paused({ parent: pid, after: page.after })
       }
       doneParents.add(pid)
       await state.set(opts.env, stream.name, {
@@ -219,6 +223,7 @@ export async function backfillStream(
       prior?.after ?? null,
     )) {
       pages++
+      charge()
       Object.assign(stats, addStats(stats, await write(page.rows)))
       // Checkpoint after the write, never before it.
       await state.set(opts.env, stream.name, {
@@ -227,7 +232,9 @@ export async function backfillStream(
         after: page.after,
         count: stats.created + stats.updated,
       } satisfies BackfillState)
-      if (pause(page.after)) return paused({ after: page.after })
+      // A last page is completion whatever the budget says: nothing is left
+      // that a later call would have to fetch.
+      if (page.after !== null && spent()) return paused({ after: page.after })
     }
   }
 

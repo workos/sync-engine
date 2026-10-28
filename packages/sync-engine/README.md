@@ -81,7 +81,10 @@ schema first, so `init()` is optional.
 `maxPages`, the call stops after that many pages across every stream and
 environment, leaving each checkpoint where it stopped; with `resume`, it
 continues each stream from its checkpoint (inside a parent, for the
-per-parent streams) and skips the ones already complete. Together they let a
+per-parent streams) and skips the ones already complete. A call without
+`resume` first forgets every selected stream's checkpoint, so a stream the
+budget never reached is not mistaken for complete later, and a stream listed
+per parent is held back while its parent is incomplete. Together they let a
 host with a time limit — a cron job, an edge function, a workflow activity —
 finish a backfill over several calls: call `backfill({ maxPages })` once, then
 `backfill({ resume: true, maxPages })` until no result has `complete: false`.

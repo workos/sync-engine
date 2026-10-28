@@ -201,6 +201,112 @@ describe('sync engine', () => {
     }
   })
 
+  /** The real engine over a destination with one write fault injected; see helpers/faulty.ts. */
+  const faultyEngine = (destination: FaultyDestination, streams: string[], logger = silentLogger) =>
+    new SyncEngine(
+      {
+        destination,
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams,
+        hydrate: 'off',
+        logger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({
+            apiKey: 'sk_test_1',
+            apiUrl: 'http://fake.workos.local',
+            fetchImpl: fake.fetchImpl,
+            pageSize: 100,
+          }),
+      },
+    )
+
+  it('forgets every stream checkpoint on a fresh run, even those the budget never reaches', async () => {
+    fake.createUser()
+    const engine = makeEngine(db, fake, ['users', 'invitations'])
+    await engine.backfill()
+    const listings = () => fake.requestLog.filter((r) => r.startsWith('/user_management/invitations')).length
+    const before = listings()
+
+    // A fresh bounded run spends its one page on users and never reaches invitations.
+    const fresh = await engine.backfill({ maxPages: 1 })
+    expect(fresh.find((r) => r.stream === 'invitations')).toMatchObject({ pages: 0, complete: false })
+    expect(listings()).toBe(before)
+
+    // Resuming must list invitations, not trust the completion the earlier run left behind.
+    const resumed = await engine.backfill({ resume: true })
+    expect(resumed.find((r) => r.stream === 'invitations')).toMatchObject({ pages: 1, complete: true })
+    expect(listings()).toBe(before + 1)
+  })
+
+  it('holds a child stream back while its parent is incomplete, so a resume fetches the missing children', async () => {
+    const orgA = fake.createOrganization()
+    const orgB = fake.createOrganization()
+    fake.createMembership(fake.createUser()['id'] as string, orgA['id'] as string)
+    fake.createMembership(fake.createUser()['id'] as string, orgB['id'] as string)
+    const destination = new FaultyDestination({ db, schema: 'workos' })
+    destination.poison = orgB['id'] as string
+    const { logger, lines } = captureLogger()
+    const engine = faultyEngine(destination, ['users', 'organizations', 'organization_memberships'], logger)
+
+    const first = await engine.backfill()
+    expect(first.find((r) => r.stream === 'organizations')).toMatchObject({ complete: false })
+    const held = first.find((r) => r.stream === 'organization_memberships')!
+    expect(held).toMatchObject({ pages: 0, complete: false })
+    expect(held.skippedReason).toContain('organizations')
+    // No budget was involved: this is a failure, and must not read as a pause.
+    expect(lines.map((l) => l.msg)).not.toContain('backfill paused: page budget spent; resume to continue')
+
+    destination.poison = null
+    const second = await engine.backfill({ resume: true })
+    expect(second.find((r) => r.stream === 'organizations')).toMatchObject({ complete: true })
+    expect(second.find((r) => r.stream === 'organization_memberships')).toMatchObject({ complete: true })
+    expect(await count('organization_memberships')).toBe(2)
+  })
+
+  it('charges a page to the budget even when its write fails', async () => {
+    const user = fake.createUser()
+    const destination = new FaultyDestination({ db, schema: 'workos' })
+    destination.poison = user['id'] as string
+    const engine = faultyEngine(destination, ['users', 'invitations'])
+
+    const r = await engine.backfill({ maxPages: 1 })
+    expect(r.find((s) => s.stream === 'users')).toMatchObject({ complete: false })
+    // The one page was fetched, so the budget is spent: invitations is not started.
+    expect(r.find((s) => s.stream === 'invitations')).toMatchObject({ pages: 0, complete: false })
+    expect(fake.requestLog.some((q) => q.startsWith('/user_management/invitations'))).toBe(false)
+  })
+
+  it('checkpoints inside a parent after every page, so a crash mid-parent resumes at that page', async () => {
+    const org = fake.createOrganization()
+    const members: string[] = []
+    for (let i = 0; i < 150; i++) {
+      const m = fake.createMembership(fake.createUser()['id'] as string, org['id'] as string)
+      members.push(m['id'] as string)
+    }
+    const destination = new FaultyDestination({ db, schema: 'workos' })
+    // A membership on the second page of the one organization's listing.
+    destination.poison = members[120]!
+    const engine = faultyEngine(destination, ['users', 'organizations', 'organization_memberships'])
+
+    const first = await engine.backfill()
+    const failed = first.find((r) => r.stream === 'organization_memberships')!
+    expect(failed.complete).toBe(false)
+    expect(failed.skippedReason).toMatch(/failed/)
+    expect(await count('organization_memberships')).toBe(100)
+
+    destination.poison = null
+    const before = fake.requestLog.length
+    await engine.backfill({ resume: true })
+    const since = fake.requestLog.slice(before).filter((q) => q.startsWith('/user_management/organization_memberships'))
+    // Page one was checkpointed before page two failed, so the resume asks for page two alone.
+    expect(since).toHaveLength(1)
+    expect(since[0]).toContain('after=')
+    expect(await count('organization_memberships')).toBe(150)
+  })
+
   it('applies live events after backfill', async () => {
     const user = fake.createUser({ email: 'before@example.com' })
     const engine = makeEngine(db, fake)
