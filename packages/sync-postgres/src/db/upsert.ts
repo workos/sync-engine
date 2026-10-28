@@ -10,8 +10,9 @@
  *    events sharing a timestamp cause the second to be dropped forever, which
  *    is exactly how a comparable billing sync engine kept subscriptions
  *    "trialing" after they converted. Ties resolve last-writer-wins, and the
- *    backstop is a re-list (`refresh`, or `backfill`) rather than the
- *    comparison: `reconcile` compares ids only and cannot see a wrong payload.
+ *    backstop is a re-list rather than the comparison — `refresh` for
+ *    top-level streams, `backfill` for those listed per parent — because
+ *    `reconcile` compares ids only and cannot see a wrong payload.
  *
  * 2. **Merge, don't replace, when writing from an event.** WorkOS event
  *    payloads are subsets of the REST objects, so a whole-row replace would

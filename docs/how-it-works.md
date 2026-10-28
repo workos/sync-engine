@@ -87,10 +87,10 @@ state with no error anywhere.
 
 `>=` makes ties last-writer-wins. That is not a guarantee of correctness for
 simultaneous events, because nothing can be, so the backstop is a re-list
-rather than the comparison: `refresh` (or a fresh `backfill`) replaces each
-row from the REST object, which the gate lets through at an equal timestamp
-when the payload differs. `reconcile` cannot repair a tie: it compares ids
-only.
+rather than the comparison: `refresh` for the top-level streams, a fresh
+`backfill` for the streams listed per parent. Either replaces each row from
+the REST object, which the gate lets through at an equal timestamp when the
+payload differs. `reconcile` cannot repair a tie: it compares ids only.
 
 A newer observation advances `_updated_at` even when its payload is unchanged,
 so a delayed event cannot overwrite it. Only an identical payload at the same
