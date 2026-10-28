@@ -145,40 +145,40 @@ import type {
   Logger,
   RejectedEvent,
   Row,
-  StreamDef,
+  TableDef,
   WorkOSEvent,
   WriteMode,
   WriteStats,
 } from "@workos/sync-engine";
 
 class MyDestination implements Destination {
-  init(streams: StreamDef[], logger?: Logger): Promise<void>;
+  init(streams: TableDef[], logger?: Logger): Promise<void>;
   close(): Promise<void>;
 
   upsert(
-    stream: StreamDef,
+    stream: TableDef,
     env: string,
     rows: Row[],
     mode: WriteMode,
   ): Promise<WriteStats>;
-  delete(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
-  relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
-  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>;
+  delete(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats>;
+  relink(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats>;
+  unlink(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats>;
 
-  liveIds(stream: StreamDef, env: string): Promise<string[]>;
-  rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>;
+  liveIds(stream: TableDef, env: string): Promise<string[]>;
+  rawRows(stream: TableDef, env: string): Promise<Record<string, unknown>[]>;
   diffIds(
-    stream: StreamDef,
+    stream: TableDef,
     env: string,
     remote: AsyncIterable<Record<string, unknown>[]>,
   ): Promise<IdDiff>;
   freshness(
-    stream: StreamDef,
+    stream: TableDef,
     env: string,
     lagWindowHours: number,
   ): Promise<FreshnessRow>;
   redact(
-    streams: StreamDef[],
+    streams: TableDef[],
     env: string,
     userId: string,
   ): Promise<{ table: string; rows: number }[]>;
@@ -211,6 +211,13 @@ class MyDestination implements Destination {
   isTransientError?(err: unknown): boolean; // optional
 }
 ```
+
+A `TableDef` is the destination-facing half of a stream: `name`, `key`,
+`mode`, `columns`, `group`, and a `description`. The WorkOS half — the list
+endpoint, the events, hydration, the credential paths the engine strips —
+lives on `StreamDef`, which extends it and is read only by the engine. The
+contract is typed on `TableDef` so a destination cannot come to depend on
+where rows come from: it is handed tables and payloads, nothing else.
 
 The engine relies on seven properties of your implementation.
 

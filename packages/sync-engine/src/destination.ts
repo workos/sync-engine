@@ -7,6 +7,11 @@
  * A new engine (Snowflake, SQLite, ...) is a new implementation of it; see
  * `@workos/sync-postgres` for the Postgres one.
  *
+ * Streams cross this boundary as `TableDef`s: name, key, mode, columns,
+ * group. The WorkOS half of a stream — endpoints, events, hydration,
+ * credential paths — stays on `StreamDef` and never reaches a destination,
+ * so a destination cannot come to depend on it.
+ *
  * Implementations own the write semantics the engine depends on:
  *
  * - **Staleness gate.** An `upsert` must reject a row whose `updatedAt` is
@@ -39,7 +44,7 @@
  * It holds whole raw events, so it must be scrubbed by `redact` like the
  * `events` archive is. See `sync/quarantine.ts` for when it is written.
  */
-import type { Logger, StreamDef, WorkOSEvent, WriteStats } from './types.js'
+import type { Logger, TableDef, WorkOSEvent, WriteStats } from './types.js'
 
 export interface Row {
   data: Record<string, unknown>
@@ -120,28 +125,28 @@ export interface Destination {
    * before every engine operation, so it must be idempotent and cheap once
    * the schema is current.
    */
-  init(streams: StreamDef[], logger?: Logger): Promise<void>
+  init(streams: TableDef[], logger?: Logger): Promise<void>
   close(): Promise<void>
 
-  upsert(stream: StreamDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats>
-  delete(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
+  upsert(stream: TableDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats>
+  delete(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats>
   /** Restore tombstoned membership rows (a re-add after a removal). */
-  relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
+  relink(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats>
   /**
    * Tombstone membership rows (a removal). Unlike `delete`, this is
    * staleness-gated: a removal older than the row is a no-op, because a
    * quarantined removal can be replayed after a newer re-add has landed.
    */
-  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats>
+  unlink(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats>
 
   /**
    * Complete keys of non-tombstoned rows, in a stable order. Single-column
    * keys are plain strings; composite keys are JSON arrays of strings in
    * `stream.key` order, serialized with `encodeKey`.
    */
-  liveIds(stream: StreamDef, env: string): Promise<string[]>
+  liveIds(stream: TableDef, env: string): Promise<string[]>
   /** Stored payloads of every row, tombstoned or not. */
-  rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]>
+  rawRows(stream: TableDef, env: string): Promise<Record<string, unknown>[]>
   /**
    * The set difference between the live rows and the stream's list endpoint,
    * for reconciliation. `remote` yields the endpoint one page at a time. The
@@ -162,16 +167,16 @@ export interface Destination {
    * implementation may hold one pinned connection for the duration.
    */
   diffIds(
-    stream: StreamDef,
+    stream: TableDef,
     env: string,
     remote: AsyncIterable<Record<string, unknown>[]>,
   ): Promise<IdDiff>
-  freshness(stream: StreamDef, env: string, lagWindowHours: number): Promise<FreshnessRow>
+  freshness(stream: TableDef, env: string, lagWindowHours: number): Promise<FreshnessRow>
   /**
    * Erase every trace of one subject from the given streams and from the
    * event archive, which embeds payloads. Returns per-table counts.
    */
-  redact(streams: StreamDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]>
+  redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]>
 
   /** Cursor and run state, keyed by `(env, stream)`. */
   getState<T>(env: string, stream: string): Promise<T | null>

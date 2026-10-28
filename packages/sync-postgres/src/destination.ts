@@ -11,7 +11,7 @@ import type {
   Logger,
   RejectedEvent,
   Row,
-  StreamDef,
+  TableDef,
   WorkOSEvent,
   WriteMode,
   WriteStats,
@@ -95,11 +95,11 @@ export class PostgresDestination implements Destination {
     return { schema: this.schema, syncId: this.syncId }
   }
 
-  private table(stream: StreamDef): string {
+  private table(stream: TableDef): string {
     return `${quoteIdent(this.schema)}.${ident(stream.name)}`
   }
 
-  async init(streams: StreamDef[], logger?: Logger): Promise<void> {
+  async init(streams: TableDef[], logger?: Logger): Promise<void> {
     if (!this.db) {
       this.db = await connect(this.options.databaseUrl!)
       this.ownsDb = true
@@ -114,23 +114,23 @@ export class PostgresDestination implements Destination {
     if (this.ownsDb && this.db) await this.db.close()
   }
 
-  upsert(stream: StreamDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats> {
+  upsert(stream: TableDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats> {
     return upsertRows(this.client, this.writeOpts, stream, env, rows, mode)
   }
 
-  delete(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats> {
+  delete(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats> {
     return deleteRows(this.client, this.writeOpts, stream, env, rows)
   }
 
-  relink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats> {
+  relink(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats> {
     return relinkRows(this.client, this.writeOpts, stream, env, rows)
   }
 
-  unlink(stream: StreamDef, env: string, rows: Row[]): Promise<WriteStats> {
+  unlink(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats> {
     return unlinkRows(this.client, this.writeOpts, stream, env, rows)
   }
 
-  async liveIds(stream: StreamDef, env: string): Promise<string[]> {
+  async liveIds(stream: TableDef, env: string): Promise<string[]> {
     const keys = stream.key.map((name) => `${ident(name)}::text`).join(', ')
     const r = await this.client.query<{ id: string[] }>(
       `select array[${keys}] as id from ${this.table(stream)}
@@ -140,7 +140,7 @@ export class PostgresDestination implements Destination {
     return r.rows.map((row) => encodeKey(row.id))
   }
 
-  async rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]> {
+  async rawRows(stream: TableDef, env: string): Promise<Record<string, unknown>[]> {
     const r = await this.client.query<{ raw: Record<string, unknown> }>(
       `select "_raw" as raw from ${this.table(stream)} where "_env" = $1`,
       [env],
@@ -150,14 +150,14 @@ export class PostgresDestination implements Destination {
 
   /** Staged into a temp table and diffed in SQL; see `db/reconcile.ts`. */
   diffIds(
-    stream: StreamDef,
+    stream: TableDef,
     env: string,
     remote: AsyncIterable<Record<string, unknown>[]>,
   ): Promise<IdDiff> {
     return diffIdsInSql(this.client, this.writeOpts, stream, env, remote)
   }
 
-  async freshness(stream: StreamDef, env: string, lagWindowHours: number): Promise<FreshnessRow> {
+  async freshness(stream: TableDef, env: string, lagWindowHours: number): Promise<FreshnessRow> {
     const hasDeleted = stream.mode !== 'append'
     const r = await this.client.query<{
       rows: string
@@ -191,7 +191,7 @@ export class PostgresDestination implements Destination {
   }
 
   async redact(
-    streams: StreamDef[],
+    streams: TableDef[],
     env: string,
     userId: string,
   ): Promise<{ table: string; rows: number }[]> {
