@@ -33,7 +33,7 @@ Install this package directly only to write a new destination.
 - **Webhook verification** — `verifyWebhook`: a verified delivery is a nudge
   to poll now; state still flows through the ordered events stream.
 - **Quarantine** — `applyWithQuarantine`: a write that fails deterministically
-  on two consecutive polls is set aside in the destination's rejected store,
+  on two consecutive polls is set aside in the bookkeeping store,
   so one bad payload cannot stall every stream in the environment. Transient
   errors never qualify, and `replayRejected` puts an event back.
 - **`SyncEngine`** — the lifecycle that ties them together.
@@ -59,6 +59,7 @@ and the staleness gate decides which version wins.
 | Option             | Default                             |                                                                                                                                                         |
 | ------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `destination`      | —                                   | A `Destination` implementation. Required.                                                                                                               |
+| `bookkeeping`      | the destination's                   | A `Bookkeeping` store for cursors, the lease and the quarantine. Required only for a destination that keeps none; see below.                           |
 | `environments`     | —                                   | `{ name, apiKey, apiUrl? }[]`. `name` is written to every row and must never change.                                                                    |
 | `streams`          | `defaultStreams()`                  | Stream names to sync: every stream with events. Poll-only streams are opt-in. `events` is always included.                                              |
 | `extraColumns`     | —                                   | Extra typed columns to project out of `_raw`, keyed by stream. Add-only.                                                                                |
@@ -132,21 +133,20 @@ transient errors it does not.
 ## Writing a destination
 
 A destination is one class implementing `Destination`. The engine speaks to it
-only in terms of stream definitions and JSON payloads; the physical schema is
-entirely yours.
+only in terms of table definitions and JSON payloads; the physical schema is
+entirely yours. Cursors, the single-writer lease and the quarantine are not
+its concern: they live in a bookkeeping store (next section), which a
+destination either keeps itself or is paired with.
 
 ```ts
 import type {
+  Bookkeeping,
   Destination,
   FreshnessRow,
   IdDiff,
-  Lease,
-  LeaseResult,
   Logger,
-  RejectedEvent,
   Row,
   TableDef,
-  WorkOSEvent,
   WriteMode,
   WriteStats,
 } from "@workos/sync-engine";
@@ -154,6 +154,7 @@ import type {
 class MyDestination implements Destination {
   init(streams: TableDef[], logger?: Logger): Promise<void>;
   close(): Promise<void>;
+  readonly bookkeeping?: Bookkeeping; // the store it keeps, if any
 
   upsert(
     stream: TableDef,
@@ -183,31 +184,6 @@ class MyDestination implements Destination {
     userId: string,
   ): Promise<{ table: string; rows: number }[]>;
 
-  getState<T>(env: string, stream: string): Promise<T | null>;
-  setState(env: string, stream: string, state: unknown): Promise<void>;
-  setStateIfHeld(
-    env: string,
-    stream: string,
-    state: unknown,
-    holder: string,
-    expected: unknown,
-  ): Promise<boolean>;
-
-  acquireLease(
-    env: string,
-    holder: string,
-    ttlMs: number,
-  ): Promise<LeaseResult>;
-  releaseLease(env: string, holder: string): Promise<void>;
-  getLease(env: string): Promise<Lease | null>;
-
-  reject(
-    env: string,
-    rows: { event: WorkOSEvent; error: string }[],
-  ): Promise<void>;
-  rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]>;
-  rejectedCount(env: string): Promise<number>;
-  clearRejected(env: string, ids: string[]): Promise<number>;
   isTransientError?(err: unknown): boolean; // optional
 }
 ```
@@ -219,7 +195,7 @@ lives on `StreamDef`, which extends it and is read only by the engine. The
 contract is typed on `TableDef` so a destination cannot come to depend on
 where rows come from: it is handed tables and payloads, nothing else.
 
-The engine relies on seven properties of your implementation.
+The engine relies on five properties of your implementation.
 
 1. **Staleness gate, `>=` not `>`.** `upsert` rejects a row whose `updatedAt`
    is older than the stored one and accepts an equal one. With a strict `<`,
@@ -238,23 +214,6 @@ The engine relies on seven properties of your implementation.
    resolves. A write must not be buffered past its own call.
 5. **`init` is called before every operation.** It must be idempotent and
    cheap once the schema is current — cache that, rather than re-querying.
-6. **`acquireLease` is atomic.** Of two processes asking for the same
-   `(env)` at once, exactly one gets `acquired: true`; the other is told the
-   holder. It succeeds when the lease is free, expired by the _database's_
-   clock, or already held by `holder` (a renewal). `releaseLease` is a no-op
-   for anyone but the holder, and `getLease` returns `null` for an expired
-   row. Without this, a rolling deploy has two processes advancing one cursor.
-   In SQL it is one `INSERT ... ON CONFLICT DO UPDATE ... WHERE` on a row
-   keyed by `(syncId, env)`; see `db/lease.ts` in the Postgres destination.
-7. **The checkpoint is fenced by the lease.** `setStateIfHeld` writes only
-   if `holder` holds the unexpired lease for `env` _and_ the stored state
-   still equals `expected` (`null` for no row), with both checked atomically
-   with the write. The engine saves the tail cursor through it, so a process
-   that stalled past its lease, or whose position a backfill re-captured
-   meanwhile, is refused by the database rather than by a check made a moment
-   earlier. Postgres uses a transaction: provisionally write the cursor,
-   then lock and validate the lease after any cursor wait. A refused write
-   rolls back to a savepoint; see `db/lease.ts`.
 
 `WriteStats` (`created` / `updated` / `skipped` / `deleted`) is a health metric
 the engine logs but never branches on; a database that cannot tell an insert
@@ -284,19 +243,112 @@ with nothing to stage into can delegate to the exported `diffIdsInMemory`,
 which is the old in-process algorithm, and accept that its memory grows with
 the stream.
 
-The last five methods are the **quarantine store**, separate from the mirror.
-`reject` stores whole raw events keyed by `(env, eventId)` — the archive write
-may itself be what failed, so a reference into it is not enough — and replaces
-the error when an id is rejected again. `rejected` returns them oldest first by
-event id, `rejectedCount` is what `status()` reports on every monitoring poll
-(a count, so it must not fetch the payloads), and `clearRejected` forgets them
-after a replay. Because they embed payloads, `redact` must scrub this store as
-well as the archive. `isTransientError`
-is optional: return `true` for errors that mean the database had a bad moment (a
-dropped connection, a deadlock, a full disk), never for a verdict on the row,
-and the engine will retry instead of ever quarantining on them. Without it,
-every error is presumed deterministic and only the two-sightings rule stands
-between a flaky connection and a quarantine.
+`isTransientError` is optional: return `true` for errors that mean the
+database had a bad moment (a dropped connection, a deadlock, a full disk),
+never for a verdict on the row, and the engine will retry instead of ever
+quarantining on them. Without it, every error is presumed deterministic and
+only the two-sightings rule stands between a flaky connection and a
+quarantine.
+
+## The bookkeeping store
+
+Cursors, the single-writer lease and the quarantine are the engine's own
+records, and they do not have to live where the mirror does. By default they
+do: `PostgresDestination` keeps a `PostgresBookkeeping` on its own connection
+and offers it as `bookkeeping`, so a checkpoint and the rows it covers share
+one database and nothing needs configuring. A destination that cannot make an
+atomic conditional write — a spreadsheet, an object store, a queue — offers
+none, and is paired with a store through `SyncEngineConfig.bookkeeping`:
+
+```ts
+import { SyncEngine, PostgresBookkeeping } from "@workos/sync-postgres";
+
+new SyncEngine({
+  destination: new SheetsDestination(/* ... */),
+  bookkeeping: new PostgresBookkeeping({ databaseUrl }),
+  environments: [/* ... */],
+});
+```
+
+A store is one class implementing `Bookkeeping`:
+
+```ts
+import type {
+  Bookkeeping,
+  Lease,
+  LeaseResult,
+  Logger,
+  RejectedEvent,
+  WorkOSEvent,
+} from "@workos/sync-engine";
+
+class MyBookkeeping implements Bookkeeping {
+  init(logger?: Logger): Promise<void>;
+  close(): Promise<void>;
+
+  getState<T>(env: string, stream: string): Promise<T | null>;
+  setState(env: string, stream: string, state: unknown): Promise<void>;
+  setStateIfHeld(
+    env: string,
+    stream: string,
+    state: unknown,
+    holder: string,
+    expected: unknown,
+  ): Promise<boolean>;
+
+  acquireLease(
+    env: string,
+    holder: string,
+    ttlMs: number,
+  ): Promise<LeaseResult>;
+  releaseLease(env: string, holder: string): Promise<void>;
+  getLease(env: string): Promise<Lease | null>;
+
+  reject(
+    env: string,
+    rows: { event: WorkOSEvent; error: string }[],
+  ): Promise<void>;
+  rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]>;
+  rejectedCount(env: string): Promise<number>;
+  clearRejected(env: string, ids: string[]): Promise<number>;
+
+  redact(
+    env: string,
+    userId: string,
+  ): Promise<{ table: string; rows: number }[]>;
+}
+```
+
+The engine relies on three properties of it.
+
+1. **Durable on return.** The engine treats a resolved `setState` as a
+   checkpoint. A write must not be buffered past its own call.
+2. **`acquireLease` is atomic.** Of two processes asking for the same
+   `(env)` at once, exactly one gets `acquired: true`; the other is told the
+   holder. It succeeds when the lease is free, expired by the _store's_
+   clock, or already held by `holder` (a renewal). `releaseLease` is a no-op
+   for anyone but the holder, and `getLease` returns `null` for an expired
+   row. Without this, a rolling deploy has two processes advancing one cursor.
+   In SQL it is one `INSERT ... ON CONFLICT DO UPDATE ... WHERE` on a row
+   keyed by `(syncId, env)`; see `db/lease.ts` in `@workos/sync-postgres`.
+3. **The checkpoint is fenced by the lease.** `setStateIfHeld` writes only
+   if `holder` holds the unexpired lease for `env` _and_ the stored state
+   still equals `expected` (`null` for no row), with both checked atomically
+   with the write. The engine saves the tail cursor through it, so a process
+   that stalled past its lease, or whose position a backfill re-captured
+   meanwhile, is refused by the store rather than by a check made a moment
+   earlier. Postgres uses a transaction: provisionally write the cursor,
+   then lock and validate the lease after any cursor wait. A refused write
+   rolls back to a savepoint; see `db/lease.ts`.
+
+`reject` through `clearRejected` are the **quarantine**. `reject` stores whole
+raw events keyed by `(env, eventId)` — the archive write may itself be what
+failed, so a reference into it is not enough — and replaces the error when an
+id is rejected again. `rejected` returns them oldest first by event id,
+`rejectedCount` is what `status()` reports on every monitoring poll (a count,
+so it must not fetch the payloads), and `clearRejected` forgets them after a
+replay. Because they embed payloads, the store's `redact` must scrub them; the
+engine calls it alongside the destination's.
 
 ## License
 

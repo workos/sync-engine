@@ -11,15 +11,16 @@
  * Steps 2 and 3 overlap on purpose. Anything that changes mid-backfill is
  * replayed in step 3, and the staleness gate decides which version wins.
  *
- * Step 4 runs under a single-writer lease held in the destination. Without
- * it, a rolling deploy has the old and the new process both advancing the
- * same cursor for as long as they overlap. Everything else — backfill,
- * reconcile, refresh, status, redact — is idempotent and runs alongside the
- * tail without taking it.
+ * Step 4 runs under a single-writer lease held in the bookkeeping store —
+ * by default the destination's own database. Without it, a rolling deploy
+ * has the old and the new process both advancing the same cursor for as long
+ * as they overlap. Everything else — backfill, reconcile, refresh, status,
+ * redact — is idempotent and runs alongside the tail without taking it.
  */
 import os from 'node:os'
 import { randomBytes } from 'node:crypto'
-import type { Destination, FreshnessRow, Lease, RejectedEvent } from './destination.js'
+import type { Destination, FreshnessRow } from './destination.js'
+import type { Bookkeeping, Lease, RejectedEvent } from './bookkeeping.js'
 import { StateStore, type TailState, type TailUpdate } from './state.js'
 import { STREAMS, streamByName, defaultStreams, subscribedEventTypes } from './catalog.js'
 import { WorkOSClient, WorkOSApiError } from './workos/client.js'
@@ -115,6 +116,8 @@ interface LeaseRefusal {
 export class SyncEngine {
   readonly streams: StreamDef[]
   private destination: Destination
+  /** Cursors, the lease and the quarantine: the destination's own store unless configured otherwise. */
+  private bookkeeping: Bookkeeping
   private state: StateStore
   private logger: Logger
   private clients = new Map<string, WorkOSClient>()
@@ -163,7 +166,19 @@ export class SyncEngine {
     // Credential paths a stream declares are stripped before any row reaches
     // the destination, whichever database is behind it.
     this.destination = redacting(config.destination)
-    this.state = new StateStore(this.destination)
+    // The destination's store, when it keeps one, is the default. A
+    // destination that cannot make an atomic conditional write keeps none
+    // and has to be paired with one; silently running without a lease or a
+    // fenced checkpoint is not an option.
+    const bookkeeping = config.bookkeeping ?? config.destination.bookkeeping
+    if (!bookkeeping) {
+      throw new Error(
+        'this destination keeps no bookkeeping store: pass one as `bookkeeping` ' +
+          '(for example `PostgresBookkeeping` from @workos/sync-postgres)',
+      )
+    }
+    this.bookkeeping = bookkeeping
+    this.state = new StateStore(this.bookkeeping)
     this.logger = config.logger ?? createLogger('info')
     // Every event is archived to `events` before it is routed, so that table
     // has to exist whatever else is selected.
@@ -224,9 +239,10 @@ export class SyncEngine {
     return c
   }
 
-  /** Connect and apply the schema. Idempotent. */
+  /** Connect and apply the schema, then ready the bookkeeping store. Idempotent. */
   async init(): Promise<void> {
     await this.destination.init(this.streams, this.logger)
+    await this.bookkeeping.init(this.logger)
   }
 
   /**
@@ -331,7 +347,7 @@ export class SyncEngine {
       try {
         for (const env of this.config.environments) {
           if (this.held.has(env.name)) continue
-          const r = await this.destination.acquireLease(env.name, this.holder, this.leaseTtlMs)
+          const r = await this.bookkeeping.acquireLease(env.name, this.holder, this.leaseTtlMs)
           if (!r.acquired) throw new LeaseHeldError(env.name, r.holder, r.expiresAt)
           taken.push(env.name)
           this.held.add(env.name)
@@ -423,6 +439,7 @@ export class SyncEngine {
         // so the cursor can move. See sync/quarantine.ts.
         const result = await applyWithQuarantine(
           this.destination,
+          this.bookkeeping,
           events,
           { env: env.name, logger: this.logger, hydrate: this.hydrate, api },
           this.suspectsFor(env.name),
@@ -507,7 +524,7 @@ export class SyncEngine {
     if (await this.state.setTailIfHeld(env, next, this.holder, before)) return true
     // Refused. The two reasons mean different things to an operator, so look
     // up which it was; this path is rare enough that one extra read is fine.
-    const lease = await this.destination.getLease(env)
+    const lease = await this.bookkeeping.getLease(env)
     if (lease?.holder === this.holder) {
       this.logger.warn('events cursor moved during this poll; not checkpointing', {
         env,
@@ -638,7 +655,7 @@ export class SyncEngine {
   private async acquirePass(): Promise<LeaseRefusal | undefined> {
     const ordered = this.config.environments.map((e) => e.name).sort()
     for (const env of ordered) {
-      const r = await this.destination.acquireLease(env, this.holder, this.leaseTtlMs)
+      const r = await this.bookkeeping.acquireLease(env, this.holder, this.leaseTtlMs)
       if (r.acquired) {
         this.held.add(env)
         continue
@@ -662,7 +679,7 @@ export class SyncEngine {
   private async renewHeld(): Promise<void> {
     for (const env of [...this.held]) {
       try {
-        const r = await this.destination.acquireLease(env, this.holder, this.leaseTtlMs)
+        const r = await this.bookkeeping.acquireLease(env, this.holder, this.leaseTtlMs)
         if (!r.acquired) this.lostLease(env, r.holder)
       } catch (err) {
         this.logger.warn('lease renewal failed', { env, error: String(err) })
@@ -688,7 +705,7 @@ export class SyncEngine {
     for (const env of envs) this.held.delete(env)
     for (const env of envs) {
       try {
-        await this.destination.releaseLease(env, this.holder)
+        await this.bookkeeping.releaseLease(env, this.holder)
       } catch (err) {
         // Not worth failing a shutdown over: the lease expires by itself.
         this.logger.warn('lease release failed; it will expire on its own', { env, error: String(err) })
@@ -758,10 +775,10 @@ export class SyncEngine {
         cursorAgeDays: cursorAgeDays(tail?.lastEventAt),
         lastPolledAt: tail?.lastPolledAt ?? null,
         pollAgeSeconds: Number.isFinite(polled) ? (Date.now() - polled) / 1000 : null,
-        lease: await this.destination.getLease(env.name),
+        lease: await this.bookkeeping.getLease(env.name),
         // A count, not a listing: `status` runs on every monitoring poll, and
         // each rejected row carries a whole event payload.
-        rejected: await this.destination.rejectedCount(env.name),
+        rejected: await this.bookkeeping.rejectedCount(env.name),
         streams: await freshness(this.destination, env.name, this.streams),
       }
     }
@@ -773,7 +790,7 @@ export class SyncEngine {
     await this.init()
     const out: Record<string, RejectedEvent[]> = {}
     for (const env of this.config.environments) {
-      out[env.name] = await this.destination.rejected(env.name, options)
+      out[env.name] = await this.bookkeeping.rejected(env.name, options)
     }
     return out
   }
@@ -796,7 +813,7 @@ export class SyncEngine {
     const stillRejected: { eventId: string; error: string }[] = []
     for (const env of this.config.environments) {
       const api = this.clientFor(env)
-      const rows = await this.destination.rejected(env.name, options)
+      const rows = await this.bookkeeping.rejected(env.name, options)
       for (const row of rows) {
         try {
           await applyEvents(this.destination, [row.raw], {
@@ -810,12 +827,12 @@ export class SyncEngine {
           // so, rather than stamping every remaining row with a connection error.
           if (isFatal(err) || isTransientError(err, this.destination)) throw err
           const error = String(err)
-          await this.destination.reject(env.name, [{ event: row.raw, error }])
+          await this.bookkeeping.reject(env.name, [{ event: row.raw, error }])
           stillRejected.push({ eventId: row.eventId, error })
           this.logger.warn('replayed event failed again', { env: env.name, eventId: row.eventId, error })
           continue
         }
-        await this.destination.clearRejected(env.name, [row.eventId])
+        await this.bookkeeping.clearRejected(env.name, [row.eventId])
         replayed++
         this.logger.info('replayed rejected event', {
           env: env.name,
@@ -828,14 +845,17 @@ export class SyncEngine {
   }
 
   /**
-   * Erase every trace of one subject: mirror rows and archived event payloads.
-   * A mirror inherits the deletion obligations of any other replica of the data.
+   * Erase every trace of one subject: mirror rows, archived event payloads,
+   * and quarantined events, which embed payloads too and may hold the only
+   * copy of one. A mirror inherits the deletion obligations of any other
+   * replica of the data.
    */
   async redact(userId: string): Promise<{ table: string; rows: number }[]> {
     await this.init()
     const out: { table: string; rows: number }[] = []
     for (const env of this.config.environments) {
       out.push(...(await this.destination.redact(this.streams, env.name, userId)))
+      out.push(...(await this.bookkeeping.redact(env.name, userId)))
     }
     return out
   }
@@ -850,6 +870,7 @@ export class SyncEngine {
     this.stop()
     await this.serialized(() => this.releaseHeld())
     await this.destination.close()
+    await this.bookkeeping.close()
   }
 }
 

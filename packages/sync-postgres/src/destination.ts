@@ -1,18 +1,18 @@
 /**
  * The Postgres destination: everything `@workos/sync-engine` needs to know about a
  * database, implemented with `pg` in production and PGlite in tests.
+ *
+ * It keeps a `PostgresBookkeeping` store on the same connection and offers it
+ * as `bookkeeping`, so cursors, the lease and the quarantine land in the
+ * mirror's database unless the engine is configured with another store.
  */
 import type {
   Destination,
   FreshnessRow,
   IdDiff,
-  Lease,
-  LeaseResult,
   Logger,
-  RejectedEvent,
   Row,
   TableDef,
-  WorkOSEvent,
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
@@ -20,11 +20,10 @@ import { encodeKey } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 import { diffIdsInSql } from './db/reconcile.js'
-import { acquireLease, releaseLease, getLease, setStateIfHeld } from './db/lease.js'
-import { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
 import { isTransientPgError } from './db/errors.js'
 import { migrate, type MigrateResult } from './schema/migrate.js'
 import { quoteIdent, safeIdentifier } from './schema/ddl.js'
+import { PostgresBookkeeping } from './bookkeeping.js'
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
 
@@ -63,9 +62,14 @@ export interface PostgresDestinationOptions {
 
 export class PostgresDestination implements Destination {
   readonly schema: string
+  /**
+   * Cursors, the single-writer lease and the quarantine, on this
+   * destination's connection and in its schema. The engine uses it unless
+   * configured with another store.
+   */
+  readonly bookkeeping: PostgresBookkeeping
   private db: SqlClient | undefined
   private ownsDb = false
-  private readonly syncId: string
   private readonly batchSize: number | undefined
   /**
    * What the most recent `init()` did, including any column drift it found.
@@ -77,9 +81,22 @@ export class PostgresDestination implements Destination {
   constructor(private options: PostgresDestinationOptions) {
     if (!options.db && !options.databaseUrl) throw new Error('databaseUrl or db is required')
     this.schema = options.schema ?? 'workos'
-    this.syncId = options.syncId ?? 'default'
     this.batchSize = options.batchSize
     this.db = options.db
+    // The connection may not exist until `init()`, so the store is handed a
+    // client that resolves it at call time. Its `close` is a no-op: the
+    // connection is this destination's to close.
+    const shared: SqlClient = {
+      query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => this.client.query<T>(sql, params),
+      exec: (sql: string) => this.client.exec(sql),
+      transaction: <T>(fn: (tx: SqlClient) => Promise<T>) => this.client.transaction(fn),
+      close: async () => {},
+    }
+    this.bookkeeping = new PostgresBookkeeping({
+      db: shared,
+      schema: this.schema,
+      syncId: options.syncId ?? 'default',
+    })
   }
 
   private get client(): SqlClient {
@@ -89,10 +106,6 @@ export class PostgresDestination implements Destination {
 
   private get writeOpts() {
     return { schema: this.schema, batchSize: this.batchSize }
-  }
-
-  private get bookkeepingOpts() {
-    return { schema: this.schema, syncId: this.syncId }
   }
 
   private table(stream: TableDef): string {
@@ -108,6 +121,9 @@ export class PostgresDestination implements Destination {
       repair: this.options.repairColumns,
       repairViews: this.options.repairViews,
     })
+    // The store's tables too, so a destination used on its own — without the
+    // engine calling `bookkeeping.init()` — still has them.
+    await this.bookkeeping.init(logger)
   }
 
   async close(): Promise<void> {
@@ -190,6 +206,10 @@ export class PostgresDestination implements Destination {
     }
   }
 
+  /**
+   * Mirror rows and the archived events that embed them. The quarantine is
+   * the bookkeeping store's to scrub; the engine asks it separately.
+   */
   async redact(
     streams: TableDef[],
     env: string,
@@ -215,70 +235,10 @@ export class PostgresDestination implements Destination {
       [env, userId],
     )
     if (ev.rows.length > 0) out.push({ table: 'events', rows: ev.rows.length })
-    // Quarantined events embed the payload too, and they may be the only copy
-    // of it: an event rejected before its archive write succeeded is nowhere
-    // in `events`.
-    const rj = await this.client.query(
-      `delete from ${quoteIdent(this.schema)}."_rejected"
-       where sync_id = $1 and env = $2 and ("object_id" = $3 or "_raw"->'data'->>'user_id' = $3) returning 1`,
-      [this.syncId, env, userId],
-    )
-    if (rj.rows.length > 0) out.push({ table: '_rejected', rows: rj.rows.length })
     return out
-  }
-
-  reject(env: string, rows: { event: WorkOSEvent; error: string }[]): Promise<void> {
-    return rejectEvents(this.client, this.bookkeepingOpts, env, rows)
-  }
-
-  rejected(env: string, opts: { ids?: string[] } = {}): Promise<RejectedEvent[]> {
-    return listRejected(this.client, this.bookkeepingOpts, env, opts.ids)
-  }
-
-  rejectedCount(env: string): Promise<number> {
-    return countRejected(this.client, this.bookkeepingOpts, env)
-  }
-
-  clearRejected(env: string, ids: string[]): Promise<number> {
-    return clearRejected(this.client, this.bookkeepingOpts, env, ids)
   }
 
   isTransientError(err: unknown): boolean {
     return isTransientPgError(err)
-  }
-
-  async getState<T>(env: string, stream: string): Promise<T | null> {
-    const r = await this.client.query<{ state: T }>(
-      `select state from ${quoteIdent(this.schema)}."_sync_state"
-       where sync_id = $1 and env = $2 and stream = $3`,
-      [this.syncId, env, stream],
-    )
-    return r.rows[0]?.state ?? null
-  }
-
-  async setState(env: string, stream: string, state: unknown): Promise<void> {
-    await this.client.query(
-      `insert into ${quoteIdent(this.schema)}."_sync_state" (sync_id, env, stream, state, updated_at)
-       values ($1, $2, $3, $4::jsonb, now())
-       on conflict (sync_id, env, stream) do update
-         set state = excluded.state, updated_at = now()`,
-      [this.syncId, env, stream, JSON.stringify(state)],
-    )
-  }
-
-  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean> {
-    return setStateIfHeld(this.client, this.schema, this.syncId, env, stream, state, holder, expected)
-  }
-
-  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult> {
-    return acquireLease(this.client, this.schema, this.syncId, env, holder, ttlMs)
-  }
-
-  releaseLease(env: string, holder: string): Promise<void> {
-    return releaseLease(this.client, this.schema, this.syncId, env, holder)
-  }
-
-  getLease(env: string): Promise<Lease | null> {
-    return getLease(this.client, this.schema, this.syncId, env)
   }
 }

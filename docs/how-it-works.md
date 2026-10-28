@@ -203,10 +203,12 @@ constraints no.
 
 ## Cursors and checkpoints
 
-Cursor state lives in `workos._sync_state`, in the same database as the data,
-keyed by `(sync_id, env, stream)`. The tail position is one row per
-environment, under the stream name `__tail__`. Backfill progress is one row
-per stream.
+Cursor state lives in `workos._sync_state`, keyed by `(sync_id, env, stream)`.
+That table belongs to the bookkeeping store, which by default is the Postgres
+destination's own database, so a checkpoint and the rows it covers share one
+place; a destination that cannot make an atomic conditional write is paired
+with a separate store instead. The tail position is one row per environment,
+under the stream name `__tail__`. Backfill progress is one row per stream.
 
 **A cursor is never advanced before the writes it covers are durable.**
 

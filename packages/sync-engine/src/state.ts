@@ -1,12 +1,13 @@
 /**
  * Cursor and run state.
  *
- * State lives in the destination, alongside the data, so a cursor checkpoint
- * and the rows it covers share a transaction domain. The invariant that
- * matters: a cursor is never advanced before the writes it describes are
- * durable. Getting that backwards loses data silently on a crash.
+ * State lives in the bookkeeping store — by default the destination's own
+ * database, so a cursor checkpoint and the rows it covers share one place.
+ * The invariant that matters: a cursor is never advanced before the writes
+ * it describes are durable. Getting that backwards loses data silently on a
+ * crash.
  */
-import type { Destination } from './destination.js'
+import type { Bookkeeping } from './bookkeeping.js'
 
 /** Live tail position: the last event id processed. */
 export interface TailState {
@@ -71,14 +72,14 @@ function tailRecord(next: TailUpdate): TailState {
 }
 
 export class StateStore {
-  constructor(private destination: Destination) {}
+  constructor(private store: Bookkeeping) {}
 
   get<T = StreamState>(env: string, stream: string): Promise<T | null> {
-    return this.destination.getState<T>(env, stream)
+    return this.store.getState<T>(env, stream)
   }
 
   set(env: string, stream: string, state: StreamState): Promise<void> {
-    return this.destination.setState(env, stream, state)
+    return this.store.setState(env, stream, state)
   }
 
   getTail(env: string): Promise<TailState | null> {
@@ -92,10 +93,10 @@ export class StateStore {
   /**
    * Save the tail position only while `holder` has the lease for `env` and
    * the stored position is still `expected`, in one atomic write. This is
-   * how the tail checkpoints: see `Destination.setStateIfHeld`.
+   * how the tail checkpoints: see `Bookkeeping.setStateIfHeld`.
    */
   setTailIfHeld(env: string, next: TailUpdate, holder: string, expected: TailState | null): Promise<boolean> {
-    return this.destination.setStateIfHeld(env, TAIL_STREAM, tailRecord(next), holder, expected)
+    return this.store.setStateIfHeld(env, TAIL_STREAM, tailRecord(next), holder, expected)
   }
 
   /** Forget the tail position entirely; the next capture starts from now. */

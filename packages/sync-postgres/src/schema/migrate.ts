@@ -17,7 +17,7 @@
  */
 import { createHash } from 'node:crypto'
 import type { SqlClient } from '../db/client.js'
-import { buildSchemaSql, createSchemaSql, bookkeepingSql, parseIso8601Function, quoteIdent } from './ddl.js'
+import { buildSchemaSql, createSchemaSql, migrationsTableSql, parseIso8601Function, quoteIdent } from './ddl.js'
 import { applyViewStatement, isViewStatement, type ApplyViewOptions } from './views.js'
 import { detectColumnDrift, repairColumnDrift, unrepairableReason, type ColumnDrift } from './drift.js'
 import type { Logger, TableDef } from '@workos/sync-engine'
@@ -131,11 +131,12 @@ async function applySchema(
 ): Promise<MigrateResult> {
   const fp = fingerprint(streams, schema)
 
-  // The bookkeeping tables must exist before we can check whether they say
-  // this fingerprint is already applied.
+  // The fingerprint table must exist before we can check whether it says
+  // this fingerprint is already applied. The bookkeeping store's tables are
+  // its own to create.
   await db.exec(createSchemaSql(schema))
   await db.exec(parseIso8601Function(schema))
-  await db.exec(bookkeepingSql(schema))
+  await db.exec(migrationsTableSql(schema))
 
   const existing = await db.query(
     `select 1 from ${quoteIdent(schema)}."_migrations" where fingerprint = $1`,

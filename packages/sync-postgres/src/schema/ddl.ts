@@ -127,10 +127,24 @@ export function createSchemaSql(schema: string): string {
 }
 
 /**
- * Engine bookkeeping: cursors, applied-schema fingerprints, and the
- * single-writer lease for the events tail, and the quarantine. These run on
- * every `migrate` before the fingerprint check, so a table added here reaches
- * existing deployments without a new fingerprint.
+ * The applied-schema fingerprints: the mirror's own record. Runs on every
+ * `migrate` before the fingerprint check.
+ */
+export function migrationsTableSql(schema: string): string {
+  const s = quoteIdent(schema)
+  return `
+create table if not exists ${s}."_migrations" (
+  fingerprint text primary key,
+  applied_at  timestamptz not null default now(),
+  detail      jsonb
+);`.trim()
+}
+
+/**
+ * The bookkeeping store's tables: cursors, the single-writer lease for the
+ * events tail, and the quarantine. `PostgresBookkeeping.init` creates them,
+ * whether the store shares the mirror's connection or has one of its own,
+ * and they are keyed by sync id so several syncs can share a database.
  *
  * `_rejected` holds events the tail set aside after they failed
  * deterministically on two consecutive polls (see the engine's
@@ -149,12 +163,6 @@ create table if not exists ${s}."_sync_state" (
   state      jsonb not null,
   updated_at timestamptz not null default now(),
   primary key (sync_id, env, stream)
-);
-
-create table if not exists ${s}."_migrations" (
-  fingerprint text primary key,
-  applied_at  timestamptz not null default now(),
-  detail      jsonb
 );
 
 create table if not exists ${s}."_sync_lease" (
@@ -242,7 +250,9 @@ export function addColumnsSql(stream: TableDef, schema: string): string[] {
 
 /** Full DDL for a set of streams, in dependency-free order. */
 export function buildSchemaSql(streams: TableDef[], schema: string): string[] {
-  const out: string[] = [createSchemaSql(schema), parseIso8601Function(schema), bookkeepingSql(schema)]
+  // The mirror's DDL only: the bookkeeping store's tables are its own to
+  // create, so a schema generated from here is complete without them.
+  const out: string[] = [createSchemaSql(schema), parseIso8601Function(schema), migrationsTableSql(schema)]
   for (const s of streams) {
     out.push(createTableSql(s, schema))
     out.push(...addColumnsSql(s, schema))

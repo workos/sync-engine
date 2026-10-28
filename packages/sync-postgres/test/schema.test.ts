@@ -132,8 +132,9 @@ describe('migrations against real Postgres', () => {
     )
     const names = tables.rows.map((r) => r.table_name)
     for (const s of STREAMS) expect(names).toContain(s.name)
-    expect(names).toContain('_sync_state')
+    // The fingerprint table is the mirror's own; the bookkeeping store's tables are its to create.
     expect(names).toContain('_migrations')
+    expect(names).not.toContain('_sync_state')
   })
 
   it('is a no-op on the second run', async () => {

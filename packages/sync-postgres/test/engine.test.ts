@@ -8,12 +8,15 @@ import {
   WorkOSClient,
   LeaseHeldError,
   StateStore,
+  emptyStats,
   silentLogger,
+  type Bookkeeping,
   type Destination,
 } from '@workos/sync-engine'
 import { createTestDb } from './helpers/pg.js'
 import { FakeWorkOS, resetIds, id } from '../../sync-engine/test/helpers/fake-workos.js'
 import { PostgresDestination } from '../src/destination.js'
+import { PostgresBookkeeping } from '../src/bookkeeping.js'
 import type { SqlClient } from '../src/db/client.js'
 import { FaultyDestination, captureLogger } from './helpers/faulty.js'
 
@@ -625,6 +628,123 @@ describe('sync engine', () => {
   })
 })
 
+describe('bookkeeping store', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+  })
+  afterEach(async () => {
+    await db.close()
+  })
+
+  const rows = async (table: string) => {
+    const r = await db.query<{ n: string }>(`select count(*)::text as n from ${table}`)
+    return Number(r.rows[0]!.n)
+  }
+  const client = () =>
+    new WorkOSClient({ apiKey: 'sk_test_1', apiUrl: 'http://fake.workos.local', fetchImpl: fake.fetchImpl, pageSize: 100 })
+
+  it('keeps cursors, the lease and the quarantine apart from the mirror when given its own store', async () => {
+    fake.createUser()
+    const store = new PostgresBookkeeping({ db, schema: 'bookkeeping' })
+    const engine = new SyncEngine(
+      {
+        destination: new PostgresDestination({ db, schema: 'workos' }),
+        bookkeeping: store,
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: ['users'],
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      { clientFor: client },
+    )
+    await engine.backfill()
+    await engine.tick()
+
+    // The mirror is where it always was; the records about it are not.
+    expect(await rows('workos.users')).toBe(1)
+    expect(await rows('bookkeeping._sync_state')).toBeGreaterThan(0)
+    expect(await rows('workos._sync_state')).toBe(0)
+    expect(await store.getState('prod', '__tail__')).not.toBeNull()
+    expect((await engine.status())['prod']!.cursor).not.toBeNull()
+    await engine.close()
+  })
+
+  it('refuses a destination that keeps no store unless one is given', () => {
+    const bare: Destination = {
+      init: async () => {},
+      close: async () => {},
+      upsert: async () => emptyStats(),
+      delete: async () => emptyStats(),
+      relink: async () => emptyStats(),
+      unlink: async () => emptyStats(),
+      liveIds: async () => [],
+      rawRows: async () => [],
+      diffIds: async () => ({ matched: 0, localOnly: [], remoteOnly: [] }),
+      freshness: async (s) => ({
+        stream: s.name,
+        rows: 0,
+        deleted: 0,
+        lastSyncedAt: null,
+        stalenessSeconds: null,
+        lagSeconds: null,
+        lagSampleSize: 0,
+      }),
+      redact: async () => [],
+    }
+    const config = {
+      destination: bare,
+      environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+      streams: ['users'],
+      logger: silentLogger,
+    }
+    expect(() => new SyncEngine(config)).toThrow(/bookkeeping/)
+    expect(
+      () => new SyncEngine({ ...config, bookkeeping: new PostgresBookkeeping({ db, schema: 'workos' }) }),
+    ).not.toThrow()
+  })
+
+  it('creates its own tables when it runs apart from a destination', async () => {
+    const store = new PostgresBookkeeping({ db, schema: 'elsewhere' })
+    await store.init()
+    const tables = await db.query<{ table_name: string }>(
+      `select table_name from information_schema.tables where table_schema = 'elsewhere' order by table_name`,
+    )
+    expect(tables.rows.map((r) => r.table_name)).toEqual(['_rejected', '_sync_lease', '_sync_state'])
+    // Nothing of the mirror's: no stream tables, and the fingerprint table is the mirror's own.
+    expect(await store.getLease('prod')).toBeNull()
+  })
+
+  it('scrubs the quarantine on redact, because it may hold the only copy of a payload', async () => {
+    const bad = fake.createUser({ email: 'bad@example.com' })
+    const destination = new FaultyDestination({ db, schema: 'workos' })
+    destination.poison = bad['id'] as string
+    const engine = new SyncEngine(
+      {
+        destination,
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: ['users'],
+        hydrate: 'off',
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      { clientFor: client },
+    )
+    // Two polls: first sighting, then quarantine.
+    await engine.tick()
+    await engine.tick()
+    expect(await destination.bookkeeping.rejectedCount('prod')).toBe(1)
+
+    const removed = await engine.redact(bad['id'] as string)
+    expect(removed).toContainEqual({ table: '_rejected', rows: 1 })
+    expect(await destination.bookkeeping.rejectedCount('prod')).toBe(0)
+  })
+})
+
 describe('reconciliation', () => {
   let db: SqlClient
   let fake: FakeWorkOS
@@ -782,22 +902,23 @@ describe('single-writer lease', () => {
   }
   /**
    * A destination whose lease calls the test can slow down or watch: a
-   * database that answers late at exactly the wrong moment.
+   * bookkeeping store that answers late at exactly the wrong moment. The
+   * lease lives on the store, so that is what gets wrapped.
    */
   const instrumented = (
     dest: PostgresDestination,
     hooks: { beforeAcquire?: () => Promise<void>; onRelease?: () => void },
-  ): Destination =>
-    new Proxy(dest, {
+  ): Destination => {
+    const bookkeeping: Bookkeeping = new Proxy(dest.bookkeeping, {
       get(target, prop) {
         if (prop === 'acquireLease') {
-          return async (...args: Parameters<Destination['acquireLease']>) => {
+          return async (...args: Parameters<Bookkeeping['acquireLease']>) => {
             await hooks.beforeAcquire?.()
             return target.acquireLease(...args)
           }
         }
         if (prop === 'releaseLease') {
-          return async (...args: Parameters<Destination['releaseLease']>) => {
+          return async (...args: Parameters<Bookkeeping['releaseLease']>) => {
             hooks.onRelease?.()
             return target.releaseLease(...args)
           }
@@ -806,6 +927,14 @@ describe('single-writer lease', () => {
         return typeof v === 'function' ? v.bind(target) : v
       },
     })
+    return new Proxy(dest, {
+      get(target, prop) {
+        if (prop === 'bookkeeping') return bookkeeping
+        const v = Reflect.get(target, prop, target)
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    })
+  }
 
   it('tick() refuses to run while another process holds the lease', async () => {
     fake.createUser()
@@ -813,7 +942,7 @@ describe('single-writer lease', () => {
     await engine.init()
     // Another process, as far as the database can tell.
     const other = new PostgresDestination({ db, schema: 'workos' })
-    const theirs = await other.acquireLease('prod', 'other-host:42:abc', 60_000)
+    const theirs = await other.bookkeeping.acquireLease('prod', 'other-host:42:abc', 60_000)
 
     const err = await engine.tick().catch((e: unknown) => e)
     expect(err).toBeInstanceOf(LeaseHeldError)
@@ -822,12 +951,12 @@ describe('single-writer lease', () => {
     expect((err as LeaseHeldError).message).toContain('other-host:42:abc')
     // Nothing was applied, and the other process still holds the lease.
     expect(await count('users')).toBe(0)
-    expect(await other.getLease('prod')).toMatchObject({ holder: 'other-host:42:abc' })
+    expect(await other.bookkeeping.getLease('prod')).toMatchObject({ holder: 'other-host:42:abc' })
 
     // Once it lets go, a cron tick runs and leaves the lease free behind it.
-    await other.releaseLease('prod', 'other-host:42:abc')
+    await other.bookkeeping.releaseLease('prod', 'other-host:42:abc')
     expect((await engine.tick()).processed).toBe(1)
-    expect(await other.getLease('prod')).toBeNull()
+    expect(await other.bookkeeping.getLease('prod')).toBeNull()
   })
 
   it('listen() waits for the lease, takes over when it is released, and gives it back on stop', async () => {
@@ -840,7 +969,7 @@ describe('single-writer lease', () => {
     })
     await engine.init()
     const other = new PostgresDestination({ db, schema: 'workos' })
-    await other.acquireLease('prod', 'old-process', 60_000)
+    await other.bookkeeping.acquireLease('prod', 'old-process', 60_000)
 
     // The rolling-deploy case: the new process starts while the old one is
     // still tailing. It must idle, not fail and not write.
@@ -852,19 +981,19 @@ describe('single-writer lease', () => {
     expect(warnings.filter((w) => w['holder'] === 'old-process')).toHaveLength(1)
 
     // The old process stops and releases; the new one picks up within a poll.
-    await other.releaseLease('prod', 'old-process')
+    await other.bookkeeping.releaseLease('prod', 'old-process')
     await until(async () => (await count('users')) === 1)
-    const mine = await other.getLease('prod')
+    const mine = await other.bookkeeping.getLease('prod')
     expect(mine?.holder).toMatch(/^.+:\d+:[0-9a-f]{6}$/)
     expect((await engine.status())['prod']!.lease).toEqual(mine)
 
     // While it is tailing, a cron tick elsewhere is refused.
-    expect((await other.acquireLease('prod', 'cron', 60_000)).holder).toBe(mine!.holder)
+    expect((await other.bookkeeping.acquireLease('prod', 'cron', 60_000)).holder).toBe(mine!.holder)
 
     engine.stop()
     await listening
     // Released immediately, not left to expire: the replacement need not wait.
-    expect(await other.getLease('prod')).toBeNull()
+    expect(await other.bookkeeping.getLease('prod')).toBeNull()
     expect((await engine.status())['prod']!.lease).toBeNull()
   })
 
@@ -886,7 +1015,7 @@ describe('single-writer lease', () => {
       if (stalled) return
       stalled = true
       await db.query(`update workos."_sync_lease" set expires_at = now() - interval '1 second'`)
-      await other.acquireLease('prod', 'replacement', 60_000)
+      await other.bookkeeping.acquireLease('prod', 'replacement', 60_000)
     })
     await engine.init()
     const r = await engine.tick()
@@ -898,7 +1027,7 @@ describe('single-writer lease', () => {
     const status = await engine.status()
     expect(status['prod']!.cursor).toBeNull()
     expect(status['prod']!.lastPolledAt).toBeNull()
-    expect(await other.getLease('prod')).toMatchObject({ holder: 'replacement' })
+    expect(await other.bookkeeping.getLease('prod')).toMatchObject({ holder: 'replacement' })
   })
 
   it('keeps a slow standalone tick covered so it can still checkpoint', async () => {
@@ -918,7 +1047,7 @@ describe('single-writer lease', () => {
     expect(r.processed).toBe(1)
     expect((await engine.status())['prod']!.cursor).not.toBeNull()
     // And it gives the lease back when it is done, as any tick does.
-    expect(await other.getLease('prod')).toBeNull()
+    expect(await other.bookkeeping.getLease('prod')).toBeNull()
   })
 
   it('does not overwrite a position that moved under it, even while it holds the lease', async () => {
@@ -931,14 +1060,14 @@ describe('single-writer lease', () => {
     const engine = makeEngine(db, fake, TIER1, {}, async () => {
       if (moved) return
       moved = true
-      await new StateStore(other).setTail('prod', { cursor: 'event_from_elsewhere' })
+      await new StateStore(other.bookkeeping).setTail('prod', { cursor: 'event_from_elsewhere' })
     })
     await engine.init()
     const r = await engine.tick()
 
     expect(r.processed).toBe(0)
     expect((await engine.status())['prod']!.cursor).toBe('event_from_elsewhere')
-    expect(await other.getLease('prod')).toBeNull()
+    expect(await other.bookkeeping.getLease('prod')).toBeNull()
   })
 
   it('two listeners with the same environments in different orders do not block each other', async () => {
@@ -973,15 +1102,15 @@ describe('single-writer lease', () => {
     // for the other's forever. In one shared order, one of them gets both.
     await until(async () => (await count('users')) === 2)
     const other = new PostgresDestination({ db, schema: 'workos' })
-    const [a, b] = await Promise.all([other.getLease('a'), other.getLease('b')])
+    const [a, b] = await Promise.all([other.bookkeeping.getLease('a'), other.bookkeeping.getLease('b')])
     expect(a).not.toBeNull()
     expect(b?.holder).toBe(a!.holder)
 
     ab.stop()
     ba.stop()
     await Promise.all(runs)
-    expect(await other.getLease('a')).toBeNull()
-    expect(await other.getLease('b')).toBeNull()
+    expect(await other.bookkeeping.getLease('a')).toBeNull()
+    expect(await other.bookkeeping.getLease('b')).toBeNull()
   })
 
   it("a tick overlapping listen() startup does not release the listener's lease", async () => {
@@ -1005,12 +1134,12 @@ describe('single-writer lease', () => {
     // A webhook nudge arriving as the listener starts.
     await engine.processWebhook()
     // It ran under the listener's claim and left it in place.
-    expect(await other.getLease('prod')).not.toBeNull()
+    expect(await other.bookkeeping.getLease('prod')).not.toBeNull()
     expect(await count('users')).toBe(1)
 
     engine.stop()
     await listening
-    expect(await other.getLease('prod')).toBeNull()
+    expect(await other.bookkeeping.getLease('prod')).toBeNull()
   })
 
   it('stop() waits for a renewal in flight rather than leaving a lease behind', async () => {
@@ -1048,7 +1177,7 @@ describe('single-writer lease', () => {
 
     slow.resolve()
     await listening
-    expect(await other.getLease('prod')).toBeNull()
+    expect(await other.bookkeeping.getLease('prod')).toBeNull()
   })
 })
 

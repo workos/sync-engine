@@ -24,7 +24,8 @@ export type {
   HealthServerOptions,
 } from './health.js'
 
-export type { Destination, FreshnessRow, IdDiff, Lease, LeaseResult, RejectedEvent, Row, WriteMode } from './destination.js'
+export type { Destination, FreshnessRow, IdDiff, Row, WriteMode } from './destination.js'
+export type { Bookkeeping, Lease, LeaseResult, RejectedEvent } from './bookkeeping.js'
 export { StateStore } from './state.js'
 export { redactPayload, redactRows, RedactingDestination, redacting } from './redact.js'
 

@@ -14,8 +14,9 @@
  *
  * Not to be confused with `Destination.redact`, which erases one subject.
  */
-import type { Destination, FreshnessRow, IdDiff, Lease, LeaseResult, RejectedEvent, Row, WriteMode } from './destination.js'
-import type { Logger, StreamDef, WorkOSEvent, WriteStats } from './types.js'
+import type { Bookkeeping } from './bookkeeping.js'
+import type { Destination, FreshnessRow, IdDiff, Row, WriteMode } from './destination.js'
+import type { Logger, StreamDef, TableDef, WriteStats } from './types.js'
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -64,18 +65,24 @@ export function redactRows(stream: StreamDef, rows: Row[]): Row[] {
 
 /**
  * A destination that strips each stream's declared credential paths from every
- * row before handing it to the wrapped one. Reads pass straight through.
+ * row before handing it to the wrapped one. Reads pass straight through, and
+ * so does the wrapped destination's bookkeeping store: raw events never carry
+ * the credentials `redact` paths name, which exist only on REST objects.
  *
- * Its methods take `StreamDef`, not the `TableDef` the `Destination` contract
- * is typed on, because the paths to strip are declared on the stream and the
- * engine — the only caller — always has one. A bare `TableDef` would simply
- * have nothing to strip. Method parameters are bivariant, so this still
- * satisfies `Destination`.
+ * Its write methods take `StreamDef`, not the `TableDef` the `Destination`
+ * contract is typed on, because the paths to strip are declared on the stream
+ * and the engine — the only caller — always has one. A bare `TableDef` would
+ * simply have nothing to strip. Method parameters are bivariant, so this
+ * still satisfies `Destination`.
  */
 export class RedactingDestination implements Destination {
   constructor(private readonly inner: Destination) {}
 
-  init(streams: StreamDef[], logger?: Logger): Promise<void> {
+  get bookkeeping(): Bookkeeping | undefined {
+    return this.inner.bookkeeping
+  }
+
+  init(streams: TableDef[], logger?: Logger): Promise<void> {
     return this.inner.init(streams, logger)
   }
 
@@ -99,11 +106,11 @@ export class RedactingDestination implements Destination {
     return this.inner.unlink(stream, env, redactRows(stream, rows))
   }
 
-  liveIds(stream: StreamDef, env: string): Promise<string[]> {
+  liveIds(stream: TableDef, env: string): Promise<string[]> {
     return this.inner.liveIds(stream, env)
   }
 
-  rawRows(stream: StreamDef, env: string): Promise<Record<string, unknown>[]> {
+  rawRows(stream: TableDef, env: string): Promise<Record<string, unknown>[]> {
     return this.inner.rawRows(stream, env)
   }
 
@@ -124,55 +131,12 @@ export class RedactingDestination implements Destination {
     return this.inner.diffIds(stream, env, stripped())
   }
 
-  freshness(stream: StreamDef, env: string, lagWindowHours: number): Promise<FreshnessRow> {
+  freshness(stream: TableDef, env: string, lagWindowHours: number): Promise<FreshnessRow> {
     return this.inner.freshness(stream, env, lagWindowHours)
   }
 
-  redact(streams: StreamDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]> {
+  redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]> {
     return this.inner.redact(streams, env, userId)
-  }
-
-  getState<T>(env: string, stream: string): Promise<T | null> {
-    return this.inner.getState<T>(env, stream)
-  }
-
-  setState(env: string, stream: string, state: unknown): Promise<void> {
-    return this.inner.setState(env, stream, state)
-  }
-
-  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean> {
-    return this.inner.setStateIfHeld(env, stream, state, holder, expected)
-  }
-
-  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult> {
-    return this.inner.acquireLease(env, holder, ttlMs)
-  }
-
-  releaseLease(env: string, holder: string): Promise<void> {
-    return this.inner.releaseLease(env, holder)
-  }
-
-  getLease(env: string): Promise<Lease | null> {
-    return this.inner.getLease(env)
-  }
-
-  // The quarantine store holds raw events, which never carry the credentials
-  // `redact` paths name (those exist only on REST objects), so these pass
-  // straight through like the `events` archive write does.
-  reject(env: string, rows: { event: WorkOSEvent; error: string }[]): Promise<void> {
-    return this.inner.reject(env, rows)
-  }
-
-  rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]> {
-    return this.inner.rejected(env, opts)
-  }
-
-  rejectedCount(env: string): Promise<number> {
-    return this.inner.rejectedCount(env)
-  }
-
-  clearRejected(env: string, ids: string[]): Promise<number> {
-    return this.inner.clearRejected(env, ids)
   }
 
   isTransientError(err: unknown): boolean {

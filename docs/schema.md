@@ -97,6 +97,11 @@ Things to know:
 | `_sync_lease` | The single-writer lease for the events tail: one row per `(sync_id, env)` naming the holder and when its claim expires. `listen` and `tick` take it; the cursor checkpoint is refused unless the writer still holds it. See [Operations](operations.md#deployment). |
 | `_rejected`   | Events the tail could not apply: one row per event that failed deterministically on two consecutive polls, with the error and the whole event in `_raw`. Keyed by `(sync_id, env, event_id)`; `rejected --replay` drains it. |
 
+`_migrations` is the mirror's own. The other three belong to the bookkeeping
+store, which `PostgresDestination` keeps on its connection and in this schema
+by default. A `PostgresBookkeeping` built on its own creates them wherever it
+is pointed, for a destination that keeps no store of its own.
+
 ## Stream modes
 
 | Mode     | Behaviour                                                                |

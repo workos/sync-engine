@@ -27,24 +27,20 @@
  *   and an older link or unlink must not undo what a newer one established.
  * - **Durable on return.** The engine checkpoints its cursor as soon as a
  *   write resolves, so a write must not be buffered past its own call.
- * - **One writer per cursor.** `acquireLease` is atomic: of two processes
- *   asking at once, exactly one is told it holds the lease. The tail runs
- *   under it so a rolling deploy cannot have both the old and the new process
- *   advancing the same cursor. `setStateIfHeld` makes the cursor write itself
- *   atomically conditional on still holding it, so a process that
- *   stalled past its lease is refused by the database rather than by a check
- *   made a moment earlier.
  *
  * The `created`/`updated`/`skipped` split in `WriteStats` is a health metric
  * the engine logs but never branches on; an engine that cannot tell an insert
  * from an update may approximate it.
  *
- * Besides the mirror, a destination keeps a small **quarantine store** for
- * events the tail could not apply (`reject` / `rejected` / `clearRejected`).
- * It holds whole raw events, so it must be scrubbed by `redact` like the
- * `events` archive is. See `sync/quarantine.ts` for when it is written.
+ * Cursors, the single-writer lease and the quarantine are not the mirror's
+ * concern. They live in a `Bookkeeping` store (see `bookkeeping.ts`). A
+ * destination that keeps one on its own connection offers it as
+ * `bookkeeping`, which is what lets the single-database deployment need no
+ * extra configuration; one that cannot leaves it out and is paired with a
+ * store through `SyncEngineConfig.bookkeeping`.
  */
-import type { Logger, TableDef, WorkOSEvent, WriteStats } from './types.js'
+import type { Bookkeeping } from './bookkeeping.js'
+import type { Logger, TableDef, WriteStats } from './types.js'
 
 export interface Row {
   data: Record<string, unknown>
@@ -86,39 +82,6 @@ export interface IdDiff {
   remoteOnly: Record<string, unknown>[]
 }
 
-/** Who holds the events-tail lease for one environment, and until when (ISO-8601). */
-export interface Lease {
-  holder: string
-  expiresAt: string
-}
-
-export interface LeaseResult {
-  /** True when `holder` now holds the lease, whether freshly taken or renewed. */
-  acquired: boolean
-  /**
-   * The current holder. When `acquired` is false this names the process to
-   * wait for; it is null if the lease was released between the attempt and
-   * the read, in which case the next attempt will succeed.
-   */
-  holder: string | null
-  expiresAt: string | null
-}
-
-/** One quarantined event, as `rejected` reports it. */
-export interface RejectedEvent {
-  eventId: string
-  eventType: string
-  /** `data.id` when the payload has one; membership events do not. */
-  objectId: string | null
-  /** The event's own `created_at`. */
-  createdAt: string
-  rejectedAt: string
-  /** The error from the most recent attempt to apply it. */
-  error: string
-  /** The whole event, verbatim, so it can be replayed. */
-  raw: WorkOSEvent
-}
-
 export interface Destination {
   /**
    * Connect if needed and create or upgrade the schema for `streams`. Called
@@ -127,6 +90,13 @@ export interface Destination {
    */
   init(streams: TableDef[], logger?: Logger): Promise<void>
   close(): Promise<void>
+
+  /**
+   * The bookkeeping store this destination keeps on its own connection, if
+   * it keeps one. The engine uses it unless `SyncEngineConfig.bookkeeping`
+   * names another; a destination without one must be paired that way.
+   */
+  readonly bookkeeping?: Bookkeeping
 
   upsert(stream: TableDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats>
   delete(stream: TableDef, env: string, rows: Row[]): Promise<WriteStats>
@@ -174,55 +144,11 @@ export interface Destination {
   freshness(stream: TableDef, env: string, lagWindowHours: number): Promise<FreshnessRow>
   /**
    * Erase every trace of one subject from the given streams and from the
-   * event archive, which embeds payloads. Returns per-table counts.
+   * event archive, which embeds payloads. Returns per-table counts. The
+   * quarantine is the bookkeeping store's to scrub; the engine asks both.
    */
   redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]>
 
-  /** Cursor and run state, keyed by `(env, stream)`. */
-  getState<T>(env: string, stream: string): Promise<T | null>
-  setState(env: string, stream: string, state: unknown): Promise<void>
-  /**
-   * Write `state` only if `holder` holds the unexpired lease for `env` and
-   * the stored state for `(env, stream)` still equals `expected` (`null` for
-   * no row), with both conditions checked atomically with the write.
-   * Returns whether it was written. The engine checkpoints the tail through
-   * this, so a former holder saving an older cursor, or a poll
-   * racing a backfill that re-captured the position, is refused by the
-   * database itself: there is no window between the check and the write.
-   */
-  setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean>
-
-  /**
-   * Take or renew the single-writer lease for `env`, atomically. Succeeds when
-   * the lease is free, expired, or already held by `holder`; otherwise it is
-   * left alone and the result names who holds it. A lease is scoped to this
-   * destination's sync identifier, so two syncs sharing a database never
-   * contend. It is held in the database, not the connection, so it survives
-   * pool churn and needs no pinned session.
-   */
-  acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult>
-  /** Give the lease back, only if `holder` holds it. A no-op for anyone else. */
-  releaseLease(env: string, holder: string): Promise<void>
-  /** The current, unexpired lease for `env`, or null when it is free. Read-only. */
-  getLease(env: string): Promise<Lease | null>
-
-
-  /**
-   * Set aside events the tail could not apply, so the cursor can move past
-   * them. The whole raw event is stored because the archive write to `events`
-   * may itself have been what failed. Rejecting an id that is already stored
-   * (a replay that failed again) replaces its error and timestamp.
-   */
-  reject(env: string, rows: { event: WorkOSEvent; error: string }[]): Promise<void>
-  /** Quarantined events, oldest first by event id; only `ids` when given. */
-  rejected(env: string, opts?: { ids?: string[] }): Promise<RejectedEvent[]>
-  /**
-   * How many events are quarantined. `status` calls this on every monitoring
-   * poll, so it must not fetch the payloads the way `rejected` does.
-   */
-  rejectedCount(env: string): Promise<number>
-  /** Forget quarantined events once they have been replayed. Returns how many were removed. */
-  clearRejected(env: string, ids: string[]): Promise<number>
   /**
    * Whether a write error is the database having a bad moment — a dropped
    * connection, a deadlock, a full disk — rather than a verdict on the row.

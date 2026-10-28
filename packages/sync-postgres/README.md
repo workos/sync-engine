@@ -127,6 +127,29 @@ Engine options (`environments`, `streams`, `extraColumns`, `hydrate`,
 `pollIntervalMs`, `lagWindowMs`, `maxEventsPerTick`, …) are documented in
 [`@workos/sync-engine`](https://www.npmjs.com/package/@workos/sync-engine).
 
+### The bookkeeping store
+
+Cursors, the single-writer lease and the quarantine live in `_sync_state`,
+`_sync_lease` and `_rejected`. `PostgresDestination` keeps that store on its
+own connection and offers it as `destination.bookkeeping`, so nothing above
+needs configuring. The store also stands on its own, for a destination that
+cannot make an atomic conditional write — a spreadsheet, an object store, a
+queue — and so keeps no store of its own:
+
+```ts
+import { SyncEngine, PostgresBookkeeping } from "@workos/sync-postgres";
+
+const engine = new SyncEngine({
+  destination: new SheetsDestination(/* ... */),
+  bookkeeping: new PostgresBookkeeping({ databaseUrl: process.env.DATABASE_URL }),
+  environments: [{ name: "production", apiKey: process.env.WORKOS_API_KEY! }],
+});
+```
+
+`PostgresBookkeeping` takes `databaseUrl` or `db`, `schema` (default
+`workos`) and `syncId` (default `default`), with the same meanings as above,
+and creates its three tables on `init()`.
+
 ## What it mirrors
 
 Users, organizations, memberships, domains, invitations and sessions;

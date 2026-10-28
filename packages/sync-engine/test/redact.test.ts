@@ -108,16 +108,6 @@ describe('RedactingDestination', () => {
         lagSampleSize: 0,
       }),
       redact: async () => [],
-      getState: async () => null,
-      setState: async () => {},
-      setStateIfHeld: async () => true,
-      acquireLease: async (_e, holder) => ({ acquired: true, holder, expiresAt: null }),
-      releaseLease: async () => {},
-      getLease: async () => null,
-      reject: async () => {},
-      rejected: async () => [],
-      rejectedCount: async () => 0,
-      clearRejected: async () => 0,
     }
     return { inner, calls }
   }

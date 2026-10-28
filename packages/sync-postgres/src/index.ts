@@ -16,6 +16,8 @@ export * from '@workos/sync-engine'
 
 export { PostgresDestination } from './destination.js'
 export type { PostgresDestinationOptions } from './destination.js'
+export { PostgresBookkeeping } from './bookkeeping.js'
+export type { PostgresBookkeepingOptions } from './bookkeeping.js'
 
 export { migrate, fingerprint, DDL_VERSION } from './schema/migrate.js'
 export type { MigrateOptions, MigrateResult } from './schema/migrate.js'

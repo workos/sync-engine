@@ -22,24 +22,24 @@ describe('events tail lease', () => {
   })
 
   it('is taken by the first process to ask', async () => {
-    const r = await dest.acquireLease('prod', 'a', 60_000)
+    const r = await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
     expect(r.acquired).toBe(true)
     expect(r.holder).toBe('a')
     expect(Date.parse(r.expiresAt!)).toBeGreaterThan(Date.now() + 30_000)
-    expect(await dest.getLease('prod')).toEqual({ holder: 'a', expiresAt: r.expiresAt })
+    expect(await dest.bookkeeping.getLease('prod')).toEqual({ holder: 'a', expiresAt: r.expiresAt })
   })
 
   it('refuses a second process and tells it who holds the lease', async () => {
-    const first = await dest.acquireLease('prod', 'a', 60_000)
-    const second = await dest.acquireLease('prod', 'b', 60_000)
+    const first = await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
+    const second = await dest.bookkeeping.acquireLease('prod', 'b', 60_000)
     expect(second).toEqual({ acquired: false, holder: 'a', expiresAt: first.expiresAt })
     // The refusal changed nothing.
-    expect(await dest.getLease('prod')).toEqual({ holder: 'a', expiresAt: first.expiresAt })
+    expect(await dest.bookkeeping.getLease('prod')).toEqual({ holder: 'a', expiresAt: first.expiresAt })
   })
 
   it('renews for the holder without changing hands', async () => {
-    const first = await dest.acquireLease('prod', 'a', 1_000)
-    const renewed = await dest.acquireLease('prod', 'a', 60_000)
+    const first = await dest.bookkeeping.acquireLease('prod', 'a', 1_000)
+    const renewed = await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
     expect(renewed.acquired).toBe(true)
     expect(renewed.holder).toBe('a')
     expect(Date.parse(renewed.expiresAt!)).toBeGreaterThan(Date.parse(first.expiresAt!))
@@ -53,84 +53,84 @@ describe('events tail lease', () => {
 
   it('passes to a new process once it has expired', async () => {
     // A TTL of zero expires on arrival: the holder has, in effect, crashed.
-    const stale = await dest.acquireLease('prod', 'a', 0)
+    const stale = await dest.bookkeeping.acquireLease('prod', 'a', 0)
     expect(stale.acquired).toBe(true)
-    expect(await dest.getLease('prod')).toBeNull()
+    expect(await dest.bookkeeping.getLease('prod')).toBeNull()
 
-    const takeover = await dest.acquireLease('prod', 'b', 60_000)
+    const takeover = await dest.bookkeeping.acquireLease('prod', 'b', 60_000)
     expect(takeover.acquired).toBe(true)
     expect(takeover.holder).toBe('b')
     // And the original holder is now the one refused.
-    expect((await dest.acquireLease('prod', 'a', 60_000)).holder).toBe('b')
+    expect((await dest.bookkeeping.acquireLease('prod', 'a', 60_000)).holder).toBe('b')
   })
 
   it('judges expiry by the database clock', async () => {
-    await dest.acquireLease('prod', 'a', 60_000)
+    await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
     await db.query(`update workos."_sync_lease" set expires_at = now() - interval '1 second'`)
-    expect((await dest.acquireLease('prod', 'b', 60_000)).acquired).toBe(true)
+    expect((await dest.bookkeeping.acquireLease('prod', 'b', 60_000)).acquired).toBe(true)
   })
 
   it('is freed by release', async () => {
-    await dest.acquireLease('prod', 'a', 60_000)
-    await dest.releaseLease('prod', 'a')
-    expect(await dest.getLease('prod')).toBeNull()
-    expect((await dest.acquireLease('prod', 'b', 60_000)).acquired).toBe(true)
+    await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
+    await dest.bookkeeping.releaseLease('prod', 'a')
+    expect(await dest.bookkeeping.getLease('prod')).toBeNull()
+    expect((await dest.bookkeeping.acquireLease('prod', 'b', 60_000)).acquired).toBe(true)
   })
 
   it('ignores a release from anyone but the holder', async () => {
-    const r = await dest.acquireLease('prod', 'a', 60_000)
-    await dest.releaseLease('prod', 'b')
-    await dest.releaseLease('prod', 'a-but-older')
-    expect(await dest.getLease('prod')).toEqual({ holder: 'a', expiresAt: r.expiresAt })
+    const r = await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
+    await dest.bookkeeping.releaseLease('prod', 'b')
+    await dest.bookkeeping.releaseLease('prod', 'a-but-older')
+    expect(await dest.bookkeeping.getLease('prod')).toEqual({ holder: 'a', expiresAt: r.expiresAt })
   })
 
   it('is scoped to the sync id and the environment', async () => {
-    await dest.acquireLease('prod', 'a', 60_000)
+    await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
     // Same database, same environment label, a different sync: no contention.
     const other = new PostgresDestination({ db, schema: 'workos', syncId: 'reporting' })
-    expect((await other.acquireLease('prod', 'b', 60_000)).acquired).toBe(true)
+    expect((await other.bookkeeping.acquireLease('prod', 'b', 60_000)).acquired).toBe(true)
     // Same sync, another environment: also independent.
-    expect((await dest.acquireLease('staging', 'c', 60_000)).acquired).toBe(true)
-    expect(await dest.getLease('prod')).toMatchObject({ holder: 'a' })
+    expect((await dest.bookkeeping.acquireLease('staging', 'c', 60_000)).acquired).toBe(true)
+    expect(await dest.bookkeeping.getLease('prod')).toMatchObject({ holder: 'a' })
   })
 
   describe('fences the state write', () => {
-    const stored = () => dest.getState<Record<string, unknown>>('prod', '__tail__')
+    const stored = () => dest.bookkeeping.getState<Record<string, unknown>>('prod', '__tail__')
 
     it('writes for the holder, and refuses anyone else', async () => {
-      await dest.acquireLease('prod', 'a', 60_000)
-      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'b', null)).toBe(false)
+      await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
+      expect(await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'b', null)).toBe(false)
       expect(await stored()).toBeNull()
-      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)).toBe(true)
+      expect(await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)).toBe(true)
       expect(await stored()).toEqual({ cursor: 'c1' })
     })
 
     it('refuses a holder whose lease has expired or been taken over', async () => {
-      await dest.acquireLease('prod', 'a', 60_000)
-      await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
+      await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
+      await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
       await db.query(`update workos."_sync_lease" set expires_at = now() - interval '1 second'`)
-      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { cursor: 'c1' })).toBe(false)
+      expect(await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { cursor: 'c1' })).toBe(false)
       // The replacement is now the writer; the former holder stays refused.
-      await dest.acquireLease('prod', 'b', 60_000)
-      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { cursor: 'c1' })).toBe(false)
-      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'b', { cursor: 'c1' })).toBe(true)
+      await dest.bookkeeping.acquireLease('prod', 'b', 60_000)
+      expect(await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { cursor: 'c1' })).toBe(false)
+      expect(await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'b', { cursor: 'c1' })).toBe(true)
       expect(await stored()).toEqual({ cursor: 'c2' })
     })
 
     it('refuses a write whose expected state is no longer the stored one', async () => {
-      await dest.acquireLease('prod', 'a', 60_000)
-      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', { cursor: 'c0' })).toBe(false)
+      await dest.bookkeeping.acquireLease('prod', 'a', 60_000)
+      expect(await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', { cursor: 'c0' })).toBe(false)
       expect(await stored()).toBeNull()
-      await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
+      await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
       // A row appeared where none was expected, and a stale expectation: both
       // are how a holder would rewind a position someone else moved.
-      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', null)).toBe(false)
-      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { cursor: 'c0' })).toBe(false)
+      expect(await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', null)).toBe(false)
+      expect(await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { cursor: 'c0' })).toBe(false)
       expect(await stored()).toEqual({ cursor: 'c1' })
       // Equality is semantic, not textual: key order does not matter.
-      await dest.setState('prod', '__tail__', { cursor: 'c1', lastEventAt: null })
+      await dest.bookkeeping.setState('prod', '__tail__', { cursor: 'c1', lastEventAt: null })
       expect(
-        await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { lastEventAt: null, cursor: 'c1' }),
+        await dest.bookkeeping.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'a', { lastEventAt: null, cursor: 'c1' }),
       ).toBe(true)
       expect(await stored()).toEqual({ cursor: 'c2' })
     })

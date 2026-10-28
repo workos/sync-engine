@@ -1,6 +1,7 @@
 /**
  * Core types for the WorkOS sync engine.
  */
+import type { Bookkeeping } from './bookkeeping.js'
 import type { Destination } from './destination.js'
 
 /** Column types we project out of the raw JSONB payload. */
@@ -144,6 +145,15 @@ export const DEFAULT_HYDRATE: Readonly<Record<string, HydrateMode>> = Object.fre
 export interface SyncEngineConfig {
   /** Where the mirror is written, e.g. `new PostgresDestination(...)` from `@workos/sync-postgres`. */
   destination: Destination
+  /**
+   * Where cursors, the single-writer lease and the quarantine are kept.
+   * Defaults to the store the destination offers as `bookkeeping`, which for
+   * Postgres is the mirror's own database. Required for a destination that
+   * offers none: pair it with `PostgresBookkeeping` from
+   * `@workos/sync-postgres`, or any store that can make an atomic
+   * conditional write.
+   */
+  bookkeeping?: Bookkeeping
   environments: EnvironmentConfig[]
   /**
    * Streams to sync. Defaults to `defaultStreams()`: every stream that has

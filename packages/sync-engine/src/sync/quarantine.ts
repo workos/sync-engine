@@ -19,9 +19,10 @@
  *      (the two-sightings rule), which costs one poll interval and buys
  *      protection against transient errors the classifier does not know.
  *   3. Quarantine is reversible: the whole raw event is kept in the
- *      destination's rejected store, and `SyncEngine.replayRejected` puts it
- *      back through the normal write path once the cause is fixed.
+ *      bookkeeping store, and `SyncEngine.replayRejected` puts it back
+ *      through the normal write path once the cause is fixed.
  */
+import type { Bookkeeping } from '../bookkeeping.js'
 import type { Destination } from '../destination.js'
 import { applyEvents, HydrationError, type ApplyOptions, type ApplyResult } from './apply.js'
 import { WorkOSApiError } from '../workos/client.js'
@@ -67,6 +68,7 @@ export function isTransientError(err: unknown, destination: Destination): boolea
  */
 export async function applyWithQuarantine(
   destination: Destination,
+  bookkeeping: Bookkeeping,
   events: WorkOSEvent[],
   opts: ApplyOptions,
   suspects: SuspectMap,
@@ -149,7 +151,7 @@ export async function applyWithQuarantine(
     throw new PoisonEventSuspectedError(firstSightings)
   }
 
-  await destination.reject(opts.env, confirmed)
+  await bookkeeping.reject(opts.env, confirmed)
   for (const row of confirmed) suspects.delete(row.event.id)
   return { ...(survivors ?? emptyResult()), rejected: confirmed }
 }
