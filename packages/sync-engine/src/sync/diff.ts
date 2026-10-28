@@ -9,7 +9,7 @@
  * does not use it.
  */
 import type { Destination, IdDiff } from '../destination.js'
-import type { StreamDef } from '../types.js'
+import type { TableDef } from '../types.js'
 
 /** Keep scalar ids unchanged; encode composite keys without delimiter collisions. */
 export function encodeKey(values: string[]): string {
@@ -17,7 +17,7 @@ export function encodeKey(values: string[]): string {
 }
 
 /** The complete key at its catalog paths; undefined when any component is missing. */
-export function remoteKey(stream: StreamDef, data: Record<string, unknown>): string | undefined {
+export function remoteKey(stream: TableDef, data: Record<string, unknown>): string | undefined {
   const values: string[] = []
   for (const name of stream.key) {
     const path = stream.columns.find((c) => c.name === name)?.path ?? name
@@ -33,7 +33,7 @@ export function remoteKey(stream: StreamDef, data: Record<string, unknown>): str
 }
 
 /** Reconstruct a deletion payload at the same catalog paths used to read its key. */
-export function keyPayload(stream: StreamDef, id: string): Record<string, unknown> {
+export function keyPayload(stream: TableDef, id: string): Record<string, unknown> {
   const values: unknown = stream.key.length === 1 ? [id] : JSON.parse(id)
   if (!Array.isArray(values) || values.length !== stream.key.length ||
       values.some((v) => typeof v !== 'string' || v === '')) {
@@ -55,7 +55,7 @@ export function keyPayload(stream: StreamDef, id: string): Record<string, unknow
 
 export async function diffIdsInMemory(
   destination: Destination,
-  stream: StreamDef,
+  stream: TableDef,
   env: string,
   remote: AsyncIterable<Record<string, unknown>[]>,
 ): Promise<IdDiff> {

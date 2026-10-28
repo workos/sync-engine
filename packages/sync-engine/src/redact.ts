@@ -65,6 +65,12 @@ export function redactRows(stream: StreamDef, rows: Row[]): Row[] {
 /**
  * A destination that strips each stream's declared credential paths from every
  * row before handing it to the wrapped one. Reads pass straight through.
+ *
+ * Its methods take `StreamDef`, not the `TableDef` the `Destination` contract
+ * is typed on, because the paths to strip are declared on the stream and the
+ * engine — the only caller — always has one. A bare `TableDef` would simply
+ * have nothing to strip. Method parameters are bivariant, so this still
+ * satisfies `Destination`.
  */
 export class RedactingDestination implements Destination {
   constructor(private readonly inner: Destination) {}

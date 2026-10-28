@@ -19,7 +19,7 @@
  * catalog query as the live table. Both sides are then rendered by the same
  * server with the same search_path, and compare as plain strings.
  */
-import { streamByName, type ColumnDef, type Logger, type StreamDef } from '@workos/sync-engine'
+import type { ColumnDef, Logger, TableDef } from '@workos/sync-engine'
 import type { SqlClient } from '../db/client.js'
 import { withoutLiveView } from './views.js'
 import { ENV, RAW, createIndexesSql, generatedColumnSql, quoteIdent, safeIdentifier } from './ddl.js'
@@ -136,7 +136,7 @@ const ownIndexRef = (stream: string, column: string, schema: string): string =>
  * and concurrent runs cannot collide. Needs `TEMP` on the database, which
  * `PUBLIC` has by default.
  */
-async function expectedColumns(db: SqlClient, stream: StreamDef, schema: string): Promise<Map<string, LiveColumn>> {
+async function expectedColumns(db: SqlClient, stream: TableDef, schema: string): Promise<Map<string, LiveColumn>> {
   return db.transaction(async (tx) => {
     const tmp = quoteIdent(safeIdentifier(`_drift_${stream.name}`))
     const cols = [`${quoteIdent(RAW)} jsonb`, ...stream.columns.map((c) => generatedColumnSql(c, schema))]
@@ -157,7 +157,7 @@ async function expectedColumns(db: SqlClient, stream: StreamDef, schema: string)
  * automatically: between the drop and the re-add the table accepts duplicates,
  * and the re-add fails if the new expression yields any.
  */
-function repairSql(stream: StreamDef, schema: string, col: ColumnDef, key: boolean): string[] {
+function repairSql(stream: TableDef, schema: string, col: ColumnDef, key: boolean): string[] {
   const table = tableRef(stream.name, schema)
   const out = [
     `alter table ${table} drop column ${quoteIdent(safeIdentifier(col.name))};`,
@@ -182,7 +182,7 @@ function repairSql(stream: StreamDef, schema: string, col: ColumnDef, key: boole
  * whitespace would also collapse it inside string literals, and a JSON key
  * that differs only by a space is a different key.
  */
-export async function detectColumnDrift(db: SqlClient, streams: StreamDef[], schema: string): Promise<ColumnDrift[]> {
+export async function detectColumnDrift(db: SqlClient, streams: TableDef[], schema: string): Promise<ColumnDrift[]> {
   const out: ColumnDrift[] = []
   for (const stream of streams) {
     const table = tableRef(stream.name, schema)
@@ -288,6 +288,8 @@ export interface RepairResult {
 export async function repairColumnDrift(
   db: SqlClient,
   drift: ColumnDrift[],
+  /** The tables being applied, so a drifted stream's `_live` view can be set aside by its own definition. */
+  streams: TableDef[],
   schema: string,
   logger?: Logger,
 ): Promise<RepairResult> {
@@ -309,7 +311,9 @@ export async function repairColumnDrift(
         const run = async () => {
           for (const sql of d.ddl) await tx.exec(sql)
         }
-        const stream = streamByName(d.stream)
+        // Looked up in the tables this apply was given, not the WorkOS catalog:
+        // the destination only knows the tables it is handed.
+        const stream = streams.find((s) => s.name === d.stream)
         if (stream) await withoutLiveView(tx, stream, schema, run)
         else await run()
         return true

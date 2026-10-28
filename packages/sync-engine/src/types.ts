@@ -60,8 +60,19 @@ export interface StreamEvents {
   delete?: string[]
 }
 
-export interface StreamDef {
-  /** Stream name, also the Postgres table name. */
+/**
+ * What a destination needs to know about a stream: the table it becomes.
+ *
+ * Name, key, mode, the columns projected out of the payload, and the product
+ * area. Nothing here says where rows come from. The WorkOS half of a stream —
+ * its list endpoint, its events, hydration, credential paths — lives on
+ * `StreamDef`, which extends this and is read only by the engine. The
+ * `Destination` interface is typed on `TableDef`, so a destination is
+ * source-neutral by construction: it cannot reach for an endpoint it was
+ * never given.
+ */
+export interface TableDef {
+  /** Stream name, also the table name. */
   name: string
   /** Human description, used in docs and `status` output. */
   description: string
@@ -72,9 +83,15 @@ export interface StreamDef {
    * payloads and must key on slug.
    */
   key: string[]
+  columns: ColumnDef[]
+  /** Product area, for docs and the `streams` command. */
+  group: StreamGroup
+}
+
+/** A stream: a table, plus everything the engine needs to fill it from WorkOS. */
+export interface StreamDef extends TableDef {
   /** ID prefixes that identify this object type, for prefix dispatch. */
   prefixes?: string[]
-  columns: ColumnDef[]
   events?: StreamEvents
   list?: ListEndpoint
   /** Get-by-id endpoint used for hydration and delete detection. */
@@ -84,8 +101,6 @@ export interface StreamDef {
    * object (e.g. `organization_domain.verification_failed`).
    */
   unwrap?: (data: Record<string, unknown>) => Record<string, unknown>
-  /** Product area, for docs and the `streams` command. */
-  group: StreamGroup
   /**
    * Live credentials to strip from the payload before any row reaches the
    * destination — e.g. an invitation's acceptance `token`. Each entry is a

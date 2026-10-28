@@ -284,7 +284,7 @@ describe('column drift detection', () => {
     const seenBySecond = await detectColumnDrift(db, [usersMovedEmail], 'workos')
     expect(seenByFirst).toHaveLength(1)
 
-    const first = await repairColumnDrift(db, seenByFirst, 'workos')
+    const first = await repairColumnDrift(db, seenByFirst, [usersMovedEmail], 'workos')
     expect(first.repaired).toHaveLength(1)
     const attnum = async () =>
       (
@@ -297,7 +297,7 @@ describe('column drift detection', () => {
     // The second arrives with its stale report, takes the lock, sees the
     // column already matches, and leaves it: a re-add would have moved attnum.
     const { logger, lines } = capture()
-    const second = await repairColumnDrift(db, seenBySecond, 'workos', logger)
+    const second = await repairColumnDrift(db, seenBySecond, [usersMovedEmail], 'workos', logger)
     expect(second.repaired).toHaveLength(1)
     expect(second.failed).toEqual([])
     expect(await attnum()).toBe(after)
@@ -317,9 +317,9 @@ describe('column drift detection', () => {
     const seenByB = await detectColumnDrift(db, [fromB], 'workos')
     expect(seenByB[0]).toMatchObject({ column: 'first_name', kind: 'type', expected: 'boolean' })
 
-    await repairColumnDrift(db, seenByA, 'workos')
+    await repairColumnDrift(db, seenByA, [fromA], 'workos')
     const { logger, lines } = capture()
-    const r = await repairColumnDrift(db, seenByB, 'workos', logger)
+    const r = await repairColumnDrift(db, seenByB, [fromB], 'workos', logger)
     expect(r.repaired).toHaveLength(1)
     expect(lines.map((l) => l.msg)).toEqual(['column rebuilt from _raw'])
     expect(await detectColumnDrift(db, [fromB], 'workos')).toEqual([])

@@ -76,6 +76,7 @@ export type {
   StreamGroup,
   StreamMode,
   SyncEngineConfig,
+  TableDef,
   WorkOSEvent,
   WriteStats,
 } from './types.js'

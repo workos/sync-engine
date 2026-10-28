@@ -27,7 +27,7 @@
  *    least as new as the row. Events can be replayed out of order from
  *    quarantine, and an older link or unlink must not undo a newer one.
  */
-import { emptyStats, type Row, type StreamDef, type WriteMode, type WriteStats } from '@workos/sync-engine'
+import { emptyStats, type Row, type TableDef, type WriteMode, type WriteStats } from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
 import { quoteIdent, safeIdentifier, ENV, RAW } from '../schema/ddl.js'
 
@@ -42,7 +42,7 @@ export function readPath(data: Record<string, unknown>, path: string | string[])
 }
 
 /** Key values for a row, in `stream.key` order. Undefined if any part is missing. */
-export function keyValues(stream: StreamDef, data: Record<string, unknown>): string[] | undefined {
+export function keyValues(stream: TableDef, data: Record<string, unknown>): string[] | undefined {
   const out: string[] = []
   for (const k of stream.key) {
     const col = stream.columns.find((c) => c.name === k)
@@ -59,7 +59,7 @@ export function keyValues(stream: StreamDef, data: Record<string, unknown>): str
  * row twice, so this is required, not an optimization.
  */
 export function dedupeByKey(
-  stream: StreamDef,
+  stream: TableDef,
   rows: Row[],
 ): { rows: Row[]; dropped: number } {
   const byKey = new Map<string, Row>()
@@ -84,7 +84,7 @@ interface BuiltStatement {
 
 export function buildUpsert(
   schema: string,
-  stream: StreamDef,
+  stream: TableDef,
   env: string,
   rows: Row[],
   mode: WriteMode,
@@ -151,7 +151,7 @@ export const chunk = <T>(items: T[], size: number): T[][] => {
 export async function upsertRows(
   db: SqlClient,
   opts: WriteOptions,
-  stream: StreamDef,
+  stream: TableDef,
   env: string,
   rows: Row[],
   mode: WriteMode,
@@ -175,7 +175,7 @@ export async function upsertRows(
 export async function deleteRows(
   db: SqlClient,
   opts: WriteOptions,
-  stream: StreamDef,
+  stream: TableDef,
   env: string,
   rows: Row[],
 ): Promise<WriteStats> {
@@ -215,7 +215,7 @@ returning (xmax = 0) as _created`
 export async function relinkRows(
   db: SqlClient,
   opts: WriteOptions,
-  stream: StreamDef,
+  stream: TableDef,
   env: string,
   rows: Row[],
 ): Promise<WriteStats> {
@@ -269,7 +269,7 @@ returning (xmax = 0) as _created`
 export async function unlinkRows(
   db: SqlClient,
   opts: WriteOptions,
-  stream: StreamDef,
+  stream: TableDef,
   env: string,
   rows: Row[],
 ): Promise<WriteStats> {

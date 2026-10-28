@@ -11,7 +11,7 @@
  * before parents routinely (a `group.user_added` before the `user.created`),
  * and an FK would turn that ordering artifact into a hard write failure.
  */
-import type { ColumnDef, StreamDef } from '@workos/sync-engine'
+import type { ColumnDef, TableDef } from '@workos/sync-engine'
 import { quoteIdent, safeIdentifier } from './identifiers.js'
 import { liveViewSql } from './views.js'
 
@@ -180,7 +180,7 @@ create table if not exists ${s}."_rejected" (
 );`.trim()
 }
 
-export function createTableSql(stream: StreamDef, schema: string): string {
+export function createTableSql(stream: TableDef, schema: string): string {
   const s = quoteIdent(schema)
   const table = quoteIdent(safeIdentifier(stream.name))
   const cols: string[] = [
@@ -201,7 +201,7 @@ export function createTableSql(stream: StreamDef, schema: string): string {
   return `create table if not exists ${s}.${table} (\n  ${cols.join(',\n  ')}\n);`
 }
 
-export function createIndexesSql(stream: StreamDef, schema: string): string[] {
+export function createIndexesSql(stream: TableDef, schema: string): string[] {
   const s = quoteIdent(schema)
   const tableName = safeIdentifier(stream.name)
   const table = quoteIdent(tableName)
@@ -232,7 +232,7 @@ export function createIndexesSql(stream: StreamDef, schema: string): string[] {
  * column is `ADD COLUMN IF NOT EXISTS ... GENERATED ALWAYS AS ... STORED`,
  * which Postgres computes from rows already present. No backfill, no downtime.
  */
-export function addColumnsSql(stream: StreamDef, schema: string): string[] {
+export function addColumnsSql(stream: TableDef, schema: string): string[] {
   const s = quoteIdent(schema)
   const table = quoteIdent(safeIdentifier(stream.name))
   return stream.columns.map(
@@ -241,7 +241,7 @@ export function addColumnsSql(stream: StreamDef, schema: string): string[] {
 }
 
 /** Full DDL for a set of streams, in dependency-free order. */
-export function buildSchemaSql(streams: StreamDef[], schema: string): string[] {
+export function buildSchemaSql(streams: TableDef[], schema: string): string[] {
   const out: string[] = [createSchemaSql(schema), parseIso8601Function(schema), bookkeepingSql(schema)]
   for (const s of streams) {
     out.push(createTableSql(s, schema))

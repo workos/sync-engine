@@ -8,7 +8,7 @@
  * the same double can imitate a deterministic failure, a dropped connection,
  * or a socket error.
  */
-import type { Logger, Row, StreamDef, WriteMode, WriteStats } from '@workos/sync-engine'
+import type { Logger, Row, TableDef, WriteMode, WriteStats } from '@workos/sync-engine'
 import { PostgresDestination } from '../../src/destination.js'
 
 export class FaultyDestination extends PostgresDestination {
@@ -28,7 +28,7 @@ export class FaultyDestination extends PostgresDestination {
   /** How many times the fault fired, so a test can prove isolation happened. */
   faults = 0
 
-  override async upsert(stream: StreamDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats> {
+  override async upsert(stream: TableDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats> {
     const hit =
       this.failAll ||
       (this.failBatches && rows.length > 1) ||

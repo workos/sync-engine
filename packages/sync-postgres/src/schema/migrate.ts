@@ -20,7 +20,7 @@ import type { SqlClient } from '../db/client.js'
 import { buildSchemaSql, createSchemaSql, bookkeepingSql, parseIso8601Function, quoteIdent } from './ddl.js'
 import { applyViewStatement, isViewStatement, type ApplyViewOptions } from './views.js'
 import { detectColumnDrift, repairColumnDrift, unrepairableReason, type ColumnDrift } from './drift.js'
-import type { Logger, StreamDef } from '@workos/sync-engine'
+import type { Logger, TableDef } from '@workos/sync-engine'
 
 /**
  * Bumped whenever the DDL generated for an unchanged catalog changes: a new
@@ -32,7 +32,7 @@ import type { Logger, StreamDef } from '@workos/sync-engine'
  */
 export const DDL_VERSION = 2
 
-export function fingerprint(streams: StreamDef[], schema: string): string {
+export function fingerprint(streams: TableDef[], schema: string): string {
   const canonical = JSON.stringify({
     ddl: DDL_VERSION,
     schema,
@@ -86,7 +86,7 @@ export interface MigrateResult {
 
 export async function migrate(
   db: SqlClient,
-  streams: StreamDef[],
+  streams: TableDef[],
   schema: string,
   logger?: Logger,
   options: MigrateOptions = {},
@@ -124,7 +124,7 @@ export async function migrate(
 
 async function applySchema(
   db: SqlClient,
-  streams: StreamDef[],
+  streams: TableDef[],
   schema: string,
   logger: Logger | undefined,
   options: MigrateOptions,
@@ -160,7 +160,7 @@ async function applySchema(
   let repaired: ColumnDrift[] = []
   const failures = new Map<ColumnDrift, string>()
   if (options.repair && drift.length > 0) {
-    const r = await repairColumnDrift(db, drift, schema, logger)
+    const r = await repairColumnDrift(db, drift, streams, schema, logger)
     repaired = r.repaired
     for (const f of r.failed) failures.set(f.drift, f.error)
     drift = drift.filter((d) => !repaired.includes(d))
