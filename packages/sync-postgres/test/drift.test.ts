@@ -9,7 +9,7 @@ import { createTestDb } from './helpers/pg.js'
 import { migrate, fingerprint } from '../src/schema/migrate.js'
 import { detectColumnDrift, repairColumnDrift } from '../src/schema/drift.js'
 import { main } from '../src/cli.js'
-import { STREAMS, streamByName, type ColumnDef, type Logger, type StreamDef } from '@workos/sync-engine'
+import { STREAMS, streamByName, type ColumnDef, type Logger, type StreamDef, type TableDef } from '@workos/sync-engine'
 import type { SqlClient } from '../src/db/client.js'
 
 const users = streamByName('users')!
@@ -395,6 +395,52 @@ describe('column drift detection', () => {
     } finally {
       await db.exec(`reset role`)
     }
+  })
+
+  it('repairs a table that is not in the WorkOS catalog, setting its own _live view aside', async () => {
+    // A bare TableDef under a name the catalog has never heard of: the repair
+    // can only find the view it has to set aside in the tables it was handed.
+    // Looked up in the catalog instead, the view would stay, `drop column`
+    // would fail on the dependency, and the repair would be reported failed.
+    const widgets: TableDef = {
+      name: 'widgets',
+      description: 'not a WorkOS object',
+      mode: 'mirror',
+      group: 'platform',
+      key: ['id'],
+      columns: [
+        { name: 'id', type: 'text', path: 'id' },
+        { name: 'label', type: 'text', path: 'label' },
+      ],
+    }
+    const moved: TableDef = {
+      ...widgets,
+      columns: [widgets.columns[0]!, { name: 'label', type: 'text', path: 'title' }],
+    }
+    await migrate(db, [widgets], 'workos')
+    await db.exec(`
+      create role viewer;
+      grant usage on schema workos to viewer;
+      grant select on workos.widgets_live to viewer;
+      insert into workos.widgets ("_env", "_raw", "_updated_at")
+        values ('prod', '{"id":"w_1","label":"old","title":"new"}', now());
+    `)
+
+    const drift = await detectColumnDrift(db, [moved], 'workos')
+    expect(drift.map((d) => d.column)).toEqual(['label'])
+    const r = await repairColumnDrift(db, drift, [moved], 'workos')
+    expect(r.repaired.map((d) => d.column)).toEqual(['label'])
+    expect(r.failed).toEqual([])
+
+    // The view came back over the rebuilt column, and its grant with it.
+    await db.exec(`set role viewer`)
+    try {
+      const rows = await db.query<{ label: string }>(`select label from workos.widgets_live`)
+      expect(rows.rows).toEqual([{ label: 'new' }])
+    } finally {
+      await db.exec(`reset role`)
+    }
+    expect(await detectColumnDrift(db, [moved], 'workos')).toEqual([])
   })
 
   it('logs every drifted column at error with its repair DDL, and orphans at warn', async () => {
