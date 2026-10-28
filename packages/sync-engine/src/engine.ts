@@ -32,7 +32,7 @@ import {
 } from './workos/events.js'
 import { applyEvents, HydrationError } from './sync/apply.js'
 import { applyWithQuarantine, eventObjectId, isTransientError, type SuspectMap } from './sync/quarantine.js'
-import { backfillStream, type BackfillStreamResult } from './sync/backfill.js'
+import { backfillStream, pageBudget, type BackfillStreamResult } from './sync/backfill.js'
 import { diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
 import { createLogger } from './logger.js'
 import { redacting } from './redact.js'
@@ -264,7 +264,17 @@ export class SyncEngine {
     return null
   }
 
-  async backfill(options: { resume?: boolean } = {}): Promise<BackfillStreamResult[]> {
+  /**
+   * Page the REST list endpoints. `maxPages` bounds the call: once that many
+   * pages have been fetched, across every stream and environment, the rest is
+   * left for a later call with `resume`, which continues each stream from its
+   * checkpoint and skips the ones already complete. That is what lets a host
+   * with a time limit — a cron job, an edge function, a workflow activity —
+   * finish a backfill over several invocations. Every result says whether its
+   * stream is `complete`.
+   */
+  async backfill(options: { resume?: boolean; maxPages?: number } = {}): Promise<BackfillStreamResult[]> {
+    const budget = pageBudget(options.maxPages)
     await this.init()
     const results: BackfillStreamResult[] = []
     for (const env of this.config.environments) {
@@ -280,6 +290,7 @@ export class SyncEngine {
             env: env.name,
             logger: this.logger,
             resume: options.resume,
+            budget,
           })
           results.push(r)
         } catch (err) {
@@ -295,10 +306,18 @@ export class SyncEngine {
             stream: stream.name,
             stats: emptyStats(),
             pages: 0,
+            complete: false,
             skippedReason: `failed: ${String(err)}`,
           })
         }
       }
+    }
+    const incomplete = results.filter((r) => !r.complete).map((r) => r.stream)
+    if (budget && incomplete.length > 0) {
+      this.logger.info('backfill paused: page budget spent; resume to continue', {
+        maxPages: options.maxPages,
+        incomplete,
+      })
     }
     return results
   }

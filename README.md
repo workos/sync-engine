@@ -113,7 +113,7 @@ the same setting, the flag wins.
 | Command     | Flags         | What it does                                                                                                 |
 | ----------- | ------------- | ------------------------------------------------------------------------------------------------------------ |
 | `init`      | `--repair`    | Create the schema and bookkeeping tables. Idempotent; safe on every deploy. Exits 2 if a generated column has drifted from the catalog, and fails if a generated `_live` view must be rebuilt; `--repair` rebuilds columns from `_raw` and views with their grants carried over. |
-| `backfill`  | `--resume`    | Load current state from the REST list endpoints. `--resume` continues from the last checkpoint.              |
+| `backfill`  | `--resume`, `--max-pages <n>` | Load current state from the REST list endpoints. `--resume` continues each stream from its checkpoint and skips streams already complete. `--max-pages` stops after `n` pages across all streams, for a host with a time limit; run again with `--resume` until every stream reports `complete`. |
 | `listen`    | `--health-port <n>` | Poll the Events API continuously as the sole writer; waits if another listener holds the lease. Finishes the current batch on `SIGINT` or `SIGTERM`. With a port, serves `/healthz` and `/metrics`. |
 | `tick`      |               | One poll, then exit. For a cron job instead of a long-running process. Exits 3 if a listener holds the lease. |
 | `reconcile` | `--repair`    | Diff ids against the API. Exits 2 on drift; `--repair` tombstones missed deletes and inserts missed creates. |
