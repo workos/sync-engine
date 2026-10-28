@@ -174,8 +174,10 @@ queryable as `_raw->>'field'` the moment it appears, and promoting it to a
 typed column is one `ALTER TABLE ... ADD COLUMN`, computed from rows already
 present, with no backfill and no rewrite. The `extraColumns` option does this
 without editing the catalog; see [Schema](schema.md#extending-it). The
-alternative is what a comparable engine did: 42 hand-written migration files,
-one per upstream schema change, each requiring a release.
+alternative is what the original Stripe Sync Engine did: 42 hand-written
+migration files, one per upstream schema change, each requiring a release. Its
+rewrite now derives the DDL from Stripe's OpenAPI spec and projects generated
+columns out of a raw JSONB column, which is the same shape as this one.
 
 ### Timestamps need a custom parser
 
@@ -299,11 +301,12 @@ Every event is written verbatim to `workos.events` before routing, which is why
 that table is always created whatever streams you select. An event type this
 build has never seen is archived and reported at info level.
 
-Throwing is the tempting alternative and it is a trap. A comparable engine ended
-its event switch with `default: throw`, which returned HTTP 400 upstream, so
-every newly introduced event type turned an over-broad subscription into a
-retry storm. Archiving means a new upstream event type is a no-op you can
-backfill from your own table later.
+Throwing is the tempting alternative and it is a trap. The original Stripe
+Sync Engine ended its event switch with `default: throw`, which returned HTTP
+400 upstream, so every newly introduced event type turned an over-broad
+subscription into a retry storm. Its rewrite skips an unrecognised object type
+silently instead, which stops the storm but keeps nothing. Archiving means a
+new upstream event type is a no-op you can backfill from your own table later.
 
 ## Failure isolation
 
