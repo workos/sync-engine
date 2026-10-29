@@ -64,8 +64,18 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** Which part of the engine a request serves. Sent in the User-Agent; see `WorkOSClient.withPhase`. */
 export type RequestPhase = 'tail' | 'backfill' | 'reconcile' | 'hydrate'
 
-/** A product token may not contain whitespace, slashes or parentheses. */
-const token = (s: string) => s.replace(/[\s/()]+/g, '-')
+/**
+ * A product token reduced to ASCII letters, digits, `.`, `_` and `-`. Anything
+ * else — whitespace, slashes and parentheses that would split the token,
+ * control characters and non-ASCII that make `fetch` refuse the header — is
+ * folded into a dash. The header is on every request, so a destination's
+ * name must never be able to stop the sync; a name with nothing left after
+ * folding is dropped rather than sent.
+ */
+const token = (s: string) =>
+  s
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
 
 /**
  * The `User-Agent` for a request. The first token is `name/version` in the
@@ -76,7 +86,11 @@ const token = (s: string) => s.replace(/[\s/()]+/g, '-')
  */
 export function buildUserAgent(product?: ProductToken, phase?: RequestPhase): string {
   const parts = [`workos-sync-engine/${VERSION}`]
-  if (product) parts.push(`${token(product.name)}/${token(product.version)}`)
+  if (product) {
+    const name = token(product.name)
+    const version = token(product.version)
+    if (name) parts.push(version ? `${name}/${version}` : name)
+  }
   if (phase) parts.push(`(phase=${phase})`)
   return parts.join(' ')
 }

@@ -25,9 +25,25 @@ describe('User-Agent', () => {
   })
 
   it('keeps a destination token header-safe', () => {
-    expect(buildUserAgent({ name: 'my dest (beta)', version: '1/0' })).toBe(
-      `workos-sync-engine/${VERSION} my-dest-beta-/1-0`,
-    )
+    const ua = (name: string, version: string) => buildUserAgent({ name, version })
+    // Whitespace, slashes and parentheses would split or end the token.
+    expect(ua('my dest (beta)', '1/0')).toBe(`workos-sync-engine/${VERSION} my-dest-beta/1-0`)
+    // Control characters and non-ASCII make `fetch` refuse the header outright.
+    expect(ua('dest\r\nX-Injected: 1', '1.0')).toBe(`workos-sync-engine/${VERSION} dest-X-Injected-1/1.0`)
+    expect(ua('同步 engine', '1.0\u0000')).toBe(`workos-sync-engine/${VERSION} engine/1.0`)
+    // A name with nothing left is dropped, not sent as an empty token.
+    expect(ua('同步', '1.0')).toBe(`workos-sync-engine/${VERSION}`)
+    expect(ua('', '1.0')).toBe(`workos-sync-engine/${VERSION}`)
+    // A missing version leaves the bare name rather than a dangling slash.
+    expect(ua('dest', '')).toBe(`workos-sync-engine/${VERSION} dest`)
+  })
+
+  it('never produces a header value fetch would refuse', () => {
+    for (const name of ['同步', 'a\r\nb', '\u0000', ' lead', 'trail ', 'ok']) {
+      const ua = buildUserAgent({ name, version: '1.0' })
+      expect(() => new Headers({ 'User-Agent': ua })).not.toThrow()
+      expect(ua).toMatch(/^[\x21-\x7e ]+$/)
+    }
   })
 
   it('is sent on every request', async () => {
