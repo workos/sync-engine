@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { SyncEngine, WorkOSClient, selectStreams, silentLogger } from '@workos/sync-engine'
 import { main, parseHydrate, parseLeaseTtl, parseMaxPages, parseSslCa, printSchemaSql, repairRequested } from '../src/cli.js'
 import { fingerprint, migrate } from '../src/schema/migrate.js'
+import { buildSchemaSql } from '../src/schema/ddl.js'
 import { createTestDb } from './helpers/pg.js'
 import { FaultyDestination } from './helpers/faulty.js'
 import { TEST_CA_PEM } from './helpers/ca.js'
@@ -188,15 +189,51 @@ describe('init --print-sql', () => {
     await expect(main(['init', '--print-sql', '--streams', 'customers'])).rejects.toThrow(/unknown stream: customers/)
   })
 
-  it('keeps a schema name with a line break inside the header comment', async () => {
-    const sql = printSchemaSql(['users'], 'team\nmirror')
-    for (const line of sql.split('\n\n')[0]!.split('\n')) expect(line).toMatch(/^-- /)
-    // And the script still applies: nothing leaked out of the comment as SQL.
+  it('applies for schema names that would break naive quoting', async () => {
     const db = await createTestDb()
     try {
-      await db.exec(sql)
-      const found = await db.query<{ n: string }>(`select nspname as n from pg_namespace where nspname = E'team\\nmirror'`)
-      expect(found.rows).toEqual([{ n: 'team\nmirror' }])
+      // A line break would end the header comment early; `$guard$` would end
+      // a fixed dollar quote; `%` would be a format placeholder in `raise`.
+      for (const schema of ['team\nmirror', 'team$guard$mirror', 'team%mirror', "o'brien", 'say "hi"']) {
+        const sql = printSchemaSql(['users'], schema)
+        for (const line of sql.split('\n\n')[0]!.split('\n')) expect(line).toMatch(/^-- /)
+        await db.exec(sql)
+        await db.exec(sql) // the guard meets its own view and lets it through
+        const found = await db.query<{ n: number }>(
+          `select count(*)::int as n from pg_views where schemaname = $1 and viewname = 'users_live'`,
+          [schema],
+        )
+        expect(found.rows).toEqual([{ n: 1 }])
+      }
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('leaves a foreign _live view alone even when applied statement by statement', async () => {
+    // psql without ON_ERROR_STOP reports an error and carries on, so the
+    // check and the create have to be one statement for a failed check to
+    // mean anything there.
+    const db = await createTestDb()
+    try {
+      await db.exec(printSchemaSql(['users'], 'workos'))
+      await db.exec(`
+        create or replace view workos.users_live as
+          select * from workos.users where "_deleted_at" is null and email like '%@example.com';
+        comment on view workos.users_live is null;
+      `)
+      const errors: string[] = []
+      for (const statement of buildSchemaSql(selectStreams(['users']), 'workos', { guardViews: true })) {
+        try {
+          await db.exec(statement)
+        } catch (err) {
+          errors.push(String(err))
+        }
+      }
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toMatch(/workos\.users_live exists but was not generated/)
+      const def = await db.query<{ def: string }>(`select pg_get_viewdef('workos.users_live'::regclass) as def`)
+      expect(def.rows[0]!.def).toContain('example.com')
     } finally {
       await db.close()
     }

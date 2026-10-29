@@ -173,10 +173,10 @@ function streamsFromFlags(flags: Record<string, string | boolean>): string[] | u
  * runs are no-ops.
  *
  * The one check the script does carry is the ownership of `_live` views, as
- * SQL (`liveViewGuardSql`): applied by hand, nothing else would stop it from
- * overwriting a view somebody else created under that name. The schema name
- * is JSON-quoted in the header so that a line break in it cannot end the
- * comment early; the DDL itself quotes it as an identifier.
+ * SQL (`guardedLiveViewSql`): applied by hand, nothing else would stop it
+ * from overwriting a view somebody else created under that name. The schema
+ * name is JSON-quoted in the header so that a line break in it cannot end
+ * the comment early; the DDL itself quotes it as an identifier.
  */
 export function printSchemaSql(streamNames: string[] | undefined, schema: string): string {
   const streams = selectStreams(streamNames)
