@@ -11,6 +11,14 @@ Commit or rollback releases the lock; a fatal setup error rolls back its DDL.
 Repair attempts use savepoints, so a refused view replacement or column repair
 can still be handled without aborting the migration or releasing its lock.
 
+To apply the schema through your own migration tooling instead, `init
+--print-sql` prints the same DDL as one script and touches nothing; no
+database or API key is needed. Apply it, then run `init` once anyway. The
+script names the catalog fingerprint in its header but deliberately does not
+record it: a recorded fingerprint means the live columns were checked against
+the catalog, and only `init` can check. It finds the DDL in place, runs that
+check, and records the fingerprint, after which later runs are no-ops.
+
 ## Columns every table has
 
 | Column        | Type          | Meaning                                                                                                                    |

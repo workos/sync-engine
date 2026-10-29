@@ -47,6 +47,13 @@ If the database presents a certificate from a private CA, also set
 `WORKOS_SYNC_PG_SSL_CA` to that certificate; see
 [Operations](operations.md#deployment).
 
+If schema changes in your project go through migration files rather than a
+command at deploy time, `init --print-sql` prints the DDL as one script
+instead of running it. Apply it your way, then run `init` once anyway: it
+finds the DDL in place, checks the live columns against the catalog, and
+records the schema fingerprint, which the script deliberately leaves to it.
+See [Schema](schema.md).
+
 With a single key, every row is labelled `_env = 'production'`. If that is not
 what this key is, set `WORKOS_ENVIRONMENT_NAME` before the first write. The
 label is part of every primary key and must not change once you have data.

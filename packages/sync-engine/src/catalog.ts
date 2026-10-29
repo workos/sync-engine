@@ -16,7 +16,7 @@
  *    no `list` cannot be backfilled or reconciled, and a `poll` stream has no
  *    events and is only as fresh as its last snapshot.
  */
-import type { StreamDef } from './types.js'
+import type { ColumnDef, StreamDef } from './types.js'
 import type { components } from '@workos/openapi-spec'
 
 /**
@@ -610,6 +610,32 @@ export const streamForId = (id: string): StreamDef | undefined => {
  */
 export const defaultStreams = (): string[] =>
   STREAMS.filter((s) => s.mode !== 'poll').map((s) => s.name)
+
+/**
+ * The streams a configuration selects, resolved the way the engine resolves
+ * them: the named streams or the defaults, always with `events` (every event
+ * is archived there before it is routed, so that table has to exist whatever
+ * else is selected), each with any `extraColumns` appended. Exported so a
+ * caller that never builds an engine — the CLI printing the DDL — selects
+ * exactly what the engine would.
+ */
+export function selectStreams(
+  names?: string[],
+  extraColumns: Record<string, ColumnDef[]> = {},
+): StreamDef[] {
+  const selected = new Set([...(names ?? defaultStreams()), 'events'])
+  for (const n of selected) {
+    if (!streamByName(n)) throw new Error(`unknown stream: ${n}`)
+  }
+  const streams = STREAMS.filter((s) => selected.has(s.name)).map((s) =>
+    extraColumns[s.name]?.length ? { ...s, columns: [...s.columns, ...extraColumns[s.name]!] } : s,
+  )
+  for (const name of Object.keys(extraColumns)) {
+    if (!selected.has(name)) throw new Error(`extraColumns names a stream that is not selected: ${name}`)
+  }
+  if (streams.length === 0) throw new Error('no streams selected')
+  return streams
+}
 
 /**
  * The event types to subscribe to on `GET /events`.

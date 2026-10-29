@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
-import { main, parseHydrate, parseLeaseTtl, parseMaxPages, parseSslCa, repairRequested } from '../src/cli.js'
+import { SyncEngine, WorkOSClient, selectStreams, silentLogger } from '@workos/sync-engine'
+import { main, parseHydrate, parseLeaseTtl, parseMaxPages, parseSslCa, printSchemaSql, repairRequested } from '../src/cli.js'
+import { fingerprint, migrate } from '../src/schema/migrate.js'
 import { createTestDb } from './helpers/pg.js'
 import { FaultyDestination } from './helpers/faulty.js'
 import { TEST_CA_PEM } from './helpers/ca.js'
@@ -134,6 +135,73 @@ describe('WORKOS_SYNC_PG_SSL_CA', () => {
     const garbage = [header, Buffer.from('not a cert').toString('base64'), footer].join('\n')
     for (const bad of [header, unterminated, truncated, garbage, Buffer.from(truncated).toString('base64')]) {
       expect(() => parseSslCa(bad)).toThrow(/invalid WORKOS_SYNC_PG_SSL_CA/)
+    }
+  })
+})
+
+describe('init --print-sql', () => {
+  let out: string[]
+  let spy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    out = []
+    spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      out.push(String(chunk))
+      return true
+    }) as typeof process.stdout.write)
+  })
+
+  afterEach(() => {
+    spy.mockRestore()
+  })
+
+  it('prints the DDL init would run, without a database or an API key', async () => {
+    const saved = { url: process.env['DATABASE_URL'], key: process.env['WORKOS_API_KEY'] }
+    delete process.env['DATABASE_URL']
+    delete process.env['WORKOS_API_KEY']
+    try {
+      expect(await main(['init', '--print-sql'])).toBe(0)
+    } finally {
+      if (saved.url !== undefined) process.env['DATABASE_URL'] = saved.url
+      if (saved.key !== undefined) process.env['WORKOS_API_KEY'] = saved.key
+    }
+    const sql = out.join('')
+    expect(sql).toBe(printSchemaSql(undefined, 'workos'))
+    expect(sql).toContain('create schema if not exists "workos"')
+    expect(sql).toContain('create table if not exists "workos"."users"')
+    expect(sql).toContain('create or replace view "workos"."users_live"')
+    expect(sql).toContain(`fingerprint ${fingerprint(selectStreams(), 'workos')}`)
+    // Left to `init`, which records it only after checking the live columns.
+    expect(sql).not.toMatch(/insert into [^\n]*_migrations/)
+  })
+
+  it('honors --schema and --streams the way init does', async () => {
+    expect(await main(['init', '--print-sql', '--schema', 'mirror', '--streams', 'users'])).toBe(0)
+    const sql = out.join('')
+    expect(sql).toContain('create table if not exists "mirror"."users"')
+    // Always included, whatever --streams says.
+    expect(sql).toContain('create table if not exists "mirror"."events"')
+    expect(sql).not.toContain('"organizations"')
+  })
+
+  it('refuses a stream the catalog does not know, like init', async () => {
+    await expect(main(['init', '--print-sql', '--streams', 'customers'])).rejects.toThrow(/unknown stream: customers/)
+  })
+
+  it('prints a script a database accepts, after which init records the fingerprint', async () => {
+    const db = await createTestDb()
+    try {
+      expect(await main(['init', '--print-sql'])).toBe(0)
+      await db.exec(out.join(''))
+      // What `init` does next: finds the DDL in place, checks the live
+      // columns, and records the fingerprint the script left out.
+      const result = await migrate(db, selectStreams(), 'workos')
+      expect(result.applied).toBe(true)
+      expect(result.drift).toEqual([])
+      const recorded = await db.query<{ fingerprint: string }>('select fingerprint from workos."_migrations"')
+      expect(recorded.rows).toEqual([{ fingerprint: fingerprint(selectStreams(), 'workos') }])
+    } finally {
+      await db.close()
     }
   })
 })

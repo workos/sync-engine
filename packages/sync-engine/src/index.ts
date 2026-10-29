@@ -33,6 +33,7 @@ export {
   streamByName,
   streamForId,
   defaultStreams,
+  selectStreams,
   subscribedEventTypes,
 } from './catalog.js'
 export { routeEvent, sourceUpdatedAt } from './router.js'
