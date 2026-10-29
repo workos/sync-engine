@@ -17,6 +17,25 @@
  *    events and is only as fresh as its last snapshot.
  */
 import type { StreamDef } from './types.js'
+import type { components } from '@workos/openapi-spec'
+
+/**
+ * Every event type the published OpenAPI spec declares, as a literal union.
+ * `EventSchema` is a `oneOf` discriminated on `event`, so this is the spec's
+ * own list rather than a hand-maintained copy. It exists only to typecheck the
+ * catalog below: a name WorkOS retires fails `pnpm typecheck` on the next spec
+ * bump instead of turning into `400 invalid_events_request` in production.
+ *
+ * It is deliberately not part of `StreamDef`. `@workos/openapi-spec` is a
+ * devDependency, and putting the union in the public types would make every
+ * consumer install it to typecheck.
+ */
+type EventName = components['schemas']['EventSchema']['event']
+
+/** `StreamDef` with its event names narrowed to the spec's union. */
+type CatalogStreamDef = Omit<StreamDef, 'events'> & {
+  events?: { upsert?: EventName[]; delete?: EventName[] }
+}
 
 const timestamps = [
   { name: 'created_at', type: 'timestamptz' as const, path: 'created_at' },
@@ -561,7 +580,7 @@ export const STREAMS: StreamDef[] = [
     // verbatim would let any mirror reader forge signed webhook deliveries.
     redact: ['secret'],
   },
-]
+] satisfies CatalogStreamDef[]
 
 export const streamByName = (name: string): StreamDef | undefined =>
   STREAMS.find((s) => s.name === name)
@@ -595,9 +614,9 @@ export const defaultStreams = (): string[] =>
 /**
  * The event types to subscribe to on `GET /events`.
  *
- * The `events` parameter is **required** by the API. The published OpenAPI
- * spec marks it optional, but the live endpoint returns
- * `400 invalid_events_request` without it — verified against the API, and
+ * The `events` parameter is **required** by the API: the live endpoint returns
+ * `400 invalid_events_request` without it — verified against the API. The
+ * published OpenAPI spec once marked it optional; it now marks it required,
  * consistent with the Node SDK, which types the field as required.
  *
  * The practical consequence is worth stating plainly: a consumer cannot ask
@@ -606,7 +625,8 @@ export const defaultStreams = (): string[] =>
  * Deriving the list from the stream definitions keeps the two in step.
  *
  * Unknown *names* are rejected with a 400, so this list must only contain
- * event types that actually exist.
+ * event types that actually exist. The catalog is typed against the spec's
+ * `EventSchema` union (`EventName` above), so a retired name fails typecheck.
  */
 export const subscribedEventTypes = (streams: StreamDef[] = STREAMS): string[] => {
   const out = new Set<string>()

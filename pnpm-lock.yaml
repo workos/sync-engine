@@ -215,6 +215,9 @@ importers:
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
+      '@workos/openapi-spec':
+        specifier: ^0.143.0
+        version: 0.143.0
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -668,6 +671,9 @@ packages:
 
   '@vitest/spy@5.0.5':
     resolution: {integrity: sha512-lwJRExuH417257Q5wv9QYugN9IMJkoxcrKrYxGPQkBzl7wlNpTUxD/5yNX4ESKVUIShKPgkGchYPFMWOOk0wzw==}
+
+  '@workos/openapi-spec@0.143.0':
+    resolution: {integrity: sha512-7YrI/JSKHYkDVZtyiKsPJejMfvdZL1uJNOfU+W3Cva712ZaQvi0hw7KlcMfTXNBypsuj+U6T3BJvdDEXENI7oA==}
 
   assertion-error@2.0.1:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
@@ -1220,6 +1226,8 @@ snapshots:
       vite: 8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(tsx@4.23.15)
 
   '@vitest/spy@5.0.5': {}
+
+  '@workos/openapi-spec@0.143.0': {}
 
   assertion-error@2.0.1: {}
 

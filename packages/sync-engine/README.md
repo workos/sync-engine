@@ -20,6 +20,9 @@ Install this package directly only to write a new destination.
   group, key, projected columns, list endpoint, and the event types that
   create, update and delete it. `defaultStreams()` is every stream that has
   events; `subscribedEventTypes(streams)` derives the `GET /events` filter.
+  Paths and event names are hand-written from the API reference and checked
+  against the published `@workos/openapi-spec` package: event names at
+  typecheck time, REST paths in the test suite.
 - **Router** — `routeEvent(event)`: event name → upsert / delete / link /
   unlink / append / archive-only. An unknown event type is archived and
   reported, never thrown.

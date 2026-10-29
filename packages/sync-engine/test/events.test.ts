@@ -8,9 +8,10 @@ const clientFor = (fake: FakeWorkOS) =>
   new WorkOSClient({ apiKey: 'sk_test_1', apiUrl: 'http://fake.workos.local', fetchImpl: fake.fetchImpl })
 
 /**
- * `GET /events` requires an `events` filter — it returns 400 without one, even
- * though the published OpenAPI spec marks the parameter optional. Every call
- * therefore has to name the types it wants.
+ * `GET /events` requires an `events` filter — it returns 400 without one. The
+ * published OpenAPI spec once marked the parameter optional and now marks it
+ * required, matching the live endpoint. Every call therefore has to name the
+ * types it wants.
  */
 const EVENTS = [
   'user.created',
