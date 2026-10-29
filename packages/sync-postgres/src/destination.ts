@@ -31,6 +31,16 @@ const ident = (name: string) => quoteIdent(safeIdentifier(name))
 export interface PostgresDestinationOptions {
   /** Connection string. Alternatively pass a pre-built `db`. */
   databaseUrl?: string
+  /**
+   * PEM-encoded CA certificate(s) the server's certificate must chain to,
+   * for a database whose certificate a public CA did not issue. TLS is then
+   * required and the certificate verified against this CA and the host
+   * name, whatever `sslmode` the connection string carries short of
+   * `no-verify`; `sslmode=disable` is refused as a contradiction. Only with
+   * `databaseUrl`: a pre-built `db` brings its own TLS settings.
+   * `WORKOS_SYNC_PG_SSL_CA` on the CLI.
+   */
+  sslCa?: string
   /** A pre-built client, e.g. `fromPgPool(pool)` to share the app's pool. Not closed by `close()`. */
   db?: SqlClient
   /** Schema the mirror lives in. Applies to DDL *and* DML. Defaults to `workos`. */
@@ -76,6 +86,11 @@ export class PostgresDestination implements Destination {
 
   constructor(private options: PostgresDestinationOptions) {
     if (!options.db && !options.databaseUrl) throw new Error('databaseUrl or db is required')
+    // With both `db` and `databaseUrl`, `db` is what gets used and `init()`
+    // never connects, so a CA given alongside would be silently dropped.
+    if (options.sslCa !== undefined && (options.db || !options.databaseUrl)) {
+      throw new Error('sslCa applies to databaseUrl; a pre-built db carries its own TLS settings')
+    }
     this.schema = options.schema ?? 'workos'
     this.syncId = options.syncId ?? 'default'
     this.batchSize = options.batchSize
@@ -101,7 +116,7 @@ export class PostgresDestination implements Destination {
 
   async init(streams: TableDef[], logger?: Logger): Promise<void> {
     if (!this.db) {
-      this.db = await connect(this.options.databaseUrl!)
+      this.db = await connect(this.options.databaseUrl!, { sslCa: this.options.sslCa })
       this.ownsDb = true
     }
     this.lastMigration = await migrate(this.db, streams, this.schema, logger, {

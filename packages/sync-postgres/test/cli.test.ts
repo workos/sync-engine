@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
-import { main, parseHydrate, parseLeaseTtl, parseMaxPages, repairRequested } from '../src/cli.js'
+import { main, parseHydrate, parseLeaseTtl, parseMaxPages, parseSslCa, repairRequested } from '../src/cli.js'
 import { createTestDb } from './helpers/pg.js'
 import { FaultyDestination } from './helpers/faulty.js'
+import { TEST_CA_PEM } from './helpers/ca.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
 import type { SqlClient } from '../src/db/client.js'
 
@@ -85,6 +86,54 @@ describe('WORKOS_SYNC_LEASE_TTL_MS', () => {
     // excludes nobody, so neither may reach the engine.
     for (const bad of ['0', '-1', '0.5', 'abc', 'Infinity']) {
       expect(() => parseLeaseTtl(bad)).toThrow(/invalid WORKOS_SYNC_LEASE_TTL_MS/)
+    }
+  })
+})
+
+describe('WORKOS_SYNC_PG_SSL_CA', () => {
+  const pem = TEST_CA_PEM
+
+  it('leaves the driver defaults in place when unset or empty', () => {
+    expect(parseSslCa(undefined)).toBeUndefined()
+    expect(parseSslCa('')).toBeUndefined()
+    expect(parseSslCa('  ')).toBeUndefined()
+  })
+
+  it('accepts PEM as is', () => {
+    expect(parseSslCa(pem)).toBe(pem.trim())
+  })
+
+  it('accepts a bundle of several certificates', () => {
+    expect(parseSslCa(pem + pem)).toBe((pem + pem).trim())
+  })
+
+  it('straightens a PEM whose newlines arrived as the two characters backslash-n', () => {
+    expect(parseSslCa(pem.trim().replace(/\n/g, '\\n'))).toBe(pem.trim())
+  })
+
+  it('accepts the PEM encoded as base64, line-wrapped or not', () => {
+    const b64 = Buffer.from(pem).toString('base64')
+    expect(parseSslCa(b64)).toBe(pem)
+    expect(parseSslCa(b64.replace(/(.{20})/g, '$1\n'))).toBe(pem)
+  })
+
+  it('refuses anything that is not a certificate', () => {
+    // A path, prose, and base64 of something else: each would otherwise reach
+    // the driver and fail there as a handshake error against the server.
+    for (const bad of ['/etc/ssl/ca.crt', 'not a cert', Buffer.from('nope').toString('base64')]) {
+      expect(() => parseSslCa(bad)).toThrow(/invalid WORKOS_SYNC_PG_SSL_CA/)
+    }
+  })
+
+  it('refuses a damaged certificate rather than letting the driver fail on it', () => {
+    const lines = pem.trim().split('\n')
+    const header = lines[0]!
+    const footer = lines[lines.length - 1]!
+    const unterminated = lines.slice(0, -1).join('\n')
+    const truncated = [header, ...lines.slice(1, 4), footer].join('\n')
+    const garbage = [header, Buffer.from('not a cert').toString('base64'), footer].join('\n')
+    for (const bad of [header, unterminated, truncated, garbage, Buffer.from(truncated).toString('base64')]) {
+      expect(() => parseSslCa(bad)).toThrow(/invalid WORKOS_SYNC_PG_SSL_CA/)
     }
   })
 })

@@ -67,6 +67,7 @@ different label each; cursors are kept per label, so they never collide.
 | `WORKOS_SYNC_HEALTH_HOST`            | `0.0.0.0`                           | Interface the health server binds.                                  |
 | `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` | `60000`                             | `/healthz` is 503 once the last successful poll is older than this. |
 | `WORKOS_SYNC_LEASE_TTL_MS`           | `60000`                             | How long the tail lease outlives a crashed listener; at least 1.    |
+| `WORKOS_SYNC_PG_SSL_CA`              | system trust store                  | CA certificate the database's certificate must chain to, PEM or base64. |
 | `WORKOS_API_URL`                     | `https://api.workos.com`            | API base URL.                                                       |
 | `LOG_LEVEL`                          | `info`                              | `debug`, `info`, `warn`, `error` or `silent`.                       |
 
@@ -116,6 +117,7 @@ new PostgresDestination({ db: fromPgPool(pool) });
 | Option          | Default   |                                                                                                                                                                    |
 | --------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `databaseUrl`   | —         | Connection string. Either this or `db`.                                                                                                                            |
+| `sslCa`         | —         | PEM CA certificate the server's certificate must chain to. TLS is then required and verified against it. With `databaseUrl` only.                                  |
 | `db`            | —         | A pre-built client, e.g. `fromPgPool(pool)`. Not closed by the engine.                                                                                             |
 | `schema`        | `workos`  | Schema the mirror lives in, for DDL and DML alike.                                                                                                                 |
 | `syncId`        | `default` | Identifier when several syncs share one database.                                                                                                                  |
