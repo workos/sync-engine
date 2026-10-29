@@ -31,7 +31,8 @@
   },
   "dependencies": {
     "@workos/sync-engine": "workspace:*",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "pg-connection-string": "^2.14.1"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.10",

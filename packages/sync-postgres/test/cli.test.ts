@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
-import { main, parseHydrate, parseLeaseTtl, parseMaxPages, repairRequested } from '../src/cli.js'
+import { main, parseHydrate, parseLeaseTtl, parseMaxPages, parseSslCa, repairRequested } from '../src/cli.js'
 import { createTestDb } from './helpers/pg.js'
 import { FaultyDestination } from './helpers/faulty.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
@@ -85,6 +85,38 @@ describe('WORKOS_SYNC_LEASE_TTL_MS', () => {
     // excludes nobody, so neither may reach the engine.
     for (const bad of ['0', '-1', '0.5', 'abc', 'Infinity']) {
       expect(() => parseLeaseTtl(bad)).toThrow(/invalid WORKOS_SYNC_LEASE_TTL_MS/)
+    }
+  })
+})
+
+describe('WORKOS_SYNC_PG_SSL_CA', () => {
+  const pem = '-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----\n'
+
+  it('leaves the driver defaults in place when unset or empty', () => {
+    expect(parseSslCa(undefined)).toBeUndefined()
+    expect(parseSslCa('')).toBeUndefined()
+    expect(parseSslCa('  ')).toBeUndefined()
+  })
+
+  it('accepts PEM as is', () => {
+    expect(parseSslCa(pem)).toBe(pem.trim())
+  })
+
+  it('straightens a PEM whose newlines arrived as the two characters backslash-n', () => {
+    expect(parseSslCa(pem.trim().replace(/\n/g, '\\n'))).toBe(pem.trim())
+  })
+
+  it('accepts the PEM encoded as base64, line-wrapped or not', () => {
+    const b64 = Buffer.from(pem).toString('base64')
+    expect(parseSslCa(b64)).toBe(pem)
+    expect(parseSslCa(b64.replace(/(.{20})/g, '$1\n'))).toBe(pem)
+  })
+
+  it('refuses anything that is not a certificate', () => {
+    // A path, prose, and base64 of something else: each would otherwise reach
+    // the driver and fail there as a handshake error against the server.
+    for (const bad of ['/etc/ssl/ca.crt', 'not a cert', Buffer.from('nope').toString('base64')]) {
+      expect(() => parseSslCa(bad)).toThrow(/invalid WORKOS_SYNC_PG_SSL_CA/)
     }
   })
 })

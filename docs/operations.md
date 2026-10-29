@@ -537,6 +537,18 @@ environment as the CLI. It honors `HTTPS_PROXY` and `NO_PROXY` for calls to
 the WorkOS API. To run the schema creation on each deploy,
 run `init` as a one-shot container before starting `listen`.
 
+**TLS** follows the connection string: `sslmode=` is read the way `pg` reads
+it, so a database whose certificate a public CA issued needs nothing beyond
+the `sslmode` you would give any client. One whose certificate chains to a
+private CA needs that CA supplied. Set `WORKOS_SYNC_PG_SSL_CA` (`sslCa` on
+`PostgresDestination`) to the certificate, as PEM or as base64 of it for a
+secret store that cannot hold a multi-line value. TLS is then required and
+the server certificate verified against that CA and the host name, with or
+without an `sslmode` in the string; `sslmode=no-verify` still turns
+verification off, and `sslmode=disable` is refused as a contradiction. When
+the certificate is a file the process can read, `sslrootcert=<path>` in the
+connection string does the same without the variable.
+
 The image sets `WORKOS_SYNC_HEALTH_PORT=8080`, exposes that port, and
 declares a `HEALTHCHECK` that fetches `/healthz` every 30 seconds after a
 30-second start period, so `docker ps` and Compose's `depends_on:

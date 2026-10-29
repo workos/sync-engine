@@ -43,6 +43,9 @@ safe to run repeatedly. The schema is fingerprinted, so a second run with no cha
 nothing.
 
 To use a different schema name, set `WORKOS_SYNC_SCHEMA` or pass `--schema`.
+If the database presents a certificate from a private CA, also set
+`WORKOS_SYNC_PG_SSL_CA` to that certificate; see
+[Operations](operations.md#deployment).
 
 With a single key, every row is labelled `_env = 'production'`. If that is not
 what this key is, set `WORKOS_ENVIRONMENT_NAME` before the first write. The

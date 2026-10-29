@@ -2,6 +2,8 @@
  * A minimal Postgres interface so the engine can run against `pg` in
  * production and PGlite in tests without a driver-specific code path.
  */
+import { parse as parseConnectionString } from 'pg-connection-string'
+
 export interface QueryResult<T = Record<string, unknown>> {
   rows: T[]
 }
@@ -74,8 +76,51 @@ export function fromPgPool(pool: {
   }
 }
 
-export async function connect(databaseUrl: string): Promise<SqlClient> {
+export interface ConnectOptions {
+  /**
+   * PEM-encoded CA certificate(s) the server's certificate must chain to.
+   * TLS is then required and the certificate verified against this CA and
+   * the host name, whatever the connection string says short of
+   * `sslmode=no-verify`; `sslmode=disable` is refused as a contradiction.
+   */
+  sslCa?: string
+}
+
+/**
+ * What `new pg.Pool(...)` is given for a connection string.
+ *
+ * Without a CA the string is handed over as is, so TLS behaves exactly as
+ * `pg` defines it for the `sslmode` and `PGSSLMODE` in play. With one, the
+ * obvious `{ connectionString, ssl: { ca } }` does not work: `pg` parses the
+ * string after merging the options and lets whatever it finds there win, so
+ * any `sslmode=` in the URL replaces the `ssl` object, CA and all, and
+ * `sslnegotiation=direct` replaces it with `true`. Parsing the string here,
+ * with the parser `pg` itself uses, and handing over the result instead
+ * keeps every other setting as `pg` would have read it and rewrites only
+ * `ssl`: the CA is added to whatever TLS settings the URL asked for, so
+ * `sslmode=no-verify` still turns verification off and a `sslrootcert=` path
+ * is overridden.
+ */
+export function poolConfig(databaseUrl: string, options: ConnectOptions = {}): Record<string, unknown> {
+  if (options.sslCa === undefined) return { connectionString: databaseUrl }
+  const parsed = parseConnectionString(databaseUrl)
+  return { ...parsed, ssl: sslWithCa(parsed.ssl, options.sslCa) }
+}
+
+function sslWithCa(ssl: unknown, ca: string): Record<string, unknown> {
+  if (ssl === false) {
+    throw new Error(
+      'a CA certificate was given but the connection string turns TLS off (sslmode=disable or ssl=0): drop one or the other',
+    )
+  }
+  // `ssl=no-verify` arrives as the bare string; `pg` would turn it into this.
+  if (ssl === 'no-verify') return { rejectUnauthorized: false, ca }
+  if (ssl !== null && typeof ssl === 'object') return { ...ssl, ca }
+  return { ca }
+}
+
+export async function connect(databaseUrl: string, options: ConnectOptions = {}): Promise<SqlClient> {
   const { default: pg } = await import('pg')
-  const pool = new pg.Pool({ connectionString: databaseUrl })
+  const pool = new pg.Pool(poolConfig(databaseUrl, options) as never)
   return fromPgPool(pool as never)
 }

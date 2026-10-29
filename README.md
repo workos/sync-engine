@@ -93,6 +93,7 @@ the same setting, the flag wins.
 | Variable                          | Default                             | What it does                                                                                                                 |
 | --------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                    | required                            | Postgres connection string.                                                                                                  |
+| `WORKOS_SYNC_PG_SSL_CA`           | system trust store                  | CA certificate the database's certificate must chain to, as PEM or base64 of it. TLS is then required and verified against it. |
 | `WORKOS_API_KEY`                  | required                            | API key for the environment to mirror. One key, one environment, one process.                                                |
 | `WORKOS_ENVIRONMENT_NAME`         | `production`                        | Label written to `_env` on every row. Must not change once you have data. Run one process per environment to mirror several. |
 | `WORKOS_API_URL`                  | `https://api.workos.com`            | API base URL.                                                                                                                |

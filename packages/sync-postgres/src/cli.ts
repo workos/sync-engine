@@ -110,6 +110,27 @@ export function repairRequested(command: string, flags: Record<string, string | 
   return command === 'init' && Boolean(flags['repair'])
 }
 
+const PEM_CERTIFICATE = '-----BEGIN CERTIFICATE-----'
+
+/**
+ * `WORKOS_SYNC_PG_SSL_CA` is the CA certificate the database's certificate
+ * must chain to: PEM, or the PEM encoded as base64 for a secret store that
+ * cannot hold a multi-line value. A PEM whose newlines arrived as the two
+ * characters `\n` is straightened out, since that is how some hosts hand
+ * back a pasted certificate. Unset or empty means the driver's own defaults.
+ * Anything else is refused here: handed to the driver, a value that is not
+ * a certificate surfaces as a handshake failure against the server, which
+ * reads as the server's fault rather than the configuration's.
+ */
+export function parseSslCa(value: string | undefined): string | undefined {
+  if (!value || !value.trim()) return undefined
+  const v = value.trim().replace(/\\n/g, '\n')
+  if (v.includes(PEM_CERTIFICATE)) return v
+  const decoded = Buffer.from(v, 'base64').toString('utf8')
+  if (decoded.includes(PEM_CERTIFICATE)) return decoded
+  throw new Error('invalid WORKOS_SYNC_PG_SSL_CA: expected a PEM certificate, or one encoded as base64')
+}
+
 /**
  * Built apart from the rest of the config because `init` reads the drift
  * report back off it after the engine has run; the engine's own `init()`
@@ -125,6 +146,7 @@ function destinationFromEnv(
   if (!db && !databaseUrl) throw new Error('set DATABASE_URL (or pass --database-url)')
   return new PostgresDestination({
     databaseUrl,
+    sslCa: parseSslCa(process.env['WORKOS_SYNC_PG_SSL_CA']),
     db,
     schema: (flags['schema'] as string) ?? process.env['WORKOS_SYNC_SCHEMA'] ?? 'workos',
     syncId: process.env['WORKOS_SYNC_ID'] ?? 'default',
@@ -220,6 +242,9 @@ Flags
 
 Environment
   DATABASE_URL                 Postgres connection string
+  WORKOS_SYNC_PG_SSL_CA        CA certificate the database's certificate must chain to, as PEM
+                               or base64 of it; TLS is then required and verified against it
+                               (default: the system trust store)
   WORKOS_API_KEY               API key for the environment to mirror
   WORKOS_ENVIRONMENT_NAME      Label written to _env on every row (default: production)
   WORKOS_API_URL               API base URL (default: https://api.workos.com)
