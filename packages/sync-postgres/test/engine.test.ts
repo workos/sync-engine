@@ -9,8 +9,10 @@ import {
   LeaseHeldError,
   StateStore,
   silentLogger,
+  ENGINE_VERSION,
   type Destination,
 } from '@workos/sync-engine'
+import { VERSION } from '../src/version.js'
 import { createTestDb } from './helpers/pg.js'
 import { FakeWorkOS, resetIds, id } from '../../sync-engine/test/helpers/fake-workos.js'
 import { PostgresDestination } from '../src/destination.js'
@@ -91,6 +93,13 @@ describe('sync engine', () => {
     expect(await count('users')).toBe(1)
     expect(await count('organizations')).toBe(1)
     expect(await count('organization_memberships')).toBe(1)
+
+    // Every listing the backfill made says which phase it was.
+    const listings = fake.requestLog
+      .map((path, i) => [path, fake.userAgents[i]!] as const)
+      .filter(([path]) => !path.startsWith('/events'))
+    expect(listings.length).toBeGreaterThan(0)
+    expect(listings.every(([, ua]) => ua.endsWith('(phase=backfill)'))).toBe(true)
 
     const u = await db.query<{ email: string; external_id: string; metadata: unknown }>(
       `select email, external_id, metadata from workos.users`,
@@ -740,6 +749,8 @@ describe('sync engine', () => {
       `select external_id from workos.users where email = 'default@example.com'`,
     )
     expect(r.rows[0]!.external_id).toMatch(/^ext_/)
+    // The re-fetch is the last request of the tick, and says it is one.
+    expect(fake.userAgents.at(-1)).toMatch(/\(phase=hydrate\)$/)
   })
 
   it('leaves event-only fields empty when hydration is off', async () => {
@@ -1712,5 +1723,20 @@ describe('poison events', () => {
     const rows = await db.query<{ email: string; beta: boolean }>(`select email, beta from workos.users`)
     expect(rows.rows).toEqual([{ email: 'good@example.com', beta: true }])
     expect((await engine.status())['prod']!.cursor).not.toBeNull()
+  })
+})
+
+describe('User-Agent', () => {
+  it("names the destination after the engine in the engine's own client", () => {
+    const engine = new SyncEngine({
+      destination: new PostgresDestination({ db: {} as SqlClient, schema: 'workos' }),
+      environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+      logger: silentLogger,
+    })
+    // The client the engine builds for itself when no `clientFor` is injected.
+    const client = (
+      engine as unknown as { clientFor(env: { name: string; apiKey: string }): WorkOSClient }
+    ).clientFor({ name: 'prod', apiKey: 'sk_test_1' })
+    expect(client.userAgent).toBe(`workos-sync-engine/${ENGINE_VERSION} workos-sync-postgres/${VERSION}`)
   })
 })

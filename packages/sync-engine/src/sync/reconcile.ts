@@ -66,6 +66,7 @@ export async function diffStream(
   opts: { repair?: boolean; logger?: Logger } = {},
 ): Promise<DiffResult> {
   destination = redacting(destination)
+  api = api.withPhase('reconcile')
   if (!stream.list || stream.mode === 'append') {
     return {
       stream: stream.name,
@@ -184,6 +185,7 @@ export async function refreshStream(
 ): Promise<{ stream: string; refreshed: number }> {
   if (!stream.list) return { stream: stream.name, refreshed: 0 }
   destination = redacting(destination)
+  api = api.withPhase('reconcile')
   let refreshed = 0
   const rateKey = stream.list.rateKey === 'user_management' ? 'user_management' : 'global'
   for await (const page of api.paginate(

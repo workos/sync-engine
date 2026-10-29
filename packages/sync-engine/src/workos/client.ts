@@ -10,7 +10,8 @@
  * aggregate: backfilling twenty directories does not get you twenty times the
  * throughput on any one of them. Buckets are therefore keyed by scope.
  */
-import type { Logger } from '../types.js'
+import type { Logger, ProductToken } from '../types.js'
+import { VERSION } from '../version.js'
 
 export interface ListPage<T = Record<string, unknown>> {
   data: T[]
@@ -60,6 +61,26 @@ export class TokenBucket {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+/** Which part of the engine a request serves. Sent in the User-Agent; see `WorkOSClient.withPhase`. */
+export type RequestPhase = 'tail' | 'backfill' | 'reconcile' | 'hydrate'
+
+/** A product token may not contain whitespace, slashes or parentheses. */
+const token = (s: string) => s.replace(/[\s/()]+/g, '-')
+
+/**
+ * The `User-Agent` for a request. The first token is `name/version` in the
+ * shape every WorkOS SDK sends, which is what the API's poller telemetry
+ * parses; the destination's token follows it; the phase is a comment, so a
+ * log query at WorkOS can tell a tail poll from a backfill or reconcile sweep
+ * without parsing anything.
+ */
+export function buildUserAgent(product?: ProductToken, phase?: RequestPhase): string {
+  const parts = [`workos-sync-engine/${VERSION}`]
+  if (product) parts.push(`${token(product.name)}/${token(product.version)}`)
+  if (phase) parts.push(`(phase=${phase})`)
+  return parts.join(' ')
+}
+
 export interface WorkOSClientOptions {
   apiKey: string
   apiUrl?: string
@@ -68,6 +89,13 @@ export interface WorkOSClientOptions {
   maxRetries?: number
   /** Page size. The API default is 10; we always ask for the maximum. */
   pageSize?: number
+  /**
+   * The destination's `name/version`, sent after the engine's own in the
+   * User-Agent. The engine fills this in from `Destination.product`.
+   */
+  product?: ProductToken
+  /** Which part of the engine this client serves. Prefer `withPhase` to setting it here. */
+  phase?: RequestPhase
 }
 
 export class WorkOSClient {
@@ -75,11 +103,29 @@ export class WorkOSClient {
   private buckets = new Map<string, TokenBucket>()
   private fetchImpl: typeof fetch
   readonly pageSize: number
+  readonly phase: RequestPhase | undefined
+  /** What every request from this client says it is. */
+  readonly userAgent: string
 
   constructor(private opts: WorkOSClientOptions) {
     this.apiUrl = (opts.apiUrl ?? 'https://api.workos.com').replace(/\/$/, '')
     this.fetchImpl = opts.fetchImpl ?? fetch
     this.pageSize = opts.pageSize ?? 100
+    this.phase = opts.phase
+    this.userAgent = buildUserAgent(opts.product, opts.phase)
+  }
+
+  /**
+   * This client with its requests labeled as `phase` in the User-Agent.
+   * Credentials and rate buckets are shared with the parent: the limits are
+   * per key and per directory, not per phase, so a backfill and a reconcile
+   * of one directory draw on the same four requests a second.
+   */
+  withPhase(phase: RequestPhase): WorkOSClient {
+    if (phase === this.phase) return this
+    const child = new WorkOSClient({ ...this.opts, phase })
+    child.buckets = this.buckets
+    return child
   }
 
   private bucketFor(key: string): TokenBucket {
@@ -115,7 +161,7 @@ export class WorkOSClient {
         res = await this.fetchImpl(url.toString(), {
           headers: {
             Authorization: `Bearer ${this.opts.apiKey}`,
-            'User-Agent': 'workos-sync-engine',
+            'User-Agent': this.userAgent,
             Accept: 'application/json',
           },
         })

@@ -118,7 +118,7 @@ export async function applyEvents(
         const path = def.get(id)
         let fresh: Record<string, unknown> | null
         try {
-          fresh = await opts.api.get<Record<string, unknown>>(path)
+          fresh = await opts.api.withPhase('hydrate').get<Record<string, unknown>>(path)
         } catch (err) {
           throw new HydrationError(event.id, path, err)
         }

@@ -207,6 +207,15 @@ export interface SyncEngineConfig {
   logger?: Logger
 }
 
+/**
+ * A `name/version` pair, sent as one product token of the `User-Agent` on
+ * every request to WorkOS. See `Destination.product`.
+ */
+export interface ProductToken {
+  name: string
+  version: string
+}
+
 export interface Logger {
   debug(msg: string, fields?: Record<string, unknown>): void
   info(msg: string, fields?: Record<string, unknown>): void

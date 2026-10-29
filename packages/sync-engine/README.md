@@ -158,6 +158,7 @@ import type {
   Lease,
   LeaseResult,
   Logger,
+  ProductToken,
   RejectedEvent,
   Row,
   TableDef,
@@ -224,8 +225,14 @@ class MyDestination implements Destination {
   rejectedCount(env: string): Promise<number>;
   clearRejected(env: string, ids: string[]): Promise<number>;
   isTransientError?(err: unknown): boolean; // optional
+  readonly product?: ProductToken; // optional
 }
 ```
+
+`product` is how the destination names itself in the `User-Agent` the engine
+sends to WorkOS: a `name/version` token after the engine's own, so
+`@workos/sync-postgres` sends `workos-sync-postgres/<version>`. Leave it out
+and only the engine is named.
 
 A `TableDef` is the destination-facing half of a stream: `name`, `key`,
 `mode`, `columns`, `group`, and a `description`. The WorkOS half — the list

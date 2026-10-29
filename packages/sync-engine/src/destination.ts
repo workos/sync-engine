@@ -44,7 +44,7 @@
  * It holds whole raw events, so it must be scrubbed by `redact` like the
  * `events` archive is. See `sync/quarantine.ts` for when it is written.
  */
-import type { Logger, TableDef, WorkOSEvent, WriteStats } from './types.js'
+import type { Logger, ProductToken, TableDef, WorkOSEvent, WriteStats } from './types.js'
 
 export interface Row {
   data: Record<string, unknown>
@@ -231,4 +231,10 @@ export interface Destination {
    * two-sightings rule stands between a flaky connection and a quarantine.
    */
   isTransientError?(err: unknown): boolean
+  /**
+   * How the destination names itself in the `User-Agent` the engine sends to
+   * WorkOS: a `name/version` token after the engine's own, for example
+   * `workos-sync-postgres/1.2.0`. Optional; without it only the engine is named.
+   */
+  readonly product?: ProductToken
 }

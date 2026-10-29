@@ -70,7 +70,7 @@ the same setting, the flag wins.
 | Variable                             | Default                             | What it does                                                                                                                         |
 | ------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `DATABASE_URL`                       | required                            | Postgres connection string.                                                                                                          |
-| `WORKOS_API_KEY`                     | required                            | API key for the environment to mirror. One key, one environment, one process.                                                        |
+| `WORKOS_API_KEY`                     | required                            | API key for the environment to mirror. One key, one environment, one process. Dedicate it to the sync: rate limits are per key.      |
 | `WORKOS_ENVIRONMENT_NAME`            | `production`                        | Label written to `_env` on every row. Must not change once you have data. Run one process per environment to mirror several.         |
 | `WORKOS_API_URL`                     | `https://api.workos.com`            | API base URL.                                                                                                                        |
 | `WORKOS_SYNC_SCHEMA`                 | `workos`                            | Schema the mirror lives in, for DDL and queries alike.                                                                               |

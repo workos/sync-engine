@@ -318,6 +318,27 @@ Backfill checkpoints after every page, so an interrupted run resumes:
 npx workos-sync-postgres backfill --resume
 ```
 
+The limits are enforced per API key, and nothing in a request exempts the
+sync from them: the engine shares its key's budget with everything else that
+uses the key. Give the engine a key of its own. The budget is then the
+engine's alone, and every request the key makes is the engine's, which makes
+its traffic easy to attribute.
+
+## Telling the engine's requests apart
+
+Every request carries a `User-Agent` of the form
+
+```
+workos-sync-engine/<version> workos-sync-postgres/<version> (phase=<phase>)
+```
+
+The first token is the same `name/version` shape the WorkOS SDKs send. The
+phase says which part of the engine made the request: `tail` is the events
+poll, `backfill` a full listing, `reconcile` a drift check or refresh, and
+`hydrate` the get-by-id fetch after an event. With a dedicated API key this is
+enough to pick the engine's traffic, and any one phase of it, out of a request
+log.
+
 ## Backfill without a long-lived process
 
 `backfill` runs every stream to completion by default, which can take hours
