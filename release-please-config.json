@@ -14,10 +14,7 @@
     },
     "packages/sync-postgres": {
       "release-type": "node",
-      "component": "sync-postgres",
-      "extra-files": [
-        "src/version.ts"
-      ]
+      "component": "sync-postgres"
     }
   }
 }

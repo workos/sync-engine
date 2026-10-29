@@ -39,9 +39,8 @@ export {
 export { routeEvent, sourceUpdatedAt } from './router.js'
 export type { RouteAction } from './router.js'
 
-export { WorkOSClient, WorkOSApiError, TokenBucket, buildUserAgent } from './workos/client.js'
+export { WorkOSClient, WorkOSApiError, TokenBucket } from './workos/client.js'
 export type { RequestPhase, WorkOSClientOptions } from './workos/client.js'
-export type { ProductToken } from './types.js'
 export { VERSION as ENGINE_VERSION } from './version.js'
 export {
   fetchEvents,

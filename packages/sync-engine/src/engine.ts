@@ -205,7 +205,6 @@ export class SyncEngine {
             apiUrl: env.apiUrl,
             logger: this.logger,
             pageSize: this.config.pageSize ?? 100,
-            product: this.destination.product,
           })
       this.clients.set(env.name, c)
     }

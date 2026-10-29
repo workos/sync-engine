@@ -15,7 +15,7 @@
  * Not to be confused with `Destination.redact`, which erases one subject.
  */
 import type { Destination, FreshnessRow, IdDiff, Lease, LeaseResult, RejectedEvent, Row, WriteMode } from './destination.js'
-import type { Logger, ProductToken, StreamDef, WorkOSEvent, WriteStats } from './types.js'
+import type { Logger, StreamDef, WorkOSEvent, WriteStats } from './types.js'
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -177,10 +177,6 @@ export class RedactingDestination implements Destination {
 
   isTransientError(err: unknown): boolean {
     return this.inner.isTransientError?.(err) ?? false
-  }
-
-  get product(): ProductToken | undefined {
-    return this.inner.product
   }
 }
 

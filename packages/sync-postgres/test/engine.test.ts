@@ -12,7 +12,6 @@ import {
   ENGINE_VERSION,
   type Destination,
 } from '@workos/sync-engine'
-import { VERSION } from '../src/version.js'
 import { createTestDb } from './helpers/pg.js'
 import { FakeWorkOS, resetIds, id } from '../../sync-engine/test/helpers/fake-workos.js'
 import { PostgresDestination } from '../src/destination.js'
@@ -1727,7 +1726,7 @@ describe('poison events', () => {
 })
 
 describe('User-Agent', () => {
-  it("names the destination after the engine in the engine's own client", () => {
+  it("is the engine's name and version alone in the engine's own client", () => {
     const engine = new SyncEngine({
       destination: new PostgresDestination({ db: {} as SqlClient, schema: 'workos' }),
       environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
@@ -1737,6 +1736,6 @@ describe('User-Agent', () => {
     const client = (
       engine as unknown as { clientFor(env: { name: string; apiKey: string }): WorkOSClient }
     ).clientFor({ name: 'prod', apiKey: 'sk_test_1' })
-    expect(client.userAgent).toBe(`workos-sync-engine/${ENGINE_VERSION} workos-sync-postgres/${VERSION}`)
+    expect(client.userAgent).toBe(`workos-sync-engine/${ENGINE_VERSION}`)
   })
 })

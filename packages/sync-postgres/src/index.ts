@@ -16,7 +16,6 @@ export * from '@workos/sync-engine'
 
 export { PostgresDestination } from './destination.js'
 export type { PostgresDestinationOptions } from './destination.js'
-export { VERSION } from './version.js'
 
 export { migrate, fingerprint, DDL_VERSION } from './schema/migrate.js'
 export type { MigrateOptions, MigrateResult } from './schema/migrate.js'

@@ -331,7 +331,7 @@ attribute.
 Every request carries a `User-Agent` of the form
 
 ```
-workos-sync-engine/<version> workos-sync-postgres/<version> (phase=<phase>)
+workos-sync-engine/<version> (phase=<phase>)
 ```
 
 The first token is the same `name/version` shape the WorkOS SDKs send. The
@@ -341,7 +341,8 @@ poll, `backfill` a full listing, `reconcile` a drift check or refresh, and
 enough to pick the engine's traffic, and any one phase of it, out of a request
 log. The per-environment and per-directory limits are not isolated by the key, so
 a backfill of a large directory still shares that directory's budget with your
-application.
+application. The header is built by the engine from its own version and the
+phase, and nothing a destination or an application passes in can change it.
 
 ## Backfill without a long-lived process
 

@@ -10,7 +10,7 @@
  * aggregate: backfilling twenty directories does not get you twenty times the
  * throughput on any one of them. Buckets are therefore keyed by scope.
  */
-import type { Logger, ProductToken } from '../types.js'
+import type { Logger } from '../types.js'
 import { VERSION } from '../version.js'
 
 export interface ListPage<T = Record<string, unknown>> {
@@ -65,34 +65,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 export type RequestPhase = 'tail' | 'backfill' | 'reconcile' | 'hydrate'
 
 /**
- * A product token reduced to ASCII letters, digits, `.`, `_` and `-`. Anything
- * else — whitespace, slashes and parentheses that would split the token,
- * control characters and non-ASCII that make `fetch` refuse the header — is
- * folded into a dash. The header is on every request, so a destination's
- * name must never be able to stop the sync; a name with nothing left after
- * folding is dropped rather than sent.
- */
-const token = (s: string) =>
-  s
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-
-/**
  * The `User-Agent` for a request. The first token is `name/version` in the
  * shape every WorkOS SDK sends, which is what the API's poller telemetry
- * parses; the destination's token follows it; the phase is a comment, so a
- * log query at WorkOS can tell a tail poll from a backfill or reconcile sweep
- * without parsing anything.
+ * parses; the phase is a comment, so a log query at WorkOS can tell a tail
+ * poll from a backfill or reconcile sweep without parsing anything.
+ *
+ * Built from this package's version and the closed set of phases, nothing
+ * else: no option, destination or caller can put anything into it.
  */
-export function buildUserAgent(product?: ProductToken, phase?: RequestPhase): string {
-  const parts = [`workos-sync-engine/${VERSION}`]
-  if (product) {
-    const name = token(product.name)
-    const version = token(product.version)
-    if (name) parts.push(version ? `${name}/${version}` : name)
-  }
-  if (phase) parts.push(`(phase=${phase})`)
-  return parts.join(' ')
+export function buildUserAgent(phase?: RequestPhase): string {
+  const engine = `workos-sync-engine/${VERSION}`
+  return phase ? `${engine} (phase=${phase})` : engine
 }
 
 export interface WorkOSClientOptions {
@@ -103,13 +86,6 @@ export interface WorkOSClientOptions {
   maxRetries?: number
   /** Page size. The API default is 10; we always ask for the maximum. */
   pageSize?: number
-  /**
-   * The destination's `name/version`, sent after the engine's own in the
-   * User-Agent. The engine fills this in from `Destination.product`.
-   */
-  product?: ProductToken
-  /** Which part of the engine this client serves. Prefer `withPhase` to setting it here. */
-  phase?: RequestPhase
 }
 
 export class WorkOSClient {
@@ -117,16 +93,23 @@ export class WorkOSClient {
   private buckets = new Map<string, TokenBucket>()
   private fetchImpl: typeof fetch
   readonly pageSize: number
-  readonly phase: RequestPhase | undefined
-  /** What every request from this client says it is. */
-  readonly userAgent: string
+  /** Set only by `withPhase`; there is deliberately no option for it. */
+  private label: RequestPhase | undefined
 
   constructor(private opts: WorkOSClientOptions) {
     this.apiUrl = (opts.apiUrl ?? 'https://api.workos.com').replace(/\/$/, '')
     this.fetchImpl = opts.fetchImpl ?? fetch
     this.pageSize = opts.pageSize ?? 100
-    this.phase = opts.phase
-    this.userAgent = buildUserAgent(opts.product, opts.phase)
+  }
+
+  /** Which part of the engine this client serves, once `withPhase` has said. */
+  get phase(): RequestPhase | undefined {
+    return this.label
+  }
+
+  /** What every request from this client says it is. */
+  get userAgent(): string {
+    return buildUserAgent(this.label)
   }
 
   /**
@@ -136,8 +119,9 @@ export class WorkOSClient {
    * of one directory draw on the same four requests a second.
    */
   withPhase(phase: RequestPhase): WorkOSClient {
-    if (phase === this.phase) return this
-    const child = new WorkOSClient({ ...this.opts, phase })
+    if (phase === this.label) return this
+    const child = new WorkOSClient(this.opts)
+    child.label = phase
     child.buckets = this.buckets
     return child
   }

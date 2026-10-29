@@ -3,7 +3,6 @@
  * database, implemented with `pg` in production and PGlite in tests.
  */
 import type {
-  ProductToken,
   Destination,
   FreshnessRow,
   IdDiff,
@@ -18,7 +17,6 @@ import type {
   WriteStats,
 } from '@workos/sync-engine'
 import { encodeKey } from '@workos/sync-engine'
-import { VERSION } from './version.js'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 import { diffIdsInSql } from './db/reconcile.js'
@@ -75,8 +73,6 @@ export interface PostgresDestinationOptions {
 
 export class PostgresDestination implements Destination {
   readonly schema: string
-  /** Named after the engine in the User-Agent of every request to WorkOS. */
-  readonly product: ProductToken = { name: 'workos-sync-postgres', version: VERSION }
   private db: SqlClient | undefined
   private ownsDb = false
   private readonly syncId: string
