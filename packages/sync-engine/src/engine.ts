@@ -21,7 +21,7 @@ import os from 'node:os'
 import { randomBytes } from 'node:crypto'
 import type { Destination, FreshnessRow, Lease, RejectedEvent } from './destination.js'
 import { StateStore, type TailState, type TailUpdate } from './state.js'
-import { STREAMS, streamByName, defaultStreams, subscribedEventTypes } from './catalog.js'
+import { streamByName, selectStreams, subscribedEventTypes } from './catalog.js'
 import { WorkOSClient, WorkOSApiError } from './workos/client.js'
 import {
   fetchEvents,
@@ -165,20 +165,7 @@ export class SyncEngine {
     this.destination = redacting(config.destination)
     this.state = new StateStore(this.destination)
     this.logger = config.logger ?? createLogger('info')
-    // Every event is archived to `events` before it is routed, so that table
-    // has to exist whatever else is selected.
-    const names = new Set([...(config.streams ?? defaultStreams()), 'events'])
-    for (const n of names) {
-      if (!streamByName(n)) throw new Error(`unknown stream: ${n}`)
-    }
-    const extra = config.extraColumns ?? {}
-    this.streams = STREAMS.filter((s) => names.has(s.name)).map((s) =>
-      extra[s.name]?.length ? { ...s, columns: [...s.columns, ...extra[s.name]!] } : s,
-    )
-    for (const name of Object.keys(extra)) {
-      if (!names.has(name)) throw new Error(`extraColumns names a stream that is not selected: ${name}`)
-    }
-    if (this.streams.length === 0) throw new Error('no streams selected')
+    this.streams = selectStreams(config.streams, config.extraColumns)
     this.hydrate = config.hydrate ?? DEFAULT_HYDRATE
     // The events endpoint rejects a request with no `events` filter, so the
     // subscription is derived from whichever streams are being synced.

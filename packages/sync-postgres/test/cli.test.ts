@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
-import { main, parseHydrate, parseLeaseTtl, parseMaxPages, parseSslCa, repairRequested } from '../src/cli.js'
+import { SyncEngine, WorkOSClient, selectStreams, silentLogger } from '@workos/sync-engine'
+import { main, parseHydrate, parseLeaseTtl, parseMaxPages, parseSslCa, printSchemaSql, repairRequested } from '../src/cli.js'
+import { fingerprint, migrate } from '../src/schema/migrate.js'
+import { buildSchemaSql } from '../src/schema/ddl.js'
 import { createTestDb } from './helpers/pg.js'
 import { FaultyDestination } from './helpers/faulty.js'
 import { TEST_CA_PEM } from './helpers/ca.js'
@@ -134,6 +136,147 @@ describe('WORKOS_SYNC_PG_SSL_CA', () => {
     const garbage = [header, Buffer.from('not a cert').toString('base64'), footer].join('\n')
     for (const bad of [header, unterminated, truncated, garbage, Buffer.from(truncated).toString('base64')]) {
       expect(() => parseSslCa(bad)).toThrow(/invalid WORKOS_SYNC_PG_SSL_CA/)
+    }
+  })
+})
+
+describe('init --print-sql', () => {
+  let out: string[]
+  let spy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    out = []
+    spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      out.push(String(chunk))
+      return true
+    }) as typeof process.stdout.write)
+  })
+
+  afterEach(() => {
+    spy.mockRestore()
+  })
+
+  it('prints the DDL init would run, without a database or an API key', async () => {
+    const saved = { url: process.env['DATABASE_URL'], key: process.env['WORKOS_API_KEY'] }
+    delete process.env['DATABASE_URL']
+    delete process.env['WORKOS_API_KEY']
+    try {
+      expect(await main(['init', '--print-sql'])).toBe(0)
+    } finally {
+      if (saved.url !== undefined) process.env['DATABASE_URL'] = saved.url
+      if (saved.key !== undefined) process.env['WORKOS_API_KEY'] = saved.key
+    }
+    const sql = out.join('')
+    expect(sql).toBe(printSchemaSql(undefined, 'workos'))
+    expect(sql).toContain('create schema if not exists "workos"')
+    expect(sql).toContain('create table if not exists "workos"."users"')
+    expect(sql).toContain('create or replace view "workos"."users_live"')
+    expect(sql).toContain(`fingerprint ${fingerprint(selectStreams(), 'workos')}`)
+    // Left to `init`, which records it only after checking the live columns.
+    expect(sql).not.toMatch(/insert into [^\n]*_migrations/)
+  })
+
+  it('honors --schema and --streams the way init does', async () => {
+    expect(await main(['init', '--print-sql', '--schema', 'mirror', '--streams', 'users'])).toBe(0)
+    const sql = out.join('')
+    expect(sql).toContain('create table if not exists "mirror"."users"')
+    // Always included, whatever --streams says.
+    expect(sql).toContain('create table if not exists "mirror"."events"')
+    expect(sql).not.toContain('"organizations"')
+  })
+
+  it('refuses a stream the catalog does not know, like init', async () => {
+    await expect(main(['init', '--print-sql', '--streams', 'customers'])).rejects.toThrow(/unknown stream: customers/)
+  })
+
+  it('applies for schema names that would break naive quoting', async () => {
+    const db = await createTestDb()
+    try {
+      // A line break would end the header comment early; `$guard$` would end
+      // a fixed dollar quote; `%` would be a format placeholder in `raise`.
+      for (const schema of ['team\nmirror', 'team$guard$mirror', 'team%mirror', "o'brien", 'say "hi"']) {
+        const sql = printSchemaSql(['users'], schema)
+        for (const line of sql.split('\n\n')[0]!.split('\n')) expect(line).toMatch(/^-- /)
+        await db.exec(sql)
+        await db.exec(sql) // the guard meets its own view and lets it through
+        const found = await db.query<{ n: number }>(
+          `select count(*)::int as n from pg_views where schemaname = $1 and viewname = 'users_live'`,
+          [schema],
+        )
+        expect(found.rows).toEqual([{ n: 1 }])
+      }
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('leaves a foreign _live view alone even when applied statement by statement', async () => {
+    // psql without ON_ERROR_STOP reports an error and carries on, so the
+    // check and the create have to be one statement for a failed check to
+    // mean anything there.
+    const db = await createTestDb()
+    try {
+      await db.exec(printSchemaSql(['users'], 'workos'))
+      await db.exec(`
+        create or replace view workos.users_live as
+          select * from workos.users where "_deleted_at" is null and email like '%@example.com';
+        comment on view workos.users_live is null;
+      `)
+      const errors: string[] = []
+      for (const statement of buildSchemaSql(selectStreams(['users']), 'workos', { guardViews: true })) {
+        try {
+          await db.exec(statement)
+        } catch (err) {
+          errors.push(String(err))
+        }
+      }
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toMatch(/workos\.users_live exists but was not generated/)
+      const def = await db.query<{ def: string }>(`select pg_get_viewdef('workos.users_live'::regclass) as def`)
+      expect(def.rows[0]!.def).toContain('example.com')
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('refuses to replace a _live view it did not generate, like init', async () => {
+    const db = await createTestDb()
+    try {
+      expect(await main(['init', '--print-sql'])).toBe(0)
+      const script = out.join('')
+      await db.exec(script)
+      // Somebody narrows the view by hand and drops the generated comment:
+      // same shape, so Postgres alone would let the next apply overwrite it,
+      // and the comment that follows would claim it as ours.
+      await db.exec(`
+        create or replace view workos.users_live as
+          select * from workos.users where "_deleted_at" is null and email like '%@example.com';
+        comment on view workos.users_live is null;
+      `)
+      await expect(db.exec(script)).rejects.toThrow(/workos\.users_live exists but was not generated/)
+      const def = await db.query<{ def: string }>(`select pg_get_viewdef('workos.users_live'::regclass) as def`)
+      expect(def.rows[0]!.def).toContain('example.com')
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('prints a script a database accepts, after which init records the fingerprint', async () => {
+    const db = await createTestDb()
+    try {
+      expect(await main(['init', '--print-sql'])).toBe(0)
+      // Twice: the second apply meets the generated views, and the guard lets them through.
+      await db.exec(out.join(''))
+      await db.exec(out.join(''))
+      // What `init` does next: finds the DDL in place, checks the live
+      // columns, and records the fingerprint the script left out.
+      const result = await migrate(db, selectStreams(), 'workos')
+      expect(result.applied).toBe(true)
+      expect(result.drift).toEqual([])
+      const recorded = await db.query<{ fingerprint: string }>('select fingerprint from workos."_migrations"')
+      expect(recorded.rows).toEqual([{ fingerprint: fingerprint(selectStreams(), 'workos') }])
+    } finally {
+      await db.close()
     }
   })
 })
