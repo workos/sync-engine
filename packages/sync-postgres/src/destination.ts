@@ -86,7 +86,9 @@ export class PostgresDestination implements Destination {
 
   constructor(private options: PostgresDestinationOptions) {
     if (!options.db && !options.databaseUrl) throw new Error('databaseUrl or db is required')
-    if (options.sslCa !== undefined && !options.databaseUrl) {
+    // With both `db` and `databaseUrl`, `db` is what gets used and `init()`
+    // never connects, so a CA given alongside would be silently dropped.
+    if (options.sslCa !== undefined && (options.db || !options.databaseUrl)) {
       throw new Error('sslCa applies to databaseUrl; a pre-built db carries its own TLS settings')
     }
     this.schema = options.schema ?? 'workos'

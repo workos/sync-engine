@@ -3,8 +3,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { poolConfig } from '../src/db/client.js'
+import { TEST_CA_PEM } from './helpers/ca.js'
 
-const CA = '-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----\n'
+const CA = TEST_CA_PEM
 const URL = 'postgres://app:s3cret@db.example.internal:6543/mirror?application_name=sync'
 
 describe('poolConfig', () => {
