@@ -227,3 +227,13 @@ describe('token bucket', () => {
     expect(bucket.take()).toBe(0)
   })
 })
+
+describe('request phase', () => {
+  it('labels the tail poll in the User-Agent', async () => {
+    resetIds()
+    const fake = new FakeWorkOS()
+    fake.createUser()
+    await fetchEvents(clientFor(fake), { lagWindowMs: 0, events: EVENTS })
+    expect(fake.userAgents.at(-1)).toMatch(/^workos-sync-engine\/\d+\.\d+\.\d+ \(phase=tail\)$/)
+  })
+})

@@ -1,11 +1,16 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "bump-minor-pre-major": true,
-  "plugins": ["node-workspace"],
+  "plugins": [
+    "node-workspace"
+  ],
   "packages": {
     "packages/sync-engine": {
       "release-type": "node",
-      "component": "sync-engine"
+      "component": "sync-engine",
+      "extra-files": [
+        "src/version.ts"
+      ]
     },
     "packages/sync-postgres": {
       "release-type": "node",

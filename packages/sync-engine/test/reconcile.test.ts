@@ -79,6 +79,8 @@ describe('diffStream', () => {
     expect(calls.slice(0, 2)).toEqual(['liveIds:organizations', 'diffIds'])
     expect(calls.filter((c) => c.startsWith('liveIds'))).toHaveLength(1)
     expect(calls).toContain('page')
+    expect(fake.userAgents.length).toBeGreaterThan(0)
+    expect(fake.userAgents.every((ua) => ua.endsWith('(phase=reconcile)'))).toBe(true)
     expect(result).toEqual({
       stream: 'organization_memberships',
       matched: 1,

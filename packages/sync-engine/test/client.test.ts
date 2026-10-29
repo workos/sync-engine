@@ -1,0 +1,77 @@
+/**
+ * What the client tells WorkOS about itself. The first User-Agent token is the
+ * `name/version` shape every WorkOS SDK sends, which is what the API's poller
+ * telemetry parses; the phase follows it so a log query can tell a tail poll
+ * from a backfill or reconcile sweep. The engine owns the whole string.
+ */
+import { describe, it, expect } from 'vitest'
+import { WorkOSClient, buildUserAgent } from '../src/workos/client.js'
+import { VERSION } from '../src/version.js'
+import { FakeWorkOS, resetIds } from './helpers/fake-workos.js'
+
+const clientFor = (fake: FakeWorkOS) =>
+  new WorkOSClient({ apiKey: 'sk_test_1', apiUrl: 'http://fake.workos.local', fetchImpl: fake.fetchImpl })
+
+describe('User-Agent', () => {
+  it('is the engine as an SDK-style name/version token', () => {
+    expect(VERSION).toMatch(/^\d+\.\d+\.\d+/)
+    expect(buildUserAgent()).toBe(`workos-sync-engine/${VERSION}`)
+  })
+
+  it('adds the phase as a comment', () => {
+    expect(buildUserAgent('backfill')).toBe(`workos-sync-engine/${VERSION} (phase=backfill)`)
+  })
+
+  it('is sent on every request', async () => {
+    resetIds()
+    const fake = new FakeWorkOS()
+    fake.createOrganization()
+    const client = clientFor(fake)
+
+    await client.list('/organizations')
+    expect(fake.userAgents.at(-1)).toBe(`workos-sync-engine/${VERSION}`)
+
+    await client.withPhase('reconcile').list('/organizations')
+    expect(fake.userAgents.at(-1)).toBe(`workos-sync-engine/${VERSION} (phase=reconcile)`)
+  })
+
+  it('cannot be set from outside: no option reaches it', () => {
+    // A caller handing in extra options, as a JavaScript caller can, changes nothing.
+    const client = new WorkOSClient({
+      apiKey: 'sk_test_1',
+      userAgent: 'evil/1.0',
+      product: { name: 'evil', version: '1.0' },
+      phase: 'backfill',
+    } as ConstructorParameters<typeof WorkOSClient>[0])
+    expect(client.userAgent).toBe(`workos-sync-engine/${VERSION}`)
+    expect(client.phase).toBeUndefined()
+  })
+
+  it('withPhase is a view of the same client, not a new one per phase', () => {
+    const client = clientFor(new FakeWorkOS())
+    const tail = client.withPhase('tail')
+    expect(tail.phase).toBe('tail')
+    expect(tail.withPhase('tail')).toBe(tail)
+    expect(tail.withPhase('backfill')).not.toBe(tail)
+    expect(client.phase).toBeUndefined()
+  })
+
+  it('shares rate buckets across phases', async () => {
+    // A directory bucket holds four tokens and refills four a second. Five
+    // requests spread over two phases of one client must wait on the shared
+    // bucket for the fifth; with a bucket per phase they would not wait at all.
+    resetIds()
+    const fake = new FakeWorkOS()
+    const org = fake.createOrganization()
+    const dir = fake.createDirectory(org['id'] as string)
+    const client = clientFor(fake)
+    const phases = [client.withPhase('backfill'), client.withPhase('reconcile')]
+    const key = `directory:${dir['id']}`
+
+    const start = Date.now()
+    for (let i = 0; i < 5; i++) {
+      await phases[i % 2]!.list('/directory_users', { directory: dir['id'] as string }, key)
+    }
+    expect(Date.now() - start).toBeGreaterThanOrEqual(200)
+  })
+})

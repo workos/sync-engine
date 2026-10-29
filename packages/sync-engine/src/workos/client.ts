@@ -11,6 +11,7 @@
  * throughput on any one of them. Buckets are therefore keyed by scope.
  */
 import type { Logger } from '../types.js'
+import { VERSION } from '../version.js'
 
 export interface ListPage<T = Record<string, unknown>> {
   data: T[]
@@ -60,6 +61,23 @@ export class TokenBucket {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+/** Which part of the engine a request serves. Sent in the User-Agent; see `WorkOSClient.withPhase`. */
+export type RequestPhase = 'tail' | 'backfill' | 'reconcile' | 'hydrate'
+
+/**
+ * The `User-Agent` for a request. The first token is `name/version` in the
+ * shape every WorkOS SDK sends, which is what the API's poller telemetry
+ * parses; the phase is a comment, so a log query at WorkOS can tell a tail
+ * poll from a backfill or reconcile sweep without parsing anything.
+ *
+ * Built from this package's version and the closed set of phases, nothing
+ * else: no option, destination or caller can put anything into it.
+ */
+export function buildUserAgent(phase?: RequestPhase): string {
+  const engine = `workos-sync-engine/${VERSION}`
+  return phase ? `${engine} (phase=${phase})` : engine
+}
+
 export interface WorkOSClientOptions {
   apiKey: string
   apiUrl?: string
@@ -75,11 +93,37 @@ export class WorkOSClient {
   private buckets = new Map<string, TokenBucket>()
   private fetchImpl: typeof fetch
   readonly pageSize: number
+  /** Set only by `withPhase`; there is deliberately no option for it. */
+  private label: RequestPhase | undefined
 
   constructor(private opts: WorkOSClientOptions) {
     this.apiUrl = (opts.apiUrl ?? 'https://api.workos.com').replace(/\/$/, '')
     this.fetchImpl = opts.fetchImpl ?? fetch
     this.pageSize = opts.pageSize ?? 100
+  }
+
+  /** Which part of the engine this client serves, once `withPhase` has said. */
+  get phase(): RequestPhase | undefined {
+    return this.label
+  }
+
+  /** What every request from this client says it is. */
+  get userAgent(): string {
+    return buildUserAgent(this.label)
+  }
+
+  /**
+   * This client with its requests labeled as `phase` in the User-Agent.
+   * Credentials and rate buckets are shared with the parent: the limits are
+   * per key and per directory, not per phase, so a backfill and a reconcile
+   * of one directory draw on the same four requests a second.
+   */
+  withPhase(phase: RequestPhase): WorkOSClient {
+    if (phase === this.label) return this
+    const child = new WorkOSClient(this.opts)
+    child.label = phase
+    child.buckets = this.buckets
+    return child
   }
 
   private bucketFor(key: string): TokenBucket {
@@ -115,7 +159,7 @@ export class WorkOSClient {
         res = await this.fetchImpl(url.toString(), {
           headers: {
             Authorization: `Bearer ${this.opts.apiKey}`,
-            'User-Agent': 'workos-sync-engine',
+            'User-Agent': this.userAgent,
             Accept: 'application/json',
           },
         })

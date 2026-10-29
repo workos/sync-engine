@@ -45,6 +45,8 @@ export class FakeWorkOS {
   connections = new Map<string, Record<string, unknown>>()
   events: WorkOSEvent[] = []
   requestLog: string[] = []
+  /** The User-Agent of every request, in order. */
+  userAgents: string[] = []
   private rateLimitRemaining: number
 
   constructor(private opts: FakeOptions = {}) {
@@ -286,6 +288,7 @@ export class FakeWorkOS {
   async handle(rawUrl: string, init?: { headers?: Record<string, string> }): Promise<Response> {
     const url = new URL(rawUrl, 'http://fake.workos.local')
     this.requestLog.push(url.pathname + url.search)
+    this.userAgents.push(init?.headers?.['User-Agent'] ?? init?.headers?.['user-agent'] ?? '')
 
     if (this.opts.apiKey) {
       const auth = init?.headers?.['Authorization'] ?? init?.headers?.['authorization']

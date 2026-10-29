@@ -81,7 +81,7 @@ export async function fetchEvents(
   else if (opts.rangeStart) params['range_start'] = opts.rangeStart
   if (opts.events?.length) params['events'] = opts.events.join(',')
 
-  const page = await client.list<WorkOSEvent>('/events', params, 'global')
+  const page = await client.withPhase('tail').list<WorkOSEvent>('/events', params, 'global')
   const rows = page.data
 
   if (opts.after) {

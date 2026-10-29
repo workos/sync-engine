@@ -77,6 +77,7 @@ export async function backfillStream(
   const stats = emptyStats()
   let pages = 0
   destination = redacting(destination)
+  api = api.withPhase('backfill')
 
   // Organization domains arrive embedded in the organization payload; there is
   // no standalone list endpoint for them. Exploding them costs no API pages,

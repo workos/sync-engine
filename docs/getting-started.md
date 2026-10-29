@@ -14,6 +14,10 @@ You need:
 - Node 22 or newer.
 - A WorkOS API key for the environment you want to mirror. Each key is scoped to
   a single environment, so mirroring both staging and production means two keys.
+  Create one just for the sync: the global rate limit is per key, so the sync
+  then has that budget to itself, and its traffic is easy to tell apart from
+  your application's. The per-environment and per-directory limits are shared
+  whatever key it uses; see the [operations guide](operations.md#rate-limits).
 
 ## Install
 
