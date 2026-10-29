@@ -19,10 +19,11 @@ export type { PostgresDestinationOptions } from './destination.js'
 
 export { migrate, fingerprint, DDL_VERSION } from './schema/migrate.js'
 export type { MigrateOptions, MigrateResult } from './schema/migrate.js'
+export type { BuildSchemaOptions } from './schema/ddl.js'
 export { detectColumnDrift, repairColumnDrift, unrepairableReason } from './schema/drift.js'
 export type { ColumnDrift, DriftKind, RepairResult } from './schema/drift.js'
 export { buildSchemaSql, createTableSql, columnExpression, parseIso8601Function } from './schema/ddl.js'
-export { liveViewSql, liveViewName } from './schema/views.js'
+export { liveViewSql, liveViewGuardSql, liveViewName } from './schema/views.js'
 
 export { upsertRows, deleteRows, relinkRows, unlinkRows, dedupeByKey, keyValues, buildUpsert } from './db/upsert.js'
 export { diffIdsInSql } from './db/reconcile.js'

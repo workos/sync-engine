@@ -188,10 +188,48 @@ describe('init --print-sql', () => {
     await expect(main(['init', '--print-sql', '--streams', 'customers'])).rejects.toThrow(/unknown stream: customers/)
   })
 
+  it('keeps a schema name with a line break inside the header comment', async () => {
+    const sql = printSchemaSql(['users'], 'team\nmirror')
+    for (const line of sql.split('\n\n')[0]!.split('\n')) expect(line).toMatch(/^-- /)
+    // And the script still applies: nothing leaked out of the comment as SQL.
+    const db = await createTestDb()
+    try {
+      await db.exec(sql)
+      const found = await db.query<{ n: string }>(`select nspname as n from pg_namespace where nspname = E'team\\nmirror'`)
+      expect(found.rows).toEqual([{ n: 'team\nmirror' }])
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('refuses to replace a _live view it did not generate, like init', async () => {
+    const db = await createTestDb()
+    try {
+      expect(await main(['init', '--print-sql'])).toBe(0)
+      const script = out.join('')
+      await db.exec(script)
+      // Somebody narrows the view by hand and drops the generated comment:
+      // same shape, so Postgres alone would let the next apply overwrite it,
+      // and the comment that follows would claim it as ours.
+      await db.exec(`
+        create or replace view workos.users_live as
+          select * from workos.users where "_deleted_at" is null and email like '%@example.com';
+        comment on view workos.users_live is null;
+      `)
+      await expect(db.exec(script)).rejects.toThrow(/workos\.users_live exists but was not generated/)
+      const def = await db.query<{ def: string }>(`select pg_get_viewdef('workos.users_live'::regclass) as def`)
+      expect(def.rows[0]!.def).toContain('example.com')
+    } finally {
+      await db.close()
+    }
+  })
+
   it('prints a script a database accepts, after which init records the fingerprint', async () => {
     const db = await createTestDb()
     try {
       expect(await main(['init', '--print-sql'])).toBe(0)
+      // Twice: the second apply meets the generated views, and the guard lets them through.
+      await db.exec(out.join(''))
       await db.exec(out.join(''))
       // What `init` does next: finds the DDL in place, checks the live
       // columns, and records the fingerprint the script left out.

@@ -13,7 +13,7 @@
  */
 import type { ColumnDef, TableDef } from '@workos/sync-engine'
 import { quoteIdent, safeIdentifier } from './identifiers.js'
-import { liveViewSql } from './views.js'
+import { liveViewGuardSql, liveViewSql } from './views.js'
 
 // Re-exported so callers keep importing the identifier helpers from here.
 export { quoteIdent, safeIdentifier } from './identifiers.js'
@@ -240,14 +240,24 @@ export function addColumnsSql(stream: TableDef, schema: string): string[] {
   )
 }
 
+export interface BuildSchemaOptions {
+  /**
+   * Precede each `_live` view with the ownership check as SQL, for a script
+   * applied by hand rather than through `migrate`, which makes that check
+   * itself before running the statement. See `liveViewGuardSql`.
+   */
+  guardViews?: boolean
+}
+
 /** Full DDL for a set of streams, in dependency-free order. */
-export function buildSchemaSql(streams: TableDef[], schema: string): string[] {
+export function buildSchemaSql(streams: TableDef[], schema: string, options: BuildSchemaOptions = {}): string[] {
   const out: string[] = [createSchemaSql(schema), parseIso8601Function(schema), bookkeepingSql(schema)]
   for (const s of streams) {
     out.push(createTableSql(s, schema))
     out.push(...addColumnsSql(s, schema))
     out.push(...createIndexesSql(s, schema))
     // Last, so the view's `select *` is expanded after any column was added.
+    if (options.guardViews) out.push(...liveViewGuardSql(s, schema))
     out.push(...liveViewSql(s, schema))
   }
   return out

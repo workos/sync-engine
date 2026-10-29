@@ -17,7 +17,9 @@ database or API key is needed. Apply it, then run `init` once anyway. The
 script names the catalog fingerprint in its header but deliberately does not
 record it: a recorded fingerprint means the live columns were checked against
 the catalog, and only `init` can check. It finds the DDL in place, runs that
-check, and records the fingerprint, after which later runs are no-ops.
+check, and records the fingerprint, after which later runs are no-ops. Like
+`init`, the script refuses to replace a `_live` view it did not generate; it
+carries that one check as SQL, since nothing else would make it.
 
 ## Columns every table has
 
