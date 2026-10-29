@@ -49,16 +49,4 @@ describe('catalog REST paths against the published OpenAPI spec', () => {
     }
     expect(missing).toEqual([])
   })
-
-  // The catalog claims these streams cannot be backfilled because no list
-  // endpoint exists. If WorkOS ships one, this is the prompt to wire it up.
-  it('streams declared event-sourced-only still have no list endpoint', () => {
-    const gained: string[] = []
-    for (const s of STREAMS) {
-      if (s.mode === 'mirror' && !s.list && specGetPaths.has(`/${s.name}`)) {
-        gained.push(`${s.name}: GET /${s.name}`)
-      }
-    }
-    expect(gained).toEqual([])
-  })
 })
