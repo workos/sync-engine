@@ -163,6 +163,7 @@ SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS events
 | Events quarantined     | `rejected > 0` in `status`, or `rejected` exits 2              | One payload the mirror cannot apply. The tail kept going; the object waits on a replay.        |
 | Process exited         | `listen` returned or crashed                                   | A rejected credential or a backwards-paging cursor stops the engine on purpose.                |
 | Lease lost             | `lost the events tail lease` in the logs                       | The process stalled for longer than the lease TTL and another one took over. Check for a hung tick or an undersized `WORKOS_SYNC_LEASE_TTL_MS`. |
+| Connections cycling    | `idle database connection closed by the server` repeating in the logs | The database, or a proxy in front of it, is closing connections the pool left idle. One is routine and the pool reconnects on its own; a steady stream points at the server side: a restart loop, a failover, or an idle timeout shorter than the poll interval. |
 
 The engine emits structured JSON logs with per-batch counts:
 
