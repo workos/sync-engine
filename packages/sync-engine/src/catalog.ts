@@ -97,6 +97,14 @@ export const STREAMS: StreamDef[] = [
     },
     list: { path: '/organizations' },
     get: (id) => `/organizations/${id}`,
+    // Each entry of `domains` is the organization domain object, DNS challenge
+    // included (see `organization_domains`). Stripped from this embedded copy
+    // too, in the REST object and in `organization.*` events alike, so neither
+    // `_raw` nor the `domains` column ever carries it.
+    redact: [
+      ['domains', 'verification_token'],
+      ['domains', 'verification_prefix'],
+    ],
   },
   {
     name: 'organization_memberships',
@@ -156,6 +164,12 @@ export const STREAMS: StreamDef[] = [
     // organization payload. `backfill` explodes them out of organizations.
     unwrap: (data) =>
       (data['organization_domain'] as Record<string, unknown>) ?? data,
+    // The object carries the DNS challenge a pending domain is verified by:
+    // the TXT record value (`verification_token`) and its name
+    // (`verification_prefix`). Unlike an invitation's token, WorkOS puts it in
+    // every `organization_domain.*` event too, so it is stripped from the
+    // archive as well as from the row.
+    redact: ['verification_token', 'verification_prefix'],
   },
   {
     name: 'invitations',
