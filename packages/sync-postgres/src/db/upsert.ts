@@ -56,13 +56,24 @@ export function keyValues(stream: TableDef, data: Record<string, unknown>): stri
 }
 
 /**
- * Collapse rows that share a primary key, keeping the newest.
- * Postgres refuses to let one INSERT ... ON CONFLICT DO UPDATE touch the same
- * row twice, so this is required, not an optimization.
+ * Collapse rows that share a primary key into one. Postgres refuses to let
+ * one INSERT ... ON CONFLICT DO UPDATE touch the same row twice, so this is
+ * required, not an optimization.
+ *
+ * The one row has to be what writing them one at a time would have left
+ * behind. In batch order, each row passes the same `>=` staleness gate the
+ * statement applies, and a row that passes either replaces the previous one
+ * (`replace`: REST-sourced rows are whole objects) or is overlaid on it
+ * (`merge`: the shallow `_raw || excluded._raw` an event write performs).
+ * The overlay is what keeps a hydrated create whole when a later update
+ * event for the same object shares its batch. The snapshot is the only row
+ * that carries the fields event payloads omit, and keeping the newest row
+ * alone would drop them until the next refresh.
  */
 export function dedupeByKey(
   stream: TableDef,
   rows: Row[],
+  mode: WriteMode = 'replace',
 ): { rows: Row[]; dropped: number } {
   const byKey = new Map<string, Row>()
   let dropped = 0
@@ -74,7 +85,13 @@ export function dedupeByKey(
     }
     const k = key.join('\0')
     const existing = byKey.get(k)
-    if (!existing || row.updatedAt >= existing.updatedAt) byKey.set(k, row)
+    if (existing && row.updatedAt < existing.updatedAt) continue
+    byKey.set(
+      k,
+      existing && mode === 'merge'
+        ? { data: { ...existing.data, ...row.data }, updatedAt: row.updatedAt }
+        : row,
+    )
   }
   return { rows: [...byKey.values()], dropped }
 }
@@ -160,7 +177,7 @@ export async function upsertRows(
 ): Promise<WriteStats> {
   const stats = emptyStats()
   if (rows.length === 0) return stats
-  const { rows: deduped, dropped } = dedupeByKey(stream, rows)
+  const { rows: deduped, dropped } = dedupeByKey(stream, rows, mode)
   // Rows we could not key (a payload with no id and no slug) are counted as
   // skipped rather than silently vanishing.
   stats.skipped += dropped

@@ -42,6 +42,52 @@ describe('key extraction', () => {
     expect(rows[0]!.data['email']).toBe('new@example.com')
     expect(dropped).toBe(1)
   })
+
+  it('merges payloads that share a key when the write is a merge', () => {
+    // A hydrated create (the full REST object) and a later update event (the
+    // documented subset) can share a batch. Written one at a time, merge
+    // mode would overlay the second on the first; collapsing to the newest
+    // alone drops every field the subset omits until the next refresh.
+    const snapshot = userPayload({ external_id: 'ext_1', metadata: { plan: 'pro' } })
+    const update = { object: 'user', id: 'user_1', email: 'ada@example.com', first_name: 'Grace' }
+    const { rows } = dedupeByKey(
+      users,
+      [
+        { data: snapshot, updatedAt: '2026-01-01T00:00:00.000Z' },
+        { data: update, updatedAt: '2026-01-02T00:00:00.000Z' },
+      ],
+      'merge',
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.data).toMatchObject({ first_name: 'Grace', external_id: 'ext_1', metadata: { plan: 'pro' } })
+    expect(rows[0]!.updatedAt).toBe('2026-01-02T00:00:00.000Z')
+    // The inputs are untouched.
+    expect(snapshot['first_name']).toBe('Ada')
+    expect(update).not.toHaveProperty('external_id')
+  })
+
+  it('still rejects an older row that arrives behind a newer one', () => {
+    // Batch order is write order, and the staleness gate would refuse the
+    // older row on its own, so it contributes nothing here either.
+    const { rows } = dedupeByKey(
+      users,
+      [
+        { data: userPayload({ first_name: 'Grace' }), updatedAt: '2026-01-02T00:00:00.000Z' },
+        { data: userPayload({ external_id: 'ext_stale' }), updatedAt: '2026-01-01T00:00:00.000Z' },
+      ],
+      'merge',
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.data['first_name']).toBe('Grace')
+    expect(rows[0]!.data).not.toHaveProperty('external_id')
+    expect(rows[0]!.updatedAt).toBe('2026-01-02T00:00:00.000Z')
+  })
+
+  it('hands a lone row back as it is, in either mode', () => {
+    const row = { data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }
+    expect(dedupeByKey(users, [row], 'merge').rows[0]).toBe(row)
+    expect(dedupeByKey(users, [row], 'replace').rows[0]).toBe(row)
+  })
 })
 
 describe('write path', () => {

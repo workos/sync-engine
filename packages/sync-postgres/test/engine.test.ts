@@ -752,6 +752,24 @@ describe('sync engine', () => {
     expect(fake.userAgents.at(-1)).toMatch(/\(phase=hydrate\)$/)
   })
 
+  it('keeps the hydrated fields when the create and a later update share a tick', async () => {
+    const engine = makeEngine(db, fake)
+    await engine.backfill()
+
+    // Both events land in one poll. The create is hydrated from the REST
+    // object, which alone carries external_id and metadata; the update's
+    // payload is the documented subset. They become one write, and neither
+    // may lose to the other.
+    const user = fake.createUser({ email: 'both@example.com' })
+    fake.updateUser(user['id'] as string, { first_name: 'Grace' })
+    expect((await engine.tick()).processed).toBe(2)
+
+    const r = await db.query<{ first_name: string; external_id: string | null; metadata: unknown }>(
+      `select first_name, external_id, metadata from workos.users where email = 'both@example.com'`,
+    )
+    expect(r.rows[0]).toEqual({ first_name: 'Grace', external_id: user['external_id'], metadata: { plan: 'pro' } })
+  })
+
   it('leaves event-only fields empty when hydration is off', async () => {
     const engine = makeEngine(db, fake, TIER1, { hydrate: 'off' })
     await engine.backfill()
