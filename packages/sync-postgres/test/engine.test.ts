@@ -660,9 +660,8 @@ describe('sync engine', () => {
 
     // A new organization's create event is hydrated from the REST object,
     // whose domains carry the token. The domain is created with the
-    // organization so the create is the only event in its batch: a later
-    // update in the same batch would win the in-batch dedupe and the
-    // hydrated row would never be written.
+    // organization so that the create is the only event in its batch and
+    // the row under test is the hydrated snapshot alone.
     const otherId = id('org_')
     const other = fake.createOrganization({
       id: otherId,
