@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb } from './helpers/pg.js'
 import { migrate } from '../src/schema/migrate.js'
-import { upsertRows, deleteRows, relinkRows, unlinkRows, dedupeByKey, keyValues } from '../src/db/upsert.js'
+import { upsertRows, deleteRows, relinkRows, unlinkRows, dedupeByKey, wavesByKey, keyValues } from '../src/db/upsert.js'
 import { streamByName, STREAMS } from '@workos/sync-engine'
 import type { SqlClient } from '../src/db/client.js'
 
@@ -41,6 +41,24 @@ describe('key extraction', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]!.data['email']).toBe('new@example.com')
     expect(dropped).toBe(1)
+  })
+
+  it('splits repeated keys into ordered waves and leaves distinct keys in one', () => {
+    // Postgres refuses to let one INSERT ... ON CONFLICT touch a row twice.
+    // The waves are written in turn, so the rows land in the order given.
+    const first = { data: userPayload({ external_id: 'ext_1' }), updatedAt: '2026-01-01T00:00:00.000Z' }
+    const other = { data: userPayload({ id: 'user_2' }), updatedAt: '2026-01-01T00:00:00.000Z' }
+    const second = { data: { id: 'user_1', first_name: 'Grace' }, updatedAt: '2026-01-02T00:00:00.000Z' }
+    const { waves, dropped } = wavesByKey(users, [
+      first,
+      other,
+      second,
+      { data: { email: 'no-id@example.com' }, updatedAt: '2026-01-03T00:00:00.000Z' },
+    ])
+    expect(waves).toEqual([[first, other], [second]])
+    expect(waves[0]![0]).toBe(first)
+    expect(dropped).toBe(1)
+    expect(wavesByKey(users, [first, other]).waves).toEqual([[first, other]])
   })
 })
 
@@ -111,6 +129,43 @@ describe('write path', () => {
     ], 'replace')
     // Rewriting an identical observation would bloat WAL for nothing.
     expect(again).toMatchObject({ created: 0, updated: 0, skipped: 1 })
+  })
+
+  it('keeps the fields of a full snapshot under a later subset in one merge batch', async () => {
+    // A hydrated create and the update event that followed it share a poll.
+    // The snapshot alone carries external_id and metadata; the update is the
+    // documented subset. One at a time, merge mode overlays the second on the
+    // first, and a batch has to come out the same.
+    const stats = await upsertRows(db, opts, users, 'prod', [
+      { data: userPayload({ external_id: 'ext_1', metadata: { plan: 'pro' } }), updatedAt: '2026-01-01T00:00:00.000Z' },
+      { data: { object: 'user', id: 'user_1', email: 'ada@example.com', first_name: 'Grace' }, updatedAt: '2026-01-02T00:00:00.000Z' },
+    ], 'merge')
+
+    expect(stats).toMatchObject({ created: 1, updated: 1, skipped: 0 })
+    const row = (await readUser())!
+    expect(row['first_name']).toBe('Grace')
+    expect(row['external_id']).toBe('ext_1')
+    expect(row['metadata']).toEqual({ plan: 'pro' })
+  })
+
+  it('gates every row of a merge batch against the stored row, not only against the batch', async () => {
+    await upsertRows(db, opts, users, 'prod', [
+      { data: userPayload({ metadata: { plan: 'current' } }), updatedAt: '2026-01-02T00:00:00.000Z' },
+    ], 'replace')
+
+    // Older than the stored row, then newer, in one batch. The older row is
+    // refused as it would be on its own: its metadata must not ride in under
+    // the newer row's timestamp.
+    const stats = await upsertRows(db, opts, users, 'prod', [
+      { data: { object: 'user', id: 'user_1', metadata: { plan: 'old' } }, updatedAt: '2026-01-01T00:00:00.000Z' },
+      { data: { object: 'user', id: 'user_1', first_name: 'Grace' }, updatedAt: '2026-01-03T00:00:00.000Z' },
+    ], 'merge')
+
+    expect(stats).toMatchObject({ created: 0, updated: 1, skipped: 1 })
+    const row = (await readUser())!
+    expect(row['first_name']).toBe('Grace')
+    expect(row['metadata']).toEqual({ plan: 'current' })
+    expect(new Date(row['_updated_at'] as string).toISOString()).toBe('2026-01-03T00:00:00.000Z')
   })
 
   it.each(['merge', 'replace'] as const)('advances the timestamp for unchanged payloads in %s mode', async (mode) => {

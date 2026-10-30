@@ -660,9 +660,8 @@ describe('sync engine', () => {
 
     // A new organization's create event is hydrated from the REST object,
     // whose domains carry the token. The domain is created with the
-    // organization so the create is the only event in its batch: a later
-    // update in the same batch would win the in-batch dedupe and the
-    // hydrated row would never be written.
+    // organization so that the create is the only event in its batch and
+    // the row under test is the hydrated snapshot alone.
     const otherId = id('org_')
     const other = fake.createOrganization({
       id: otherId,
@@ -851,6 +850,24 @@ describe('sync engine', () => {
     expect(r.rows[0]!.external_id).toMatch(/^ext_/)
     // The re-fetch is the last request of the tick, and says it is one.
     expect(fake.userAgents.at(-1)).toMatch(/\(phase=hydrate\)$/)
+  })
+
+  it('keeps the hydrated fields when the create and a later update share a tick', async () => {
+    const engine = makeEngine(db, fake)
+    await engine.backfill()
+
+    // Both events land in one poll. The create is hydrated from the REST
+    // object, which alone carries external_id and metadata; the update's
+    // payload is the documented subset. They become one write, and neither
+    // may lose to the other.
+    const user = fake.createUser({ email: 'both@example.com' })
+    fake.updateUser(user['id'] as string, { first_name: 'Grace' })
+    expect((await engine.tick()).processed).toBe(2)
+
+    const r = await db.query<{ first_name: string; external_id: string | null; metadata: unknown }>(
+      `select first_name, external_id, metadata from workos.users where email = 'both@example.com'`,
+    )
+    expect(r.rows[0]).toEqual({ first_name: 'Grace', external_id: user['external_id'], metadata: { plan: 'pro' } })
   })
 
   it('leaves event-only fields empty when hydration is off', async () => {

@@ -58,7 +58,8 @@ export function keyValues(stream: TableDef, data: Record<string, unknown>): stri
 /**
  * Collapse rows that share a primary key, keeping the newest.
  * Postgres refuses to let one INSERT ... ON CONFLICT DO UPDATE touch the same
- * row twice, so this is required, not an optimization.
+ * row twice, so this is required, not an optimization. It serves the delete,
+ * relink and unlink paths, whose rows are whole; upserts use `wavesByKey`.
  */
 export function dedupeByKey(
   stream: TableDef,
@@ -77,6 +78,42 @@ export function dedupeByKey(
     if (!existing || row.updatedAt >= existing.updatedAt) byKey.set(k, row)
   }
   return { rows: [...byKey.values()], dropped }
+}
+
+/**
+ * Split a batch into waves in which no key appears twice, keeping order: the
+ * n-th row for a key goes in wave n. Written one after another, the waves
+ * are exactly the rows written one at a time — each row meets the staleness
+ * gate against what the row before it left stored, and a merge overlays it
+ * on that — while a batch with no repeated key, which is nearly every batch,
+ * is still a single statement.
+ *
+ * Keeping the newest row, as `dedupeByKey` does, is wrong for a merge write:
+ * a hydrated create (the whole REST object) followed in the same poll by an
+ * update event (the documented subset) would lose every field the subset
+ * omits until the next refresh, which is what hydration exists to prevent.
+ * Folding the payloads here instead would be wrong the other way: a row
+ * older than the stored one is refused on its own, but folded under a newer
+ * row's timestamp its fields would overwrite the stored values. Only the
+ * database knows the stored timestamp, so the database applies the gate.
+ */
+export function wavesByKey(stream: TableDef, rows: Row[]): { waves: Row[][]; dropped: number } {
+  const waves: Row[][] = []
+  const seen = new Map<string, number>()
+  let dropped = 0
+  for (const row of rows) {
+    const key = keyValues(stream, row.data)
+    if (!key) {
+      dropped++
+      continue
+    }
+    const k = key.join('\0')
+    const n = seen.get(k) ?? 0
+    seen.set(k, n + 1)
+    const wave = waves[n] ?? (waves[n] = [])
+    wave.push(row)
+  }
+  return { waves, dropped }
 }
 
 interface BuiltStatement {
@@ -160,16 +197,18 @@ export async function upsertRows(
 ): Promise<WriteStats> {
   const stats = emptyStats()
   if (rows.length === 0) return stats
-  const { rows: deduped, dropped } = dedupeByKey(stream, rows)
+  const { waves, dropped } = wavesByKey(stream, rows)
   // Rows we could not key (a payload with no id and no slug) are counted as
   // skipped rather than silently vanishing.
   stats.skipped += dropped
-  for (const batch of chunk(deduped, opts.batchSize ?? 500)) {
-    const built = buildUpsert(opts.schema, stream, env, batch, mode)
-    const r = await runBatch(db, built, batch.length)
-    stats.created += r.created
-    stats.updated += r.updated
-    stats.skipped += r.skipped
+  for (const wave of waves) {
+    for (const batch of chunk(wave, opts.batchSize ?? 500)) {
+      const built = buildUpsert(opts.schema, stream, env, batch, mode)
+      const r = await runBatch(db, built, batch.length)
+      stats.created += r.created
+      stats.updated += r.updated
+      stats.skipped += r.skipped
+    }
   }
   return stats
 }
