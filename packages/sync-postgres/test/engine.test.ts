@@ -598,6 +598,107 @@ describe('sync engine', () => {
     expect(Number(archive.rows[0]!.n)).toBe(0)
   })
 
+  it('never mirrors domain verification tokens, however the row arrives', async () => {
+    const org = fake.createOrganization({ name: 'Acme' })
+    const dom = fake.createDomain(org['id'] as string, 'acme.com')
+    const token = dom['verification_token'] as string
+    const prefix = dom['verification_prefix'] as string
+
+    // Every place a copy of the object can land, as text: both mirror tables
+    // (their _raw and the generated `domains` column) and the event archive.
+    const copies = async (needle: string) => {
+      const r = await db.query<{ n: string }>(
+        `select (
+           (select count(*) from workos.organizations where "_raw"::text like $1 or domains::text like $1)
+           + (select count(*) from workos.organization_domains where "_raw"::text like $1)
+           + (select count(*) from workos.events where "_raw"::text like $1)
+         )::text as n`,
+        [`%${needle}%`],
+      )
+      return Number(r.rows[0]!.n)
+    }
+    const stored = async () => {
+      const r = await db.query<{ state: string; raw: Record<string, unknown> }>(
+        `select state, "_raw" as raw from workos.organization_domains where id = $1`,
+        [dom['id']],
+      )
+      return r.rows[0]!
+    }
+
+    // Backfill writes the REST organization, domains inline, then explodes them.
+    const engine = makeEngine(db, fake)
+    await engine.backfill()
+    expect((await stored()).state).toBe('pending')
+    expect((await stored()).raw['domain']).toBe('acme.com')
+    expect(await copies(token)).toBe(0)
+    expect(await copies(prefix)).toBe(0)
+
+    // The create events carry the token, unlike an invitation's. The archive
+    // and the merge into both tables have to drop it.
+    await engine.tick()
+    expect(await count('events')).toBeGreaterThan(0)
+    expect(await copies(token)).toBe(0)
+    expect(await copies(prefix)).toBe(0)
+
+    fake.verifyDomain(dom['id'] as string)
+    await engine.tick()
+    expect((await stored()).state).toBe('verified')
+    expect(await copies(token)).toBe(0)
+
+    // verification_failed wraps the object: the archived event keeps the
+    // reason and the object, minus the token.
+    fake.failDomainVerification(dom['id'] as string)
+    await engine.tick()
+    expect((await stored()).state).toBe('failed')
+    const failed = await db.query<{ raw: { data: Record<string, unknown> } }>(
+      `select "_raw" as raw from workos.events where event = 'organization_domain.verification_failed'`,
+    )
+    expect(failed.rows).toHaveLength(1)
+    expect(failed.rows[0]!.raw.data['reason']).toBe('domain_verification_period_expired')
+    expect((failed.rows[0]!.raw.data['organization_domain'] as Record<string, unknown>)['id']).toBe(dom['id'])
+    expect(await copies(token)).toBe(0)
+
+    // A new organization's create event is hydrated from the REST object,
+    // whose domains carry the token. The domain is created with the
+    // organization so the create is the only event in its batch: a later
+    // update in the same batch would win the in-batch dedupe and the
+    // hydrated row would never be written.
+    const otherId = id('org_')
+    const other = fake.createOrganization({
+      id: otherId,
+      name: 'Initech',
+      domains: [
+        {
+          object: 'organization_domain',
+          id: id('org_domain_'),
+          organization_id: otherId,
+          domain: 'initech.com',
+          state: 'pending',
+          verification_strategy: 'dns',
+          verification_token: 'vt_initech_challenge',
+          verification_prefix: 'superapp-domain-verification-initech',
+        },
+      ],
+    })
+    expect((await engine.tick()).processed).toBe(1)
+    const hydrated = await db.query<{ raw: Record<string, unknown> }>(
+      `select "_raw" as raw from workos.organizations where id = $1`,
+      [otherId],
+    )
+    // Only the REST object carries stripe_customer_id, so its presence proves the hydration ran.
+    expect(hydrated.rows[0]!.raw['stripe_customer_id']).toBe(other['stripe_customer_id'])
+    expect(await copies('vt_initech_challenge')).toBe(0)
+    expect(await copies('superapp-domain-verification-initech')).toBe(0)
+
+    // Refresh and repair re-list the REST organization; same guarantee.
+    await engine.refresh()
+    await db.query(`delete from workos.organizations where id = $1`, [org['id']])
+    await engine.reconcile({ repair: true, streams: ['organizations'] })
+    expect(await count('organizations')).toBe(2)
+    expect(await copies(token)).toBe(0)
+    expect(await copies(prefix)).toBe(0)
+  })
+
   it('keeps two environments apart in one database', async () => {
     const staging = new FakeWorkOS()
     staging.createUser({ email: 'staging@example.com' })
