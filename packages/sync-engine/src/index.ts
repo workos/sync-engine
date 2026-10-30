@@ -26,7 +26,7 @@ export type {
 
 export type { Destination, FreshnessRow, IdDiff, Lease, LeaseResult, RejectedEvent, Row, WriteMode } from './destination.js'
 export { StateStore } from './state.js'
-export { redactPayload, redactRows, RedactingDestination, redacting } from './redact.js'
+export { redactPayload, redactRows, redactEvent, RedactingDestination, redacting } from './redact.js'
 
 export {
   STREAMS,

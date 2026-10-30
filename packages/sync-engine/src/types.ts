@@ -98,14 +98,20 @@ export interface StreamDef extends TableDef {
   get?: (id: string) => string
   /**
    * Payload transform applied before write. Used for events that wrap the
-   * object (e.g. `organization_domain.verification_failed`).
+   * object (e.g. `organization_domain.verification_failed`). It must return
+   * the payload itself or one of its top-level values by reference rather
+   * than a rebuilt object: that is how credential redaction finds the object
+   * inside an archived event.
    */
   unwrap?: (data: Record<string, unknown>) => Record<string, unknown>
   /**
    * Live credentials to strip from the payload before any row reaches the
    * destination — e.g. an invitation's acceptance `token`. Each entry is a
-   * top-level key, or a nested path as a string array. No column may project
-   * from a redacted path.
+   * top-level key, or a nested path as a string array; an array met along a
+   * path is traversed, so `['domains', 'verification_token']` strips the
+   * field from every element of `domains`. No column may project from a
+   * redacted path. Events the stream subscribes to are stripped of the same
+   * paths before they are archived or quarantined.
    */
   redact?: (string | string[])[]
 }

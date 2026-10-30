@@ -144,9 +144,9 @@ whether it is on by default, and how it is backfilled.
 | Table                      | Key  | Events                                       | Backfill                       | Notes                                                                                               |
 | -------------------------- | ---- | -------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------- |
 | `users`                    | `id` | `user.created/updated/deleted`               | `/user_management/users`       | Events omit `external_id`, `metadata`, `last_sign_in_at`, `locale`; hydrated on create by default   |
-| `organizations`            | `id` | `organization.created/updated/deleted`       | `/organizations`               | Events omit `metadata`, `stripe_customer_id`; hydrated on create by default                         |
+| `organizations`            | `id` | `organization.created/updated/deleted`       | `/organizations`               | Events omit `metadata`, `stripe_customer_id`; hydrated on create by default. The DNS challenge inside each `domains` entry is stripped |
 | `organization_memberships` | `id` | `organization_membership.*`                  | per organization               | List requires a filter and defaults to active only; the engine asks for all statuses                |
-| `organization_domains`     | `id` | `organization_domain.*` (5 types)            | embedded in organizations      | No standalone list endpoint, so `reconcile` cannot check it                                         |
+| `organization_domains`     | `id` | `organization_domain.*` (5 types)            | embedded in organizations      | No standalone list endpoint, so `reconcile` cannot check it. `verification_token` and `verification_prefix` are stripped before the row is written, and from the events too, which carry them |
 | `invitations`              | `id` | `invitation.created/accepted/resent/revoked` | `/user_management/invitations` | `token` and `accept_invitation_url` are stripped before the row is written; events never carry them |
 | `sessions`                 | `id` | `session.created/revoked`                    | per user, active only          | Backfill is partial by construction                                                                 |
 
@@ -175,7 +175,7 @@ whether it is on by default, and how it is backfilled.
 
 | Table           | Key        | Contents                                                    |
 | --------------- | ---------- | ----------------------------------------------------------- |
-| `events`        | `id`       | Every event, verbatim, including types with no mirror table |
+| `events`        | `id`       | Every event, including types with no mirror table, minus the credential paths of the stream it belongs to |
 | `auth_attempts` | `event_id` | All 15 `authentication.*` types                             |
 
 `auth_attempts` deserves attention: **authentication events have no REST
@@ -207,7 +207,7 @@ SELECT email, COUNT(*) AS failures
 | Radar block/allow lists                               | Write-only endpoints.                                                                                                    |
 | Vault values                                          | Should not leave Vault. Vault _activity_ events can be archived to `events` if you subscribe to them.                    |
 | Portal links, widget tokens                           | Ephemeral credentials, not state.                                                                                        |
-| Invitation acceptance tokens, webhook signing secrets | Live credentials. The REST objects carry them, so the engine strips them (`StreamDef.redact`) before any row is written. |
+| Invitation acceptance tokens, webhook signing secrets, domain verification challenges | Live credentials. The REST objects carry them, and the domain events do too, so the engine strips them (`StreamDef.redact`) before any row or event is written. |
 
 Events with no mirror table (certificate renewals, Vault activity, Radar,
 agent, Pipes, API keys, password resets, and so on) are not fetched by default:

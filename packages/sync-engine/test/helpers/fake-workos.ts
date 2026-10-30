@@ -148,9 +148,17 @@ export class FakeWorkOS {
       ...fields,
     }
     this.organizations.set(oid, org)
-    // organization.* events omit metadata, stripe_customer_id and
-    // allow_profiles_outside_organization.
-    this.emit('organization.created', {
+    this.emit('organization.created', this.organizationEventPayload(org))
+    return org
+  }
+
+  /**
+   * The documented subset that `organization.*` events carry: no metadata,
+   * stripe_customer_id or allow_profiles_outside_organization. `domains` is
+   * carried whole, DNS challenge and all.
+   */
+  organizationEventPayload(org: Record<string, unknown>): Record<string, unknown> {
+    return {
       object: 'organization',
       id: org['id'],
       name: org['name'],
@@ -158,8 +166,69 @@ export class FakeWorkOS {
       domains: org['domains'],
       created_at: org['created_at'],
       updated_at: org['updated_at'],
-    })
-    return org
+    }
+  }
+
+  /**
+   * Add a domain to an organization, as the dashboard or the organization
+   * update endpoint would: the domain object is carried inline on the
+   * organization, `organization_domain.created` fires, and so does
+   * `organization.updated` with the new `domains`. The object carries the DNS
+   * challenge, and unlike an invitation's token so does every event about
+   * it; the engine has to strip it from both.
+   */
+  createDomain(orgId: string, domain: string, fields: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    const did = (fields['id'] as string) ?? id('org_domain_')
+    const d = {
+      object: 'organization_domain',
+      id: did,
+      organization_id: orgId,
+      domain,
+      state: 'pending',
+      verification_strategy: 'dns',
+      verification_token: `vt_${did.slice(-8)}`,
+      verification_prefix: `superapp-domain-verification-${did.slice(-6).toLowerCase()}`,
+      created_at: this.now(),
+      updated_at: this.now(),
+      ...fields,
+    }
+    this.setDomain(d)
+    this.emit('organization_domain.created', d)
+    this.emit('organization.updated', this.organizationEventPayload(this.organizations.get(orgId)!))
+    return d
+  }
+
+  verifyDomain(domainId: string): Record<string, unknown> {
+    const d = { ...this.domain(domainId), state: 'verified', updated_at: this.now() }
+    this.setDomain(d)
+    this.emit('organization_domain.verified', d)
+    return d
+  }
+
+  /** This event wraps the object, with the reason beside it, and leaves out the prefix. */
+  failDomainVerification(domainId: string, reason = 'domain_verification_period_expired'): Record<string, unknown> {
+    const d: Record<string, unknown> = { ...this.domain(domainId), state: 'failed', updated_at: this.now() }
+    this.setDomain(d)
+    const { verification_prefix: _prefix, ...payload } = d
+    this.emit('organization_domain.verification_failed', { reason, organization_domain: payload })
+    return d
+  }
+
+  private domain(domainId: string): Record<string, unknown> {
+    for (const org of this.organizations.values()) {
+      const found = ((org['domains'] as Record<string, unknown>[] | undefined) ?? []).find((d) => d['id'] === domainId)
+      if (found) return found
+    }
+    throw new Error(`no such domain: ${domainId}`)
+  }
+
+  /** Write a domain into its organization's `domains`, replacing any entry with the same id. */
+  private setDomain(d: Record<string, unknown>): void {
+    const orgId = d['organization_id'] as string
+    const org = this.organizations.get(orgId)
+    if (!org) throw new Error(`no such organization: ${orgId}`)
+    const others = ((org['domains'] as Record<string, unknown>[] | undefined) ?? []).filter((x) => x['id'] !== d['id'])
+    this.organizations.set(orgId, { ...org, domains: [...others, d], updated_at: this.now() })
   }
 
   createMembership(userId: string, orgId: string, role = 'member'): Record<string, unknown> {
