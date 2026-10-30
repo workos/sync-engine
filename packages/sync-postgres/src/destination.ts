@@ -116,7 +116,7 @@ export class PostgresDestination implements Destination {
 
   async init(streams: TableDef[], logger?: Logger): Promise<void> {
     if (!this.db) {
-      this.db = await connect(this.options.databaseUrl!, { sslCa: this.options.sslCa })
+      this.db = await connect(this.options.databaseUrl!, { sslCa: this.options.sslCa, logger })
       this.ownsDb = true
     }
     this.lastMigration = await migrate(this.db, streams, this.schema, logger, {

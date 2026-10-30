@@ -2,6 +2,7 @@
  * A minimal Postgres interface so the engine can run against `pg` in
  * production and PGlite in tests without a driver-specific code path.
  */
+import type { Logger } from '@workos/sync-engine'
 import { parse as parseConnectionString } from 'pg-connection-string'
 
 export interface QueryResult<T = Record<string, unknown>> {
@@ -84,6 +85,14 @@ export interface ConnectOptions {
    * `sslmode=no-verify`; `sslmode=disable` is refused as a contradiction.
    */
   sslCa?: string
+  /**
+   * Where a connection the server closed while it sat idle in the pool is
+   * reported, at warn level. The pool has already discarded that connection
+   * and opens a fresh one for the next query, so this is a notice and not a
+   * failure. Without a logger the notice is dropped; the pool recovers the
+   * same way.
+   */
+  logger?: Logger
 }
 
 /**
@@ -122,5 +131,17 @@ function sslWithCa(ssl: unknown, ca: string): Record<string, unknown> {
 export async function connect(databaseUrl: string, options: ConnectOptions = {}): Promise<SqlClient> {
   const { default: pg } = await import('pg')
   const pool = new pg.Pool(poolConfig(databaseUrl, options) as never)
+  // A connection sitting idle in the pool is still a live socket, and the
+  // server can close it at any time: a restart, a failover, a proxy's idle
+  // timeout, a network partition. `pg` reports that by emitting `error` on
+  // the pool, after it has already removed the connection, so the next query
+  // simply opens a new one. An `error` event with no listener is fatal in
+  // Node, though, which would turn every such disconnect into a crash of the
+  // whole process, `listen` included. Listening is what keeps it a log line.
+  pool.on('error', (err) => {
+    options.logger?.warn('idle database connection closed by the server; the pool will reconnect', {
+      error: String(err),
+    })
+  })
   return fromPgPool(pool as never)
 }
