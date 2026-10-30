@@ -127,6 +127,11 @@ import { fromPgPool, PostgresDestination } from "@workos/sync-postgres";
 new PostgresDestination({ db: fromPgPool(pool) });
 ```
 
+A pool you pass in keeps its own `error` listener: `pg` emits one when the
+server closes a connection sitting idle in the pool, and Node exits on an
+`error` event nobody listens for. A pool built from `databaseUrl` has that
+listener and logs the disconnect at warn level.
+
 `PostgresDestination` options:
 
 | Option          | Default   |                                                                                                                                                                    |
