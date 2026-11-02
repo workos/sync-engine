@@ -1,50 +1,48 @@
-# Neon and Supabase
+# Hosted Postgres
 
-Both providers expose PostgreSQL connections that the existing `pg` destination
-can use. No provider SDK, logical replication, extension, or superuser is needed.
-The database role needs `CREATE` and `TEMPORARY` on the database and ownership of
-the sync schema's objects so the engine can create and migrate them.
+A hosted Postgres exposes an ordinary PostgreSQL connection that the existing
+`pg` destination can use. No provider SDK, logical replication, extension, or
+superuser is needed. The database role needs `CREATE` and `TEMPORARY` on the
+database and ownership of the sync schema's objects so the engine can create
+and migrate them.
 
-Use a dedicated demo database or branch for evaluation. The engine creates its
-own `workos` schema; it does not replace Supabase Auth or write to `auth.users`.
+Use a dedicated database or branch for evaluation. The engine creates its own
+`workos` schema and touches nothing else, including any schema the provider
+manages for its own features, such as authentication.
 
 ## Choose a connection
 
-| Provider | Connection for a persistent sync process |
+Providers typically offer two or three URIs for the same database:
+
+| Connection | For a persistent sync process |
 | --- | --- |
-| Neon | Either URI. The **pooled** URI, whose host contains `-pooler`, has passed the compatibility test below against a live Neon endpoint; the **direct** URI works as well. |
-| Supabase | Copy the **Session pooler** URI on port 5432 for IPv4, or the **Direct connection** URI if your host supports IPv6 (or the project has the IPv4 add-on). |
+| **Direct** | Works. Some providers resolve the direct host to IPv6 only, so check that your host can reach it. |
+| **Session pooler** | Works. Session semantics are the same as a direct connection. |
+| **Transaction pooler** | Works, and has passed the compatibility test below against a live hosted endpoint. |
 
-Copy the complete URI from the provider. In particular, Supabase's shared pooler
-uses `postgres.<project-ref>` and a project-specific pooler hostname. Use the
-database password, not a Supabase API key. Percent-encode password characters
-that have meaning in a URL.
+Copy the complete URI from the provider rather than assembling one. A pooler
+may use a tenant-qualified username and a hostname of its own, and a provider's
+connection dialog usually only selects which URI is displayed; it does not turn
+the pooler on or off. Use the database password, not a provider API key, and
+percent-encode password characters that have meaning in a URL.
 
-Direct connections and session poolers support the setup DDL and the persistent
-demo process. Neon's transaction pooler does too: the compatibility test below
-has passed against a live pooled Neon endpoint. The engine uses
-transaction-scoped migration locks, row-based writer leases, and temporary
-tables with `ON COMMIT DROP` inside reconciliation transactions, and needs
-neither a session-level advisory lock nor named prepared statements, which is
-why transaction pooling is enough. Validate any other transaction pooler with
-the same test before using it.
-
-Neon's Connect toggle only selects which URI is displayed; it does not turn the
-project's pooler on or off. The demo's Node `pg` pool reuses client connections
-with either URI.
-
-Provider references: [Neon connections](https://neon.com/docs/connect/connect-from-any-app),
-[Neon pooling](https://neon.com/docs/connect/connection-pooling), and
-[Supabase connections](https://supabase.com/docs/guides/database/connecting-to-postgres).
+Transaction pooling is enough because of how the engine uses the database: it
+takes transaction-scoped migration locks, holds row-based writer leases, and
+creates temporary tables with `ON COMMIT DROP` inside reconciliation
+transactions. It needs neither a session-level advisory lock nor named prepared
+statements. The engine's Node `pg` pool reuses client connections with any of
+the three URIs. Validate a specific endpoint with the compatibility test below
+before relying on it.
 
 ## TLS
 
 Use `sslmode=verify-full` in the connection URL. Keep any other parameters the
-provider supplies, such as Neon's `channel_binding=require`.
+provider supplies, such as `channel_binding=require`.
 
-Neon normally uses the system CA trust store. For Supabase, download the database
-CA certificate from its database SSL settings. The CLI accepts that certificate
-as PEM or base64-encoded PEM in `WORKOS_SYNC_PG_SSL_CA`:
+Some providers' certificates chain to the system CA trust store and need
+nothing more. Others issue their own CA certificate, downloadable from the
+project's database settings. The CLI accepts that certificate as PEM or
+base64-encoded PEM in `WORKOS_SYNC_PG_SSL_CA`:
 
 ```sh
 export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=verify-full'
@@ -62,8 +60,6 @@ variable when the endpoint is already trusted by the system. In embedded code,
 pass the PEM text as `sslCa` to `PostgresDestination` or `connect`; those APIs do
 not read the CLI's environment variables. A pool passed through `fromPgPool`
 must carry its own TLS configuration.
-
-See [Supabase SSL configuration](https://supabase.com/docs/guides/platform/ssl-enforcement).
 
 ## Verify the actual endpoint
 
@@ -88,6 +84,7 @@ Passing locally does not establish that a hosted endpoint's credentials,
 network access, TLS, or permissions are correct. Run the test separately for
 each hosted URL once you have created the projects.
 
-Keep `workos` outside Supabase's exposed Data API schemas for this SQL-only
-integration. Access from browser clients needs a separate grants/RLS design;
-the generated mirror includes raw event payloads and deleted rows.
+If the provider exposes schemas automatically over an HTTP data API, keep
+`workos` out of it for this SQL-only integration. Access from browser clients
+needs a separate grants and row-level security design; the generated mirror
+includes raw event payloads and deleted rows.

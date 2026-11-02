@@ -11,7 +11,7 @@ Use a disposable PostgreSQL database with permission to create schemas. Each
 integration test creates a uniquely named schema and drops it on completion.
 CI supplies PostgreSQL 17 and runs these tests on both supported Node versions.
 
-For a hosted endpoint (Neon or Supabase), run the targeted compatibility suite:
+For a hosted endpoint, run the targeted compatibility suite:
 
 ```sh
 TEST_DATABASE_URL='postgresql://USER:PASSWORD@HOST/DATABASE?sslmode=verify-full' \
@@ -26,4 +26,4 @@ when its URL is missing instead of skipping the database checks.
 
 The other `*-postgres.test.ts` regressions also inspect backend sessions or
 terminate a connection they create; use local Postgres for that full suite.
-See [Neon and Supabase setup](../../../docs/hosted-postgres.md).
+See [Hosted Postgres setup](../../../docs/hosted-postgres.md).

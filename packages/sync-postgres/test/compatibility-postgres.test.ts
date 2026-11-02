@@ -6,7 +6,7 @@ import { FakeWorkOS } from '../../sync-engine/test/helpers/fake-workos.js'
 import { connect, type SqlClient } from '../src/db/client.js'
 import { PostgresDestination } from '../src/destination.js'
 
-// Run unchanged against local Postgres, Neon, or Supabase. Only our randomly named
+// Run unchanged against local Postgres or any hosted provider. Only our randomly named
 // schema is changed; there are no real WorkOS calls or privileged server operations.
 describe.skipIf(!process.env.TEST_DATABASE_URL)('Postgres provider compatibility', () => {
   let db: SqlClient
