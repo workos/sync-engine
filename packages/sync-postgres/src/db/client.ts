@@ -5,6 +5,17 @@
 import type { Logger } from '@workos/sync-engine'
 import { parse as parseConnectionString } from 'pg-connection-string'
 
+/**
+ * How the engine's connections introduce themselves to the server, so they
+ * can be told apart from the application's own in `pg_stat_activity`, a
+ * provider's connection dashboard and `log_line_prefix`. Handed to `pg` as
+ * `fallback_application_name`, which the driver uses only when neither the
+ * connection string nor `PGAPPNAME` names one: the operator's choice always
+ * wins. Kept a constant rather than carrying a version so that filters
+ * written against it do not break on release.
+ */
+export const APPLICATION_NAME = 'workos-sync-engine'
+
 export interface QueryResult<T = Record<string, unknown>> {
   rows: T[]
 }
@@ -109,11 +120,18 @@ export interface ConnectOptions {
  * `ssl`: the CA is added to whatever TLS settings the URL asked for, so
  * `sslmode=no-verify` still turns verification off and a `sslrootcert=` path
  * is overridden.
+ *
+ * Either way the pool is told to fall back to {@link APPLICATION_NAME}. Beside a
+ * `connectionString` that is safe: what `pg` parses out of the string lands
+ * on top of the other options, so an `application_name=` in the URL is
+ * still read, and it takes precedence over the fallback inside the driver.
  */
 export function poolConfig(databaseUrl: string, options: ConnectOptions = {}): Record<string, unknown> {
-  if (options.sslCa === undefined) return { connectionString: databaseUrl }
+  if (options.sslCa === undefined) {
+    return { connectionString: databaseUrl, fallback_application_name: APPLICATION_NAME }
+  }
   const parsed = parseConnectionString(databaseUrl)
-  return { ...parsed, ssl: sslWithCa(parsed.ssl, options.sslCa) }
+  return { ...parsed, fallback_application_name: APPLICATION_NAME, ssl: sslWithCa(parsed.ssl, options.sslCa) }
 }
 
 function sslWithCa(ssl: unknown, ca: string): Record<string, unknown> {
