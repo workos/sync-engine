@@ -289,7 +289,12 @@ Commands
                        with a port, serve GET /healthz and /metrics on it
   tick                 One poll of the Events API, then exit (for a cron job);
                        exits 3 if a listener holds the lease
-  reconcile [--repair] Compare the mirror against the API; --repair fixes drift
+  reconcile [--repair] [--resume] [--max-pages <n>]
+                       Compare the mirror against the API; --repair fixes drift.
+                       --max-pages stops starting streams once n pages have been
+                       fetched (a stream that starts runs to its last page, since
+                       a diff needs the whole listing); run again with --resume
+                       until every stream reports complete
   refresh              Re-list top-level streams (refreshes fields events omit)
   status               Cursor position, poll age, and per-stream freshness
   redact --user <id>   Delete one subject from the mirror and event archive
@@ -432,7 +437,11 @@ export async function main(argv = process.argv.slice(2), deps: MainDeps = {}): P
         }
       }
       case 'reconcile': {
-        const r = await engine.reconcile({ repair: Boolean(flags['repair']) })
+        const r = await engine.reconcile({
+          repair: Boolean(flags['repair']),
+          resume: Boolean(flags['resume']),
+          maxPages: parseMaxPages(flags['max-pages']),
+        })
         process.stdout.write(JSON.stringify(r, null, 2) + '\n')
         // A non-zero exit makes this usable as a scheduled check.
         const drift = Object.values(r.diffs)

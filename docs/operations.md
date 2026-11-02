@@ -383,6 +383,23 @@ The tail's starting position is captured on the first slice and kept, so
 is replayed from there. One backfill slice and one `tick` per invocation is
 the natural shape for a scheduled host.
 
+`reconcile` takes the same two flags, at stream granularity:
+
+```bash
+npx workos-sync-postgres reconcile --max-pages 50             # first slice
+npx workos-sync-postgres reconcile --resume --max-pages 50    # every later slice
+```
+
+A diff is taken against a stream's whole listing, so a listing cannot stop
+partway: the objects on the pages a budget cut off would all read as missed
+deletes, and `--repair` would tombstone them. The budget decides whether the
+next stream starts, not where a listing stops. A stream that starts runs to
+its last page, so a slice overshoots by at most one stream's listing; a stream
+whose own listing does not fit the host's limit has to run somewhere without
+one. Each result carries `pages` and `complete`, a stream that fails is
+reported with `complete: false` rather than left out, and `--resume` skips
+the streams already diffed.
+
 ## Rejected events
 
 There is one cursor per environment. Without a quarantine, one event that fails

@@ -86,6 +86,8 @@ describe('diffStream', () => {
       matched: 1,
       localOnly: [],
       remoteOnly: [],
+      pages: 1,
+      complete: true,
     })
   })
 })

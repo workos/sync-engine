@@ -5,6 +5,7 @@ import { fingerprint, migrate } from '../src/schema/migrate.js'
 import { buildSchemaSql } from '../src/schema/ddl.js'
 import { createTestDb } from './helpers/pg.js'
 import { FaultyDestination } from './helpers/faulty.js'
+import { PostgresDestination } from '../src/destination.js'
 import { TEST_CA_PEM } from './helpers/ca.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
 import type { SqlClient } from '../src/db/client.js'
@@ -347,5 +348,65 @@ describe('rejected command', () => {
 
     const users = await db.query<{ email: string }>(`select email from workos.users order by email`)
     expect(users.rows.map((r) => r.email)).toEqual(['bad@example.com', 'good@example.com'])
+  })
+})
+
+describe('reconcile command', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+  let out: string[]
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+    out = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk))
+      return true
+    })
+  })
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await db.close()
+  })
+
+  const lastDiffs = () =>
+    (JSON.parse(out[out.length - 1]!) as { diffs: Record<string, { stream: string; pages: number; complete: boolean }[]> })
+      .diffs['prod']!
+
+  it('slices with --max-pages and converges with --resume, exiting 0 either way', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = new SyncEngine(
+      {
+        destination: new PostgresDestination({ db, schema: 'workos' }),
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: ['users', 'invitations'],
+        hydrate: 'off',
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({
+            apiKey: 'sk_test_1',
+            apiUrl: 'http://fake.workos.local',
+            fetchImpl: fake.fetchImpl,
+            pageSize: 100,
+          }),
+      },
+    )
+    await engine.backfill()
+
+    // A slice that stops short is the outcome asked for, not an error.
+    expect(await main(['reconcile', '--max-pages', '2'], { engine })).toBe(0)
+    let diffs = lastDiffs()
+    expect(diffs.find((d) => d.stream === 'users')).toMatchObject({ pages: 3, complete: true })
+    expect(diffs.find((d) => d.stream === 'invitations')).toMatchObject({ pages: 0, complete: false })
+
+    expect(await main(['reconcile', '--resume', '--max-pages', '2'], { engine })).toBe(0)
+    diffs = lastDiffs()
+    expect(diffs.find((d) => d.stream === 'users')).toMatchObject({ pages: 0, complete: true })
+    expect(diffs.find((d) => d.stream === 'invitations')).toMatchObject({ pages: 1, complete: true })
   })
 })

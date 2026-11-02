@@ -15,8 +15,18 @@
  *
  * Only the id diff finds missed deletes: a deleted object is not returned by
  * any list endpoint, so no amount of re-listing will ever surface its absence.
+ *
+ * A page budget bounds one `reconcile()` call the way it bounds a backfill,
+ * with one difference. The diff is a set difference against the whole
+ * listing, so a listing cannot stop partway: every object on the pages a
+ * budget cut off would read as a missed delete, and `repair` would tombstone
+ * objects that exist upstream. The budget therefore decides whether the next
+ * stream starts, never where a listing stops. A stream that starts runs to
+ * its last page, a call overshoots by at most one stream's listing, and the
+ * streams not started are left for a later call with `resume`.
  */
 import type { Destination, FreshnessRow } from '../destination.js'
+import type { PageBudget } from './backfill.js'
 import { streamByName } from '../catalog.js'
 import type { WorkOSClient } from '../workos/client.js'
 import type { Logger, StreamDef } from '../types.js'
@@ -42,7 +52,20 @@ export interface DiffResult {
   /** Upstream but not in the mirror: missed creates or backfill gaps. */
   remoteOnly: string[]
   repaired?: { deleted: number; inserted: number }
+  /** Pages this call fetched for the stream. */
+  pages: number
+  /**
+   * True when the stream was diffed, or has nothing to diff. False when the
+   * page budget was spent before it started, or it failed; a call with
+   * `resume` comes back to it.
+   */
+  complete: boolean
   skippedReason?: string
+}
+
+/** Whether a stream has a listing to diff against. */
+export function diffable(stream: StreamDef): boolean {
+  return Boolean(stream.list) && stream.mode !== 'append'
 }
 
 /**
@@ -63,7 +86,13 @@ export async function diffStream(
   api: WorkOSClient,
   env: string,
   stream: StreamDef,
-  opts: { repair?: boolean; logger?: Logger } = {},
+  opts: {
+    repair?: boolean
+    logger?: Logger
+    budget?: PageBudget
+    /** Receives the page count as pages arrive, so it survives a failure. */
+    progress?: { pages: number }
+  } = {},
 ): Promise<DiffResult> {
   destination = redacting(destination)
   api = api.withPhase('reconcile')
@@ -73,9 +102,26 @@ export async function diffStream(
       matched: 0,
       localOnly: [],
       remoteOnly: [],
+      pages: 0,
+      complete: true,
       skippedReason: stream.mode === 'append'
         ? 'append-only stream: nothing to reconcile'
         : 'no list endpoint upstream: drift cannot be detected for this stream',
+    }
+  }
+
+  // The budget is consulted once, here. A stream that starts runs to its
+  // last page, for the reason in the module comment.
+  const budget = opts.budget
+  if (budget !== undefined && budget.remaining <= 0) {
+    return {
+      stream: stream.name,
+      matched: 0,
+      localOnly: [],
+      remoteOnly: [],
+      pages: 0,
+      complete: false,
+      skippedReason: 'page budget spent before this stream — resume to continue',
     }
   }
 
@@ -105,6 +151,16 @@ export async function diffStream(
   const parent = list.parent
   const parents = parent ? await destination.liveIds(streamByName(parent.stream)!, env) : []
 
+  // Charged as each page arrives, before the destination stages it, the way
+  // a backfill charges a page before its write. The count lives in the
+  // caller's `progress` when one is given, so a stream that fails partway
+  // can still report the pages it drew on the budget.
+  const progress = opts.progress ?? { pages: 0 }
+  const charge = () => {
+    progress.pages++
+    if (budget) budget.remaining--
+  }
+
   /**
    * The remote side, one page at a time. The pagination — the per-parent
    * loop, the rate keys — is exactly what it was when the diff ran here in
@@ -121,11 +177,13 @@ export async function diffStream(
         if (!usePath) params[parent.param] = pid
         const key = rateKey === 'directory' ? `directory:${pid}` : rateKey
         for await (const page of api.paginate(path, params, key, list.shape ?? 'list')) {
+          charge()
           yield page.rows as Record<string, unknown>[]
         }
       }
     } else {
       for await (const page of api.paginate(list.path, list.params ?? {}, rateKey, list.shape ?? 'list')) {
+        charge()
         yield page.rows as Record<string, unknown>[]
       }
     }
@@ -140,7 +198,14 @@ export async function diffStream(
   // A destination never returns an unkeyed payload; the filter is belt and braces.
   const remoteOnly = diff.remoteOnly.flatMap((data) => remoteKey(stream, data) ?? [])
 
-  const result: DiffResult = { stream: stream.name, matched, localOnly, remoteOnly }
+  const result: DiffResult = {
+    stream: stream.name,
+    matched,
+    localOnly,
+    remoteOnly,
+    pages: progress.pages,
+    complete: true,
+  }
 
   if (opts.repair && (localOnly.length > 0 || diff.remoteOnly.length > 0)) {
     const now = new Date().toISOString()
