@@ -345,6 +345,18 @@ a backfill of a large directory still shares that directory's budget with your
 application. The header is built by the engine from its own version and the
 phase, and nothing a destination or an application passes in can change it.
 
+On the database side, every connection the Postgres destination opens
+introduces itself as `workos-sync-engine`, so its rows in
+`pg_stat_activity`, a provider's connection dashboard and a `%a` in
+`log_line_prefix` stand apart from your application's. The name is a
+fallback: an `application_name=` in the connection string, or a `PGAPPNAME`
+in the environment, replaces it, so a deployment that already names its
+connections keeps doing so. That cuts both ways: a connection string copied
+from the application, `application_name` and all, labels the engine as the
+application, so drop the parameter or give the engine its own. When the
+engine shares a pool you built yourself, the name is whatever that pool was
+given.
+
 ## Backfill without a long-lived process
 
 `backfill` runs every stream to completion by default, which can take hours

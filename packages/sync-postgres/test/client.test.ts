@@ -1,9 +1,9 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import type { EventEmitter } from 'node:events'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { connect, poolConfig } from '../src/db/client.js'
+import { APPLICATION_NAME, connect, poolConfig } from '../src/db/client.js'
 import { TEST_CA_PEM } from './helpers/ca.js'
 
 // Every pool `connect` builds, so a test can play the server and close an
@@ -33,8 +33,11 @@ const URL = 'postgres://app:s3cret@db.example.internal:6543/mirror?application_n
 
 describe('poolConfig', () => {
   it('hands the connection string to pg untouched without a CA', () => {
-    expect(poolConfig(URL)).toEqual({ connectionString: URL })
-    expect(poolConfig(`${URL}&sslmode=disable`)).toEqual({ connectionString: `${URL}&sslmode=disable` })
+    expect(poolConfig(URL)).toEqual({ connectionString: URL, fallback_application_name: APPLICATION_NAME })
+    expect(poolConfig(`${URL}&sslmode=disable`)).toEqual({
+      connectionString: `${URL}&sslmode=disable`,
+      fallback_application_name: APPLICATION_NAME,
+    })
   })
 
   it('requires TLS and verifies against the CA when the URL says nothing about it', () => {
@@ -79,6 +82,39 @@ describe('poolConfig', () => {
   it('refuses a CA together with a URL that turns TLS off', () => {
     expect(() => poolConfig(`${URL}&sslmode=disable`, { sslCa: CA })).toThrow(/turns TLS off/)
     expect(() => poolConfig(`${URL}&ssl=0`, { sslCa: CA })).toThrow(/turns TLS off/)
+  })
+
+  // What the server will actually see is decided inside `pg`, which merges
+  // the URL, the environment and the options in its own order. Building a
+  // real client (never connected) and asking for its startup packet checks
+  // that order rather than assuming it.
+  describe('application_name', () => {
+    const BARE = 'postgres://app:s3cret@db.example.internal:6543/mirror'
+    const startupName = async (config: Record<string, unknown>) => {
+      const { Client } = await vi.importActual<typeof import('pg')>('pg')
+      const client = new Client(config as never) as unknown as { getStartupConf(): { application_name?: string } }
+      return client.getStartupConf().application_name
+    }
+
+    afterEach(() => vi.unstubAllEnvs())
+
+    it('names the engine when the URL does not, with or without a CA', async () => {
+      vi.stubEnv('PGAPPNAME', '')
+      expect(await startupName(poolConfig(BARE))).toBe(APPLICATION_NAME)
+      expect(await startupName(poolConfig(BARE, { sslCa: CA }))).toBe(APPLICATION_NAME)
+    })
+
+    it('lets a name in the URL win, with or without a CA', async () => {
+      vi.stubEnv('PGAPPNAME', '')
+      expect(await startupName(poolConfig(URL))).toBe('sync')
+      expect(await startupName(poolConfig(URL, { sslCa: CA }))).toBe('sync')
+    })
+
+    it('lets PGAPPNAME win over the fallback', async () => {
+      vi.stubEnv('PGAPPNAME', 'ops')
+      expect(await startupName(poolConfig(BARE))).toBe('ops')
+      expect(await startupName(poolConfig(BARE, { sslCa: CA }))).toBe('ops')
+    })
   })
 })
 
