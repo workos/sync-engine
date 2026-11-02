@@ -37,9 +37,7 @@ export function fromPgPool(pool: {
   }>
   end: () => Promise<void>
 }): SqlClient {
-  const wrapConn = (conn: {
-    query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>
-  }): SqlClient => ({
+  const wrapConn = (conn: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }): SqlClient => ({
     async query<T>(sql: string, params?: unknown[]) {
       const r = await conn.query(sql, params)
       return { rows: r.rows as T[] }

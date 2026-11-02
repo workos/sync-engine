@@ -17,10 +17,7 @@ type Flags = Record<string, string | boolean>
  * `WORKOS_SYNC_HEALTH_HOST` and `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` tune it.
  * Returns null when it should stay off.
  */
-export function healthOptionsFromEnv(
-  flags: Flags,
-  env: NodeJS.ProcessEnv = process.env,
-): HealthServerOptions | null {
+export function healthOptionsFromEnv(flags: Flags, env: NodeJS.ProcessEnv = process.env): HealthServerOptions | null {
   const raw = typeof flags['health-port'] === 'string' ? flags['health-port'] : env['WORKOS_SYNC_HEALTH_PORT']
   if (raw === undefined || raw.trim() === '') return null
   const port = Number(raw)
@@ -30,7 +27,9 @@ export function healthOptionsFromEnv(
   const maxRaw = env['WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS']
   const maxPollAgeMs = maxRaw === undefined || maxRaw.trim() === '' ? DEFAULT_MAX_POLL_AGE_MS : Number(maxRaw)
   if (!Number.isFinite(maxPollAgeMs) || maxPollAgeMs <= 0) {
-    throw new Error(`invalid WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS "${maxRaw}": expected a positive number of milliseconds`)
+    throw new Error(
+      `invalid WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS "${maxRaw}": expected a positive number of milliseconds`,
+    )
   }
   return {
     port,

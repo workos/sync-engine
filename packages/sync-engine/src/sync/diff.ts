@@ -35,8 +35,11 @@ export function remoteKey(stream: TableDef, data: Record<string, unknown>): stri
 /** Reconstruct a deletion payload at the same catalog paths used to read its key. */
 export function keyPayload(stream: TableDef, id: string): Record<string, unknown> {
   const values: unknown = stream.key.length === 1 ? [id] : JSON.parse(id)
-  if (!Array.isArray(values) || values.length !== stream.key.length ||
-      values.some((v) => typeof v !== 'string' || v === '')) {
+  if (
+    !Array.isArray(values) ||
+    values.length !== stream.key.length ||
+    values.some((v) => typeof v !== 'string' || v === '')
+  ) {
     throw new Error(`invalid reconciliation key for ${stream.name}: ${id}`)
   }
   const data: Record<string, unknown> = Object.create(null)

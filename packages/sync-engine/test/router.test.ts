@@ -34,7 +34,12 @@ describe('event routing', () => {
   })
 
   it('archives known families that have no mirror table', () => {
-    for (const name of ['vault.data.read', 'radar.challenge_created', 'agent.registration.created', 'pipes.connected_account.connected']) {
+    for (const name of [
+      'vault.data.read',
+      'radar.challenge_created',
+      'agent.registration.created',
+      'pipes.connected_account.connected',
+    ]) {
       expect(routeEvent(evt(name, {}))).toMatchObject({ kind: 'archive_only', reason: 'no_mirror' })
     }
   })
@@ -89,9 +94,7 @@ describe('event routing', () => {
   })
 
   it('handles group membership events that carry only ids', () => {
-    const added = routeEvent(
-      evt('group.member_added', { group_id: 'group_1', organization_membership_id: 'om_1' }),
-    )
+    const added = routeEvent(evt('group.member_added', { group_id: 'group_1', organization_membership_id: 'om_1' }))
     expect(added).toMatchObject({ kind: 'link', stream: 'group_memberships' })
   })
 
@@ -146,7 +149,10 @@ describe('catalog integrity', () => {
   it('gives every stream a key that exists as a column', () => {
     for (const s of STREAMS) {
       for (const k of s.key) {
-        expect(s.columns.find((c) => c.name === k), `${s.name}.${k}`).toBeDefined()
+        expect(
+          s.columns.find((c) => c.name === k),
+          `${s.name}.${k}`,
+        ).toBeDefined()
       }
     }
   })

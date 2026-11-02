@@ -166,11 +166,7 @@ export interface Destination {
    * The engine reads nothing from the destination while this runs, so an
    * implementation may hold one pinned connection for the duration.
    */
-  diffIds(
-    stream: TableDef,
-    env: string,
-    remote: AsyncIterable<Record<string, unknown>[]>,
-  ): Promise<IdDiff>
+  diffIds(stream: TableDef, env: string, remote: AsyncIterable<Record<string, unknown>[]>): Promise<IdDiff>
   freshness(stream: TableDef, env: string, lagWindowHours: number): Promise<FreshnessRow>
   /**
    * Erase every trace of one subject from the given streams and from the
@@ -205,7 +201,6 @@ export interface Destination {
   releaseLease(env: string, holder: string): Promise<void>
   /** The current, unexpired lease for `env`, or null when it is free. Read-only. */
   getLease(env: string): Promise<Lease | null>
-
 
   /**
    * Set aside events the tail could not apply, so the cursor can move past

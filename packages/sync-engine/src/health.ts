@@ -226,8 +226,7 @@ export function healthReport(health: EngineHealth, opts: HealthCheckOptions = {}
     environments[name] = { ...e, pollAgeSeconds: age === null ? null : age / 1000 }
     if (age === null || age > max) fresh = false
   }
-  const healthy =
-    health.fatal === null && health.state !== 'stopped' && (health.state === 'starting' || fresh)
+  const healthy = health.fatal === null && health.state !== 'stopped' && (health.state === 'starting' || fresh)
   return { ...health, healthy, environments }
 }
 

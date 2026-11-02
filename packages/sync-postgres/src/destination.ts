@@ -164,11 +164,7 @@ export class PostgresDestination implements Destination {
   }
 
   /** Staged into a temp table and diffed in SQL; see `db/reconcile.ts`. */
-  diffIds(
-    stream: TableDef,
-    env: string,
-    remote: AsyncIterable<Record<string, unknown>[]>,
-  ): Promise<IdDiff> {
+  diffIds(stream: TableDef, env: string, remote: AsyncIterable<Record<string, unknown>[]>): Promise<IdDiff> {
     return diffIdsInSql(this.client, this.writeOpts, stream, env, remote)
   }
 
@@ -205,16 +201,10 @@ export class PostgresDestination implements Destination {
     }
   }
 
-  async redact(
-    streams: TableDef[],
-    env: string,
-    userId: string,
-  ): Promise<{ table: string; rows: number }[]> {
+  async redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]> {
     const out: { table: string; rows: number }[] = []
     for (const stream of streams) {
-      const col = stream.columns.find(
-        (c) => c.name === 'user_id' || (c.name === 'id' && stream.name === 'users'),
-      )
+      const col = stream.columns.find((c) => c.name === 'user_id' || (c.name === 'id' && stream.name === 'users'))
       if (!col) continue
       const r = await this.client.query(
         `delete from ${this.table(stream)}

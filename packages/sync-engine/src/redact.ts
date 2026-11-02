@@ -24,11 +24,19 @@
  * Not to be confused with `Destination.redact`, which erases one subject.
  */
 import { STREAMS } from './catalog.js'
-import type { Destination, FreshnessRow, IdDiff, Lease, LeaseResult, RejectedEvent, Row, WriteMode } from './destination.js'
+import type {
+  Destination,
+  FreshnessRow,
+  IdDiff,
+  Lease,
+  LeaseResult,
+  RejectedEvent,
+  Row,
+  WriteMode,
+} from './destination.js'
 import type { Logger, StreamDef, WorkOSEvent, WriteStats } from './types.js'
 
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v)
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /**
  * `obj` without the value at `parts`, copying only the objects along the path.
@@ -67,10 +75,7 @@ function withoutIn(value: unknown, parts: readonly string[]): unknown {
  * The payload with the stream's `redact` paths removed. The input is never
  * mutated, and is returned as-is when there is nothing to strip.
  */
-export function redactPayload(
-  stream: StreamDef,
-  data: Record<string, unknown>,
-): Record<string, unknown> {
+export function redactPayload(stream: StreamDef, data: Record<string, unknown>): Record<string, unknown> {
   let out = data
   for (const path of stream.redact ?? []) {
     out = without(out, typeof path === 'string' ? [path] : path)
@@ -192,11 +197,7 @@ export class RedactingDestination implements Destination {
    * reaches the database even transiently, and the `remoteOnly` payloads that
    * come back are already clean when repair upserts them.
    */
-  diffIds(
-    stream: StreamDef,
-    env: string,
-    remote: AsyncIterable<Record<string, unknown>[]>,
-  ): Promise<IdDiff> {
+  diffIds(stream: StreamDef, env: string, remote: AsyncIterable<Record<string, unknown>[]>): Promise<IdDiff> {
     if (!stream.redact?.length) return this.inner.diffIds(stream, env, remote)
     async function* stripped() {
       for await (const page of remote) yield page.map((data) => redactPayload(stream, data))
@@ -270,7 +271,5 @@ export class RedactingDestination implements Destination {
 
 /** `destination` behind credential redaction. Wrapping twice is a no-op. */
 export function redacting(destination: Destination): Destination {
-  return destination instanceof RedactingDestination
-    ? destination
-    : new RedactingDestination(destination)
+  return destination instanceof RedactingDestination ? destination : new RedactingDestination(destination)
 }

@@ -26,10 +26,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('an idle connection closed by th
     // What a restart, a failover or a proxy's idle timeout does to it.
     await admin.query('select pg_terminate_backend($1)', [pid])
     await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledTimes(1), { timeout: 10_000 })
-    expect(logger.warn).toHaveBeenCalledWith(
-      'idle database connection closed by the server; the pool will reconnect',
-      { error: expect.stringContaining('terminat') },
-    )
+    expect(logger.warn).toHaveBeenCalledWith('idle database connection closed by the server; the pool will reconnect', {
+      error: expect.stringContaining('terminat'),
+    })
 
     const after = await db.query<{ pid: number }>('select pg_backend_pid() as pid')
     expect(after.rows[0]!.pid).not.toBe(pid)

@@ -100,12 +100,12 @@ Things to know:
 
 ## Bookkeeping tables
 
-| Table         | Purpose                                                                                                                                                       |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `_sync_state` | Cursors and checkpoints, keyed by `(sync_id, env, stream)`. The tail position is the row with `stream = '__tail__'`; backfill progress is one row per stream. |
-| `_migrations` | Fingerprints of the schema versions that have been applied, so unchanged catalogs skip per-stream DDL.                                              |
+| Table         | Purpose                                                                                                                                                                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `_sync_state` | Cursors and checkpoints, keyed by `(sync_id, env, stream)`. The tail position is the row with `stream = '__tail__'`; backfill progress is one row per stream.                                                                                                       |
+| `_migrations` | Fingerprints of the schema versions that have been applied, so unchanged catalogs skip per-stream DDL.                                                                                                                                                              |
 | `_sync_lease` | The single-writer lease for the events tail: one row per `(sync_id, env)` naming the holder and when its claim expires. `listen` and `tick` take it; the cursor checkpoint is refused unless the writer still holds it. See [Operations](operations.md#deployment). |
-| `_rejected`   | Events the tail could not apply: one row per event that failed deterministically on two consecutive polls, with the error and the whole event in `_raw`. Keyed by `(sync_id, env, event_id)`; `rejected --replay` drains it. |
+| `_rejected`   | Events the tail could not apply: one row per event that failed deterministically on two consecutive polls, with the error and the whole event in `_raw`. Keyed by `(sync_id, env, event_id)`; `rejected --replay` drains it.                                        |
 
 ## Stream modes
 
@@ -141,14 +141,14 @@ whether it is on by default, and how it is backfilled.
 
 ### Identity
 
-| Table                      | Key  | Events                                       | Backfill                       | Notes                                                                                               |
-| -------------------------- | ---- | -------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `users`                    | `id` | `user.created/updated/deleted`               | `/user_management/users`       | Events omit `external_id`, `metadata`, `last_sign_in_at`, `locale`; hydrated on create by default   |
-| `organizations`            | `id` | `organization.created/updated/deleted`       | `/organizations`               | Events omit `metadata`, `stripe_customer_id`; hydrated on create by default. The DNS challenge inside each `domains` entry is stripped |
-| `organization_memberships` | `id` | `organization_membership.*`                  | per organization               | List requires a filter and defaults to active only; the engine asks for all statuses                |
+| Table                      | Key  | Events                                       | Backfill                       | Notes                                                                                                                                                                                         |
+| -------------------------- | ---- | -------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `users`                    | `id` | `user.created/updated/deleted`               | `/user_management/users`       | Events omit `external_id`, `metadata`, `last_sign_in_at`, `locale`; hydrated on create by default                                                                                             |
+| `organizations`            | `id` | `organization.created/updated/deleted`       | `/organizations`               | Events omit `metadata`, `stripe_customer_id`; hydrated on create by default. The DNS challenge inside each `domains` entry is stripped                                                        |
+| `organization_memberships` | `id` | `organization_membership.*`                  | per organization               | List requires a filter and defaults to active only; the engine asks for all statuses                                                                                                          |
 | `organization_domains`     | `id` | `organization_domain.*` (5 types)            | embedded in organizations      | No standalone list endpoint, so `reconcile` cannot check it. `verification_token` and `verification_prefix` are stripped before the row is written, and from the events too, which carry them |
-| `invitations`              | `id` | `invitation.created/accepted/resent/revoked` | `/user_management/invitations` | `token` and `accept_invitation_url` are stripped before the row is written; events never carry them |
-| `sessions`                 | `id` | `session.created/revoked`                    | per user, active only          | Backfill is partial by construction                                                                 |
+| `invitations`              | `id` | `invitation.created/accepted/resent/revoked` | `/user_management/invitations` | `token` and `accept_invitation_url` are stripped before the row is written; events never carry them                                                                                           |
+| `sessions`                 | `id` | `session.created/revoked`                    | per user, active only          | Backfill is partial by construction                                                                                                                                                           |
 
 ### Directory Sync and SSO
 
@@ -173,10 +173,10 @@ whether it is on by default, and how it is backfilled.
 
 ### Logs
 
-| Table           | Key        | Contents                                                    |
-| --------------- | ---------- | ----------------------------------------------------------- |
+| Table           | Key        | Contents                                                                                                  |
+| --------------- | ---------- | --------------------------------------------------------------------------------------------------------- |
 | `events`        | `id`       | Every event, including types with no mirror table, minus the credential paths of the stream it belongs to |
-| `auth_attempts` | `event_id` | All 15 `authentication.*` types                             |
+| `auth_attempts` | `event_id` | All 15 `authentication.*` types                                                                           |
 
 `auth_attempts` deserves attention: **authentication events have no REST
 endpoint anywhere in the WorkOS API.** There is no way to list sign-ins, so if
@@ -200,13 +200,13 @@ SELECT email, COUNT(*) AS failures
 
 ## What is not mirrored
 
-| Object                                                | Why                                                                                                                      |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| SSO profiles                                          | No list endpoint, no get-by-id, and no events. Only returned during a live sign-in.                                      |
-| Audit log events                                      | Not listable and not evented. Use per-organization CSV exports or Log Streams.                                           |
-| Radar block/allow lists                               | Write-only endpoints.                                                                                                    |
-| Vault values                                          | Should not leave Vault. Vault _activity_ events can be archived to `events` if you subscribe to them.                    |
-| Portal links, widget tokens                           | Ephemeral credentials, not state.                                                                                        |
+| Object                                                                                | Why                                                                                                                                                             |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SSO profiles                                                                          | No list endpoint, no get-by-id, and no events. Only returned during a live sign-in.                                                                             |
+| Audit log events                                                                      | Not listable and not evented. Use per-organization CSV exports or Log Streams.                                                                                  |
+| Radar block/allow lists                                                               | Write-only endpoints.                                                                                                                                           |
+| Vault values                                                                          | Should not leave Vault. Vault _activity_ events can be archived to `events` if you subscribe to them.                                                           |
+| Portal links, widget tokens                                                           | Ephemeral credentials, not state.                                                                                                                               |
 | Invitation acceptance tokens, webhook signing secrets, domain verification challenges | Live credentials. The REST objects carry them, and the domain events do too, so the engine strips them (`StreamDef.redact`) before any row or event is written. |
 
 Events with no mirror table (certificate renewals, Vault activity, Radar,
@@ -264,10 +264,10 @@ for it whenever the catalog fingerprint is new. It builds the catalog's columns
 on a temp table, reads that and the live table back through `pg_get_expr`, and
 compares. Three kinds are reported:
 
-| Kind         | Meaning                                                                | With `--repair`                              |
-| ------------ | ---------------------------------------------------------------------- | -------------------------------------------- |
-| `expression` | The stored expression differs from the catalog's: a path changed.      | Rebuilt from `_raw`.                         |
-| `type`       | The column type differs from the catalog's.                            | Rebuilt from `_raw`.                         |
+| Kind         | Meaning                                                                  | With `--repair`                               |
+| ------------ | ------------------------------------------------------------------------ | --------------------------------------------- |
+| `expression` | The stored expression differs from the catalog's: a path changed.        | Rebuilt from `_raw`.                          |
+| `type`       | The column type differs from the catalog's.                              | Rebuilt from `_raw`.                          |
 | `orphan`     | A generated column the catalog no longer declares: an entry was removed. | Left alone. The `DROP COLUMN` DDL is printed. |
 
 Without `--repair`, `init` logs every item at `error` with the exact repair

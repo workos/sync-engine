@@ -16,22 +16,26 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Postgres provider compatibility
   let engine: SyncEngine
 
   function makeEngine() {
-    return new SyncEngine({
-      destination,
-      environments: [{ name: 'test', apiKey: 'sk_fake' }],
-      streams: ['users', 'organizations', 'organization_memberships', 'auth_attempts'],
-      logger: silentLogger,
-      lagWindowMs: 0,
-    }, {
-      clientFor: () => new WorkOSClient({ apiKey: 'sk_fake', fetchImpl: fake.fetchImpl }),
-    })
+    return new SyncEngine(
+      {
+        destination,
+        environments: [{ name: 'test', apiKey: 'sk_fake' }],
+        streams: ['users', 'organizations', 'organization_memberships', 'auth_attempts'],
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: () => new WorkOSClient({ apiKey: 'sk_fake', fetchImpl: fake.fetchImpl }),
+      },
+    )
   }
 
   beforeEach(async () => {
     schema = `compat_test_${randomUUID().replaceAll('-', '')}`
     db = await connect(process.env.TEST_DATABASE_URL!, {
       sslCa: process.env.TEST_DATABASE_SSL_CA_FILE
-        ? readFileSync(process.env.TEST_DATABASE_SSL_CA_FILE, 'utf8') : undefined,
+        ? readFileSync(process.env.TEST_DATABASE_SSL_CA_FILE, 'utf8')
+        : undefined,
     })
     fake = new FakeWorkOS()
     destination = new PostgresDestination({ db, schema })
@@ -81,7 +85,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Postgres provider compatibility
     fake.deleteUser(userId)
     await restarted.tick()
     expect((await db.query(`select id from "${schema}".users_live`)).rows).toEqual([])
-    expect((await db.query(`select id from "${schema}".users where _deleted_at is not null`)).rows).toEqual([{ id: userId }])
+    expect((await db.query(`select id from "${schema}".users where _deleted_at is not null`)).rows).toEqual([
+      { id: userId },
+    ])
     expect((await db.query(`select count(*)::int as n from "${schema}".events`)).rows[0]).toEqual({ n: 6 })
   })
 
@@ -92,7 +98,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Postgres provider compatibility
     fake.users.delete(user['id'] as string) // Simulate a missed event.
     await engine.reconcile({ repair: true, streams: ['users'] })
     expect((await db.query(`select id from "${schema}".users_live`)).rows).toEqual([])
-    expect((await db.query(`select count(*)::int as n from "${schema}".users where _deleted_at is not null`)).rows[0]).toEqual({ n: 1 })
+    expect(
+      (await db.query(`select count(*)::int as n from "${schema}".users where _deleted_at is not null`)).rows[0],
+    ).toEqual({ n: 1 })
 
     expect((await destination.acquireLease('test', 'another-writer', 60_000)).acquired).toBe(true)
     await expect(engine.tick()).rejects.toBeInstanceOf(LeaseHeldError)

@@ -147,9 +147,7 @@ export function parseSslCa(value: string | undefined): string | undefined {
   if (isCertificateBundle(v)) return v
   const decoded = Buffer.from(v, 'base64').toString('utf8')
   if (isCertificateBundle(decoded)) return decoded
-  throw new Error(
-    'invalid WORKOS_SYNC_PG_SSL_CA: expected one or more PEM certificates, or them encoded as base64',
-  )
+  throw new Error('invalid WORKOS_SYNC_PG_SSL_CA: expected one or more PEM certificates, or them encoded as base64')
 }
 
 function schemaFromFlags(flags: Record<string, string | boolean>): string {
@@ -498,8 +496,7 @@ export async function main(argv = process.argv.slice(2), deps: MainDeps = {}): P
 }
 
 // Run when invoked directly, not when imported by a test.
-const invokedDirectly =
-  process.argv[1] && (process.argv[1].endsWith('cli.js') || process.argv[1].endsWith('cli.ts'))
+const invokedDirectly = process.argv[1] && (process.argv[1].endsWith('cli.js') || process.argv[1].endsWith('cli.ts'))
 if (invokedDirectly) {
   main().then(
     (code) => process.exit(code),

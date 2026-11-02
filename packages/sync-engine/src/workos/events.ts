@@ -134,11 +134,7 @@ export function cursorAgeDays(lastEventAt: string | null | undefined, now = Date
   return (now - t) / 86_400_000
 }
 
-export function checkCursorAge(
-  lastEventAt: string | null | undefined,
-  logger?: Logger,
-  now = Date.now(),
-): void {
+export function checkCursorAge(lastEventAt: string | null | undefined, logger?: Logger, now = Date.now()): void {
   const age = cursorAgeDays(lastEventAt, now)
   if (age === null) return
   if (age >= EVENT_RETENTION_DAYS) {

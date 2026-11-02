@@ -52,6 +52,15 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format
+        run: pnpm format
+
+      - name: Format Markdown
+        run: pnpm exec prettier --check '**/*.md'
+
       - name: Build
         run: pnpm build
 

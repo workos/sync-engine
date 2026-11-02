@@ -162,8 +162,7 @@ export const STREAMS: StreamDef[] = [
     },
     // No standalone list endpoint exists; domains arrive embedded in the
     // organization payload. `backfill` explodes them out of organizations.
-    unwrap: (data) =>
-      (data['organization_domain'] as Record<string, unknown>) ?? data,
+    unwrap: (data) => (data['organization_domain'] as Record<string, unknown>) ?? data,
     // The object carries the DNS challenge a pending domain is verified by:
     // the TXT record value (`verification_token`) and its name
     // (`verification_prefix`). Unlike an invitation's token, WorkOS puts it in
@@ -192,12 +191,7 @@ export const STREAMS: StreamDef[] = [
       ...timestamps,
     ],
     events: {
-      upsert: [
-        'invitation.created',
-        'invitation.accepted',
-        'invitation.resent',
-        'invitation.revoked',
-      ],
+      upsert: ['invitation.created', 'invitation.accepted', 'invitation.resent', 'invitation.revoked'],
     },
     list: { path: '/user_management/invitations', rateKey: 'user_management' },
     // The REST invitation object carries the live acceptance credential
@@ -596,8 +590,7 @@ export const STREAMS: StreamDef[] = [
   },
 ] satisfies CatalogStreamDef[]
 
-export const streamByName = (name: string): StreamDef | undefined =>
-  STREAMS.find((s) => s.name === name)
+export const streamByName = (name: string): StreamDef | undefined => STREAMS.find((s) => s.name === name)
 
 /**
  * Resolve an object ID to its stream by prefix, longest first.
@@ -622,8 +615,7 @@ export const streamForId = (id: string): StreamDef | undefined => {
  * have no events, cost a full re-list on every reconcile, and are only as
  * fresh as that last run, so they are opt-in.
  */
-export const defaultStreams = (): string[] =>
-  STREAMS.filter((s) => s.mode !== 'poll').map((s) => s.name)
+export const defaultStreams = (): string[] => STREAMS.filter((s) => s.mode !== 'poll').map((s) => s.name)
 
 /**
  * The streams a configuration selects, resolved the way the engine resolves
@@ -633,10 +625,7 @@ export const defaultStreams = (): string[] =>
  * caller that never builds an engine — the CLI printing the DDL — selects
  * exactly what the engine would.
  */
-export function selectStreams(
-  names?: string[],
-  extraColumns: Record<string, ColumnDef[]> = {},
-): StreamDef[] {
+export function selectStreams(names?: string[], extraColumns: Record<string, ColumnDef[]> = {}): StreamDef[] {
   const selected = new Set([...(names ?? defaultStreams()), 'events'])
   for (const n of selected) {
     if (!streamByName(n)) throw new Error(`unknown stream: ${n}`)

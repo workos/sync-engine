@@ -3,6 +3,7 @@
 # even when only its manifest is used: examples/ is in the lockfile.
 .git
 .github
+.husky
 .vscode
 .DS_Store
 *.log
@@ -16,5 +17,9 @@ examples/**/*.ts
 examples/**/tsconfig.json
 .release-please-manifest.json
 release-please-config.json
+.oxfmtrc.json
+.oxlintrc.json
+.prettierignore
+commitlint.config.ts
 Dockerfile
 .dockerignore

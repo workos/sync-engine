@@ -132,6 +132,12 @@ export class StateStore {
 
   /** Forget the tail position entirely; the next capture starts from now. */
   clearTail(env: string): Promise<void> {
-    return this.set(env, TAIL_STREAM, { kind: 'tail', cursor: null, rangeStart: null, lastEventAt: null, lastPolledAt: null })
+    return this.set(env, TAIL_STREAM, {
+      kind: 'tail',
+      cursor: null,
+      rangeStart: null,
+      lastEventAt: null,
+      lastPolledAt: null,
+    })
   }
 }

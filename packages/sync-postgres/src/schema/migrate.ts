@@ -93,10 +93,9 @@ export async function migrate(
 ): Promise<MigrateResult> {
   return db.transaction(async (tx) => {
     // Lock before even CREATE SCHEMA: IF NOT EXISTS does not serialize catalog writes.
-    await tx.query(
-      `select pg_advisory_xact_lock(hashtext('workos-sync-postgres:migrate'), hashtext($1::name::text))`,
-      [schema],
-    )
+    await tx.query(`select pg_advisory_xact_lock(hashtext('workos-sync-postgres:migrate'), hashtext($1::name::text))`, [
+      schema,
+    ])
     // Repairs must recover from failed DDL without aborting the migration or releasing its lock.
     const nested: SqlClient = {
       query: tx.query.bind(tx),
@@ -137,10 +136,7 @@ async function applySchema(
   await db.exec(parseIso8601Function(schema))
   await db.exec(bookkeepingSql(schema))
 
-  const existing = await db.query(
-    `select 1 from ${quoteIdent(schema)}."_migrations" where fingerprint = $1`,
-    [fp],
-  )
+  const existing = await db.query(`select 1 from ${quoteIdent(schema)}."_migrations" where fingerprint = $1`, [fp])
   if (existing.rows.length > 0) {
     logger?.debug('schema up to date', { fingerprint: fp })
     return { applied: false, fingerprint: fp, statements: 0, drift: [], repaired: [] }
@@ -178,7 +174,14 @@ async function applySchema(
   }
 
   for (const d of drift) {
-    const fields = { stream: d.stream, column: d.column, expected: d.expected, actual: d.actual, key: d.key, ddl: d.ddl }
+    const fields = {
+      stream: d.stream,
+      column: d.column,
+      expected: d.expected,
+      actual: d.actual,
+      key: d.key,
+      ddl: d.ddl,
+    }
     if (d.kind === 'orphan') {
       // Still computes from `_raw` with its old expression, so it is harmless
       // to leave; reported so a renamed or removed column does not linger unnoticed.

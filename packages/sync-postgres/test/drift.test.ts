@@ -117,7 +117,12 @@ describe('column drift detection', () => {
 
   it('repairs non-key drift from _raw and recomputes rows already present', async () => {
     await migrate(db, [users], 'workos')
-    await insertUser(db, { id: 'user_1', email: 'old@example.com', primary_email: 'new@example.com', first_name: 'true' })
+    await insertUser(db, {
+      id: 'user_1',
+      email: 'old@example.com',
+      primary_email: 'new@example.com',
+      first_name: 'true',
+    })
 
     const changed = withColumn(usersMovedEmail, { name: 'first_name', type: 'boolean', path: 'first_name' })
     const r = await migrate(db, [changed], 'workos', undefined, { repair: true })

@@ -140,11 +140,12 @@ export async function backfillStream(
       opts.env,
       rows.map((data) => ({
         data,
-        updatedAt: typeof data['updated_at'] === 'string'
-          ? (data['updated_at'] as string)
-          : typeof data['created_at'] === 'string'
-            ? (data['created_at'] as string)
-            : new Date().toISOString(),
+        updatedAt:
+          typeof data['updated_at'] === 'string'
+            ? (data['updated_at'] as string)
+            : typeof data['created_at'] === 'string'
+              ? (data['created_at'] as string)
+              : new Date().toISOString(),
       })),
       'replace',
     )
@@ -185,10 +186,8 @@ export async function backfillStream(
       // leaves nothing to redo.
       if (spent()) return paused({ parent: pid })
       const usePath = stream.list.parent.from === 'path'
-      const path = usePath
-        ? stream.list.path.replace(`{${stream.list.parent.param}}`, pid)
-        : stream.list.path
-      const params: Record<string, string> = { ...(stream.list.params ?? {}) }
+      const path = usePath ? stream.list.path.replace(`{${stream.list.parent.param}}`, pid) : stream.list.path
+      const params: Record<string, string> = { ...stream.list.params }
       if (!usePath) params[stream.list.parent.param] = pid
       // Per-directory rate limits do not aggregate, so bucket per parent.
       const key = rateKey === 'directory' ? `directory:${pid}` : rateKey

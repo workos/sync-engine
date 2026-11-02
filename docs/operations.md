@@ -87,7 +87,15 @@ curl -s localhost:8080/healthz
       "lastEventAt": "2026-10-22T18:04:09.471Z",
       "cursor": "event_01HXXXXXXXXXXXXXXXXXXXXXX",
       "lastError": null,
-      "counters": { "ticks": 71, "events": 42, "created": 3, "updated": 38, "skipped": 1, "deleted": 0, "errors": 0 }
+      "counters": {
+        "ticks": 71,
+        "events": 42,
+        "created": 3,
+        "updated": 38,
+        "skipped": 1,
+        "deleted": 0,
+        "errors": 0
+      }
     }
   }
 }
@@ -152,18 +160,18 @@ SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS events
 
 ### Alerts worth having
 
-| Alert                  | Condition                                                      | Why                                                                                            |
-| ---------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Sync stalled           | `pollAgeSeconds > 300`, or `null` long after deploy; `/healthz` returns 503 | The poller has stopped.                                                           |
-| Cursor near retention  | `cursorAgeDays > 60`                                           | Replay is still possible, but the window is closing.                                           |
-| Stream not writing     | `max(_synced_at) < now() - interval '1 hour'` on a busy stream | One stream failing while others continue.                                                      |
-| Skipped writes spiking | `skipped` in the logs                                          | Out-of-order delivery or a backfill colliding with the tail. Usually benign, occasionally not. |
-| Drift detected         | `reconcile` exits 2                                            | Missed creates or deletes.                                                                     |
-| Column drift           | `init` exits 2 after a deploy                                  | A generated column no longer matches the catalog; the projection is stale until repaired.      |
-| Events quarantined     | `rejected > 0` in `status`, or `rejected` exits 2              | One payload the mirror cannot apply. The tail kept going; the object waits on a replay.        |
-| Process exited         | `listen` returned or crashed                                   | A rejected credential or a backwards-paging cursor stops the engine on purpose.                |
-| Lease lost             | `lost the events tail lease` in the logs                       | The process stalled for longer than the lease TTL and another one took over. Check for a hung tick or an undersized `WORKOS_SYNC_LEASE_TTL_MS`. |
-| Connections cycling    | `idle database connection closed by the server` repeating in the logs | The database, or a proxy in front of it, is closing connections the pool left idle. One is routine and the pool reconnects on its own; a steady stream points at the server side: a restart loop, a failover, or an idle timeout shorter than the poll interval. |
+| Alert                  | Condition                                                                   | Why                                                                                                                                                                                                                                                              |
+| ---------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sync stalled           | `pollAgeSeconds > 300`, or `null` long after deploy; `/healthz` returns 503 | The poller has stopped.                                                                                                                                                                                                                                          |
+| Cursor near retention  | `cursorAgeDays > 60`                                                        | Replay is still possible, but the window is closing.                                                                                                                                                                                                             |
+| Stream not writing     | `max(_synced_at) < now() - interval '1 hour'` on a busy stream              | One stream failing while others continue.                                                                                                                                                                                                                        |
+| Skipped writes spiking | `skipped` in the logs                                                       | Out-of-order delivery or a backfill colliding with the tail. Usually benign, occasionally not.                                                                                                                                                                   |
+| Drift detected         | `reconcile` exits 2                                                         | Missed creates or deletes.                                                                                                                                                                                                                                       |
+| Column drift           | `init` exits 2 after a deploy                                               | A generated column no longer matches the catalog; the projection is stale until repaired.                                                                                                                                                                        |
+| Events quarantined     | `rejected > 0` in `status`, or `rejected` exits 2                           | One payload the mirror cannot apply. The tail kept going; the object waits on a replay.                                                                                                                                                                          |
+| Process exited         | `listen` returned or crashed                                                | A rejected credential or a backwards-paging cursor stops the engine on purpose.                                                                                                                                                                                  |
+| Lease lost             | `lost the events tail lease` in the logs                                    | The process stalled for longer than the lease TTL and another one took over. Check for a hung tick or an undersized `WORKOS_SYNC_LEASE_TTL_MS`.                                                                                                                  |
+| Connections cycling    | `idle database connection closed by the server` repeating in the logs       | The database, or a proxy in front of it, is closing connections the pool left idle. One is routine and the pool reconnects on its own; a steady stream points at the server side: a restart loop, a failover, or an idle timeout shorter than the poll interval. |
 
 The engine emits structured JSON logs with per-batch counts:
 
@@ -192,15 +200,15 @@ With `WORKOS_SYNC_HEALTH_PORT` set, `listen` also serves `GET /metrics` in
 the Prometheus text format, from the same in-memory state as `/healthz`.
 Every per-environment series carries an `env` label.
 
-| Metric                         | Type    | What it is                                                                                            |
-| ------------------------------ | ------- | ----------------------------------------------------------------------------------------------------- |
-| `workos_sync_up`               | gauge   | `1` while the engine is running; `0` once it has stopped or hit a fatal error.                        |
+| Metric                         | Type    | What it is                                                                                                                                                                              |
+| ------------------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workos_sync_up`               | gauge   | `1` while the engine is running; `0` once it has stopped or hit a fatal error.                                                                                                          |
 | `workos_sync_poll_age_seconds` | gauge   | Seconds since the last successful poll. **Alert on this.** Absent until the first successful poll, so a listener that has never succeeded needs the `WorkOSSyncNeverPolled` rule below. |
-| `workos_sync_cursor_age_days`  | gauge   | Age of the newest event applied: distance from the 90-day cliff, not liveness. Absent until the first event. |
-| `workos_sync_ticks_total`      | counter | Polls attempted, successful or not.                                                                   |
-| `workos_sync_events_total`     | counter | Events applied.                                                                                       |
-| `workos_sync_writes_total`     | counter | Rows written, with a `kind` label of `created`, `updated`, `skipped` or `deleted`. Graph `skipped`.   |
-| `workos_sync_errors_total`     | counter | Polls that failed with a retryable error. Fatal errors stop the process instead.                      |
+| `workos_sync_cursor_age_days`  | gauge   | Age of the newest event applied: distance from the 90-day cliff, not liveness. Absent until the first event.                                                                            |
+| `workos_sync_ticks_total`      | counter | Polls attempted, successful or not.                                                                                                                                                     |
+| `workos_sync_events_total`     | counter | Events applied.                                                                                                                                                                         |
+| `workos_sync_writes_total`     | counter | Rows written, with a `kind` label of `created`, `updated`, `skipped` or `deleted`. Graph `skipped`.                                                                                     |
+| `workos_sync_errors_total`     | counter | Polls that failed with a retryable error. Fatal errors stop the process instead.                                                                                                        |
 
 ```yaml
 # prometheus.rules.yml
@@ -453,7 +461,11 @@ npx workos-sync-postgres rejected
       "createdAt": "2026-10-22T18:04:09.471Z",
       "rejectedAt": "2026-10-22T18:04:21.118+00:00",
       "error": "error: invalid input syntax for type boolean: \"maybe\"",
-      "raw": { "id": "event_01H...", "event": "user.updated", "data": { "...": "..." } }
+      "raw": {
+        "id": "event_01H...",
+        "event": "user.updated",
+        "data": { "...": "..." }
+      }
     }
   ]
 }

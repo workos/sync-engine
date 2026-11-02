@@ -104,9 +104,10 @@ export async function diffStream(
       remoteOnly: [],
       pages: 0,
       complete: true,
-      skippedReason: stream.mode === 'append'
-        ? 'append-only stream: nothing to reconcile'
-        : 'no list endpoint upstream: drift cannot be detected for this stream',
+      skippedReason:
+        stream.mode === 'append'
+          ? 'append-only stream: nothing to reconcile'
+          : 'no list endpoint upstream: drift cannot be detected for this stream',
     }
   }
 
@@ -128,11 +129,7 @@ export async function diffStream(
   const list = stream.list
 
   const rateKey =
-    list.rateKey === 'directory'
-      ? 'directory'
-      : list.rateKey === 'user_management'
-        ? 'user_management'
-        : 'global'
+    list.rateKey === 'directory' ? 'directory' : list.rateKey === 'user_management' ? 'user_management' : 'global'
 
   // The parent ids are read here, before the diff starts, never from inside
   // the generator below. The destination drains the pages while holding one
@@ -173,7 +170,7 @@ export async function diffStream(
       for (const pid of parents) {
         const usePath = parent.from === 'path'
         const path = usePath ? list.path.replace(`{${parent.param}}`, pid) : list.path
-        const params: Record<string, string> = { ...(list.params ?? {}) }
+        const params: Record<string, string> = { ...list.params }
         if (!usePath) params[parent.param] = pid
         const key = rateKey === 'directory' ? `directory:${pid}` : rateKey
         for await (const page of api.paginate(path, params, key, list.shape ?? 'list')) {

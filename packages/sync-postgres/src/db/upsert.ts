@@ -61,10 +61,7 @@ export function keyValues(stream: TableDef, data: Record<string, unknown>): stri
  * row twice, so this is required, not an optimization. It serves the delete,
  * relink and unlink paths, whose rows are whole; upserts use `wavesByKey`.
  */
-export function dedupeByKey(
-  stream: TableDef,
-  rows: Row[],
-): { rows: Row[]; dropped: number } {
+export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropped: number } {
   const byKey = new Map<string, Row>()
   let dropped = 0
   for (const row of rows) {

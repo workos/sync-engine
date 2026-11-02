@@ -24,9 +24,10 @@ function pauseAfterSchema(client: SqlClient, created: () => void, resume: Promis
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)('schema initialization on PostgreSQL', () => {
   const users = streamByName('users')!
-  const changed = { ...users, columns: users.columns.map((column) =>
-    column.name === 'email' ? { ...column, path: 'primary_email' } : column,
-  ) }
+  const changed = {
+    ...users,
+    columns: users.columns.map((column) => (column.name === 'email' ? { ...column, path: 'primary_email' } : column)),
+  }
   let pools: Pool[]
   let db: SqlClient
   let other: SqlClient
@@ -36,9 +37,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('schema initialization on Postgr
 
   beforeEach(async () => {
     schema = `migrate_test_${randomUUID().replaceAll('-', '')}`
-    pools = Array.from({ length: 3 }, () => new Pool({
-      connectionString: process.env.TEST_DATABASE_URL, max: 1, statement_timeout: 10_000,
-    }))
+    pools = Array.from(
+      { length: 3 },
+      () =>
+        new Pool({
+          connectionString: process.env.TEST_DATABASE_URL,
+          max: 1,
+          statement_timeout: 10_000,
+        }),
+    )
     db = fromPgPool(pools[0]!)
     other = fromPgPool(pools[1]!)
     observer = fromPgPool(pools[2]!)
@@ -56,19 +63,29 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('schema initialization on Postgr
   it('waits for an in-progress first migration before creating any catalog objects', async () => {
     let created!: () => void
     let resume!: () => void
-    const ready = new Promise<void>((resolve) => { created = resolve })
-    const paused = new Promise<void>((resolve) => { resume = resolve })
+    const ready = new Promise<void>((resolve) => {
+      created = resolve
+    })
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
     const first = db.transaction((tx) => migrate(pauseAfterSchema(tx, created, paused), [users], schema))
     let second: ReturnType<typeof migrate> | undefined
     try {
       await Promise.race([ready, first])
       second = migrate(other, [users], schema)
-      await expect.poll(async () => {
-        const result = await observer.query<{ wait_event_type: string }>(
-          'select wait_event_type from pg_stat_activity where pid = $1', [otherPid],
+      await expect
+        .poll(
+          async () => {
+            const result = await observer.query<{ wait_event_type: string }>(
+              'select wait_event_type from pg_stat_activity where pid = $1',
+              [otherPid],
+            )
+            return result.rows[0]?.wait_event_type
+          },
+          { timeout: 5_000, interval: 10 },
         )
-        return result.rows[0]?.wait_event_type
-      }, { timeout: 5_000, interval: 10 }).toBe('Lock')
+        .toBe('Lock')
       resume()
       const results = await Promise.all([first, second])
       expect(results.map((result) => result.applied)).toEqual([true, false])
@@ -96,7 +113,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('schema initialization on Postgr
     await migrate(db, [users], schema)
     const columns = await db.query<{ column_name: string }>(
       `select column_name from information_schema.columns
-       where table_schema = $1 and table_name = 'users' order by ordinal_position desc`, [schema],
+       where table_schema = $1 and table_name = 'users' order by ordinal_position desc`,
+      [schema],
     )
     await db.exec(`
       drop view "${schema}".users_live;
@@ -109,7 +127,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('schema initialization on Postgr
     expect((await migrate(other, [users], schema, undefined, { repairViews: true })).applied).toBe(true)
     const grants = await observer.query(
       `select privilege_type from information_schema.table_privileges
-       where table_schema = $1 and table_name = 'users_live' and grantee = 'PUBLIC'`, [schema],
+       where table_schema = $1 and table_name = 'users_live' and grantee = 'PUBLIC'`,
+      [schema],
     )
     expect(grants.rows).toEqual([{ privilege_type: 'SELECT' }])
   })
@@ -125,7 +144,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('schema initialization on Postgr
     })
     expect(result.repaired.map((column) => column.column)).toEqual(['email'])
     expect(result.drift).toEqual([])
-    expect((await observer.query(`select email from "${schema}".users_live`)).rows).toEqual([{ email: 'new@example.test' }])
+    expect((await observer.query(`select email from "${schema}".users_live`)).rows).toEqual([
+      { email: 'new@example.test' },
+    ])
     expect((await migrate(db, [changed], schema)).applied).toBe(false)
   })
 

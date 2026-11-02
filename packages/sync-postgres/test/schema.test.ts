@@ -147,12 +147,14 @@ describe('migrations against real Postgres', () => {
   it('adds a newly projected column without a backfill', async () => {
     const users = streamByName('users')!
     await migrate(db, [users], 'workos')
-    await db.query(
-      `insert into workos.users ("_env","_raw","_updated_at") values ('prod', $1::jsonb, now())`,
-      [JSON.stringify({ id: 'user_1', email: 'a@b.com', nickname: 'ada' })],
-    )
+    await db.query(`insert into workos.users ("_env","_raw","_updated_at") values ('prod', $1::jsonb, now())`, [
+      JSON.stringify({ id: 'user_1', email: 'a@b.com', nickname: 'ada' }),
+    ])
     // Promote an existing raw field to a typed column.
-    const extended = { ...users, columns: [...users.columns, { name: 'nickname', type: 'text' as const, path: 'nickname' }] }
+    const extended = {
+      ...users,
+      columns: [...users.columns, { name: 'nickname', type: 'text' as const, path: 'nickname' }],
+    }
     await migrate(db, [extended], 'workos')
     const r = await db.query<{ nickname: string }>(`select nickname from workos.users`)
     // STORED computes it from data already present — no rewrite required.
@@ -179,14 +181,12 @@ describe('migrations against real Postgres', () => {
       ['0000-01-01T00:00:00Z', null],
     ]
     for (const [input, expected] of cases) {
-      await db.query(
-        `insert into workos.users ("_env","_raw","_updated_at") values ('prod', $1::jsonb, now())`,
-        [JSON.stringify({ id: `user_${input}`, created_at: input })],
-      )
-      const r = await db.query<{ created_at: Date | null }>(
-        `select created_at from workos.users where id = $1`,
-        [`user_${input}`],
-      )
+      await db.query(`insert into workos.users ("_env","_raw","_updated_at") values ('prod', $1::jsonb, now())`, [
+        JSON.stringify({ id: `user_${input}`, created_at: input }),
+      ])
+      const r = await db.query<{ created_at: Date | null }>(`select created_at from workos.users where id = $1`, [
+        `user_${input}`,
+      ])
       const got = r.rows[0]?.created_at
       expect(got ? new Date(got).toISOString() : null).toBe(expected)
     }
@@ -265,9 +265,7 @@ describe('live views against real Postgres', () => {
 
   it('says what it is in the view comment', async () => {
     await migrate(db, [streamByName('users')!], 'workos')
-    const r = await db.query<{ c: string }>(
-      `select obj_description('workos.users_live'::regclass, 'pg_class') as c`,
-    )
+    const r = await db.query<{ c: string }>(`select obj_description('workos.users_live'::regclass, 'pg_class') as c`)
     expect(r.rows[0]!.c).toContain('@workos/sync-postgres')
     expect(r.rows[0]!.c).toContain('Do not edit')
   })
@@ -277,7 +275,10 @@ describe('live views against real Postgres', () => {
     await migrate(db, [users], 'workos')
     expect(await columnsOf('users_live')).not.toContain('nickname:text')
 
-    const extended = { ...users, columns: [...users.columns, { name: 'nickname', type: 'text' as const, path: 'nickname' }] }
+    const extended = {
+      ...users,
+      columns: [...users.columns, { name: 'nickname', type: 'text' as const, path: 'nickname' }],
+    }
     await migrate(db, [extended], 'workos')
     expect(await columnsOf('users_live')).toEqual(await columnsOf('users'))
     expect(await columnsOf('users_live')).toContain('nickname:text')
@@ -614,7 +615,7 @@ describe('live views against real Postgres', () => {
     expect(probe.rows[0]!.v).toBeNull()
   })
 
-  it('refuses a view with the generated definition but another tool\'s comment', async () => {
+  it("refuses a view with the generated definition but another tool's comment", async () => {
     const users = streamByName('users')!
     await migrate(db, [users], 'workos')
     // Same SQL as ours, but somebody else's claim on it. Adopting it would
