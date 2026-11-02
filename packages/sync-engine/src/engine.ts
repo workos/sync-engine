@@ -882,7 +882,12 @@ export class SyncEngine {
    * parent are left to `backfill`. Takes `maxPages` and `resume` the way
    * `backfill` does, and shares its checkpoints: re-listing a stream is the
    * same work whichever command asked for it, so a refresh paused inside a
-   * stream is a backfill paused there, and either command resumes it.
+   * stream is a backfill paused there, and either command resumes it. Like
+   * `backfill`, it records where the tail should begin before it lists
+   * anything: a change that lands after a page was listed is then replayed
+   * by the tail rather than lost, which matters most on a new mirror, where
+   * a resumed backfill would otherwise trust a listing that began before the
+   * tail's starting point was known.
    */
   async refresh(options: { resume?: boolean; maxPages?: number } = {}): Promise<RefreshStreamResult[]> {
     const budget = pageBudget(options.maxPages)
@@ -891,6 +896,7 @@ export class SyncEngine {
     if (!options.resume) await this.forgetListings(topLevel)
     const out: RefreshStreamResult[] = []
     for (const env of this.config.environments) {
+      await this.captureCursor(env)
       const api = this.clientFor(env)
       for (const stream of topLevel) {
         const progress = { pages: 0 }

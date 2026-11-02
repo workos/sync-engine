@@ -85,15 +85,23 @@ export const backfillSlice = () => engine.backfill({ resume: true, maxPages: 50 
 export const reconcileFresh = () => engine.reconcile({ repair: true, maxPages: 50 });
 export const reconcileSlice = () => engine.reconcile({ repair: true, resume: true, maxPages: 50 });
 
-// On a WorkOS webhook delivery: verify the raw body, then poll now.
+// On a WorkOS webhook delivery: verify the raw body, then poll now. A held
+// lease means another invocation is already polling, and the events stream
+// carries the change either way, so the delivery is still acknowledged.
 export async function webhook(rawBody: string, signature: string) {
   verifyWebhook({ payload: rawBody, signature, secret: process.env.WORKOS_WEBHOOK_SECRET! });
-  return engine.processWebhook();
+  try {
+    return await engine.processWebhook();
+  } catch (err) {
+    if (err instanceof LeaseHeldError) return { skipped: "another invocation is polling" };
+    throw err;
+  }
 }
 ```
 
 Keep the engine at module scope so a warm runtime reuses its connection pool,
-and keep that pool small: a runtime that scales out runs several copies.
+and size that pool as described under Connections below: a runtime that
+scales out runs several copies of it.
 
 ## Webhooks are a nudge, not a source
 
@@ -125,6 +133,26 @@ approaches the slot, run that stream's reconcile somewhere without a limit,
 ## Connections
 
 A pooled connection string from the provider is fine, including a transaction
-pooler; see [Hosted Postgres setup](hosted-postgres.md). Each invocation does
-its work in short transactions and the process exits or idles, so no
-connection stays open between slices.
+pooler; see [Hosted Postgres setup](hosted-postgres.md).
+
+The CLI opens a pool per invocation and the process exits, so nothing stays
+open between slices. The library is different. `PostgresDestination` keeps
+its pool until `close()`, and a warm runtime keeps that pool's idle
+connections open until the runtime evicts it, in every copy it is running.
+Keep the number small by owning the pool. The engine works in short
+transactions and holds at most one connection per phase, so a pool of three
+is plenty:
+
+```ts
+import { Pool } from "pg";
+import { SyncEngine, PostgresDestination, fromPgPool } from "@workos/sync-postgres";
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 3 });
+const engine = new SyncEngine({
+  destination: new PostgresDestination({ db: fromPgPool(pool) }),
+  environments: [{ name: "production", apiKey: process.env.WORKOS_API_KEY! }],
+});
+```
+
+A pool passed this way is not closed by `engine.close()` and carries its own
+TLS settings.
