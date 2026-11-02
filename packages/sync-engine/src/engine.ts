@@ -238,15 +238,23 @@ export class SyncEngine {
    * asking for "the newest event id" would mean paging the entire retention
    * window. Recording the wall clock and bootstrapping with `range_start`
    * achieves the same thing for free.
+   *
+   * A position that already exists is kept, with one exception: a cursor
+   * older than retention points at events that no longer exist, so with
+   * `recoverExpired` the tail restarts from now instead. That is only sound
+   * for a call that re-lists everything, which is what makes the missed
+   * window harmless; a refresh re-lists the top-level streams alone, and a
+   * resumed backfill skips what is complete, so they pass `false` and leave
+   * an expired cursor for the retention alarm to report.
    */
-  async captureCursor(env: EnvironmentConfig): Promise<string | null> {
+  async captureCursor(
+    env: EnvironmentConfig,
+    { recoverExpired = true }: { recoverExpired?: boolean } = {},
+  ): Promise<string | null> {
     const existing = await this.state.getTail(env.name)
     if (existing?.cursor || existing?.rangeStart) {
-      // A cursor older than retention points at events that no longer exist.
-      // Replaying from it is impossible, and this backfill is re-establishing
-      // current state anyway, so start the tail from now instead.
       const age = cursorAgeDays(existing.lastEventAt)
-      if (age !== null && age >= EVENT_RETENTION_DAYS) {
+      if (recoverExpired && age !== null && age >= EVENT_RETENTION_DAYS) {
         this.logger.warn('events cursor is past retention; re-capturing the starting position', {
           env: env.name,
           cursor: existing.cursor,
@@ -301,7 +309,9 @@ export class SyncEngine {
     if (!options.resume) await this.forgetListings(ordered)
     const results: BackfillStreamResult[] = []
     for (const env of this.config.environments) {
-      await this.captureCursor(env)
+      // Only a fresh run re-lists everything, so only a fresh run may restart
+      // an expired tail; a resumed slice continues the run that already did.
+      await this.captureCursor(env, { recoverExpired: !options.resume })
       const api = this.clientFor(env)
       // Streams this call left unfinished, paused or failed. A stream listed
       // per parent is held back while its parent is among them: run against
@@ -896,7 +906,9 @@ export class SyncEngine {
     if (!options.resume) await this.forgetListings(topLevel)
     const out: RefreshStreamResult[] = []
     for (const env of this.config.environments) {
-      await this.captureCursor(env)
+      // Records a missing position only: a refresh never rebuilds the
+      // per-parent rows, so it must not restart an expired tail from now.
+      await this.captureCursor(env, { recoverExpired: false })
       const api = this.clientFor(env)
       for (const stream of topLevel) {
         const progress = { pages: 0 }

@@ -148,11 +148,17 @@ import { Pool } from "pg";
 import { SyncEngine, PostgresDestination, fromPgPool } from "@workos/sync-postgres";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 3 });
+// `pg` emits `error` when the server closes a connection sitting idle in the
+// pool, and Node exits on an `error` event nobody listens for. A pool built
+// from `databaseUrl` has this listener already; one you pass in needs its own.
+pool.on("error", (err) => {
+  console.warn("idle database connection closed; the pool will reconnect", err);
+});
 const engine = new SyncEngine({
   destination: new PostgresDestination({ db: fromPgPool(pool) }),
   environments: [{ name: "production", apiKey: process.env.WORKOS_API_KEY! }],
 });
 ```
 
-A pool passed this way is not closed by `engine.close()` and carries its own
-TLS settings.
+A pool passed this way is not closed by `engine.close()`, carries its own TLS
+settings, and must carry its own `error` listener, as above.

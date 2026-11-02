@@ -2203,6 +2203,33 @@ describe('refresh page budget', () => {
     expect((await engine.status())['prod']!.rangeStart).toBe(captured.rangeStart)
   })
 
+  it('leaves an expired cursor for a fresh backfill to recover', async () => {
+    fake.createUser()
+    const engine = makeEngine(db, fake, ['users'])
+    await engine.init()
+    const stale = new Date(Date.now() - 100 * 86_400_000).toISOString()
+    await db.query(
+      `insert into workos."_sync_state" (sync_id, env, stream, state)
+       values ('default', 'prod', '__tail__', $1::jsonb)`,
+      [JSON.stringify({ kind: 'tail', cursor: 'event_000', lastEventAt: stale })],
+    )
+
+    // A refresh re-lists only the top-level streams, and a resumed backfill
+    // skips what is complete, so neither re-establishes enough state to make
+    // restarting the tail from now harmless. Both leave the cursor where it
+    // is, for the retention alarm to report.
+    await engine.refresh()
+    expect((await engine.status())['prod']!.cursor).toBe('event_000')
+    await engine.backfill({ resume: true })
+    expect((await engine.status())['prod']!.cursor).toBe('event_000')
+
+    // A fresh backfill re-lists everything, so it restarts the tail from now.
+    await engine.backfill()
+    const status = (await engine.status())['prod']!
+    expect(status.cursor).toBeNull()
+    expect(status.rangeStart).not.toBeNull()
+  })
+
   it('leaves the per-parent streams to backfill', async () => {
     const org = fake.createOrganization()
     fake.createMembership(fake.createUser()['id'] as string, org['id'] as string)
