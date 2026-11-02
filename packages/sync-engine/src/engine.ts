@@ -33,7 +33,7 @@ import {
 import { applyEvents, HydrationError } from './sync/apply.js'
 import { applyWithQuarantine, eventObjectId, isTransientError, type SuspectMap } from './sync/quarantine.js'
 import { backfillStream, pageBudget, type BackfillStreamResult } from './sync/backfill.js'
-import { diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
+import { diffable, diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
 import { createLogger } from './logger.js'
 import { redacting } from './redact.js'
 import { HealthTracker, type EngineHealth } from './health.js'
@@ -733,10 +733,24 @@ export class SyncEngine {
     }
   }
 
-  async reconcile(options: { repair?: boolean; streams?: string[] } = {}): Promise<{
+  /**
+   * Diff every selected stream against its list endpoint. `maxPages` bounds
+   * the call the way it bounds `backfill`, with one difference: a diff is
+   * taken against a whole listing, so the budget decides whether the next
+   * stream starts rather than where a listing stops. Once the pages are
+   * spent, the streams not yet started are left for a later call with
+   * `resume`, which skips the ones already diffed. A call therefore fits a
+   * host's time limit to within one stream's listing; a stream whose own
+   * listing does not fit has to run, selected with `streams`, somewhere
+   * without one.
+   */
+  async reconcile(
+    options: { repair?: boolean; streams?: string[]; resume?: boolean; maxPages?: number } = {},
+  ): Promise<{
     freshness: Record<string, FreshnessRow[]>
     diffs: Record<string, DiffResult[]>
   }> {
+    const budget = pageBudget(options.maxPages)
     await this.init()
     const chosen = options.streams
       ? this.streams.filter((s) => options.streams!.includes(s.name))
@@ -748,21 +762,77 @@ export class SyncEngine {
     for (const env of this.config.environments) {
       out.freshness[env.name] = await freshness(this.destination, env.name, chosen)
       const api = this.clientFor(env)
+      // A fresh run forgets every selected stream's completion before it
+      // diffs anything, the streams a budget never reaches included, for the
+      // reason `backfill` does: a resumed call must not skip a stream on the
+      // strength of an earlier run.
+      if (!options.resume) {
+        for (const stream of chosen) {
+          if (!diffable(stream)) continue
+          await this.state.setReconcile(env.name, stream.name, { kind: 'reconcile', status: 'pending' })
+        }
+      }
       const diffs: DiffResult[] = []
       for (const stream of chosen) {
+        if (options.resume && diffable(stream)) {
+          const prior = await this.state.getReconcile(env.name, stream.name)
+          if (prior?.status === 'complete') {
+            this.logger.info('reconcile already complete; skipping', { env: env.name, stream: stream.name })
+            diffs.push({
+              stream: stream.name,
+              matched: 0,
+              localOnly: [],
+              remoteOnly: [],
+              pages: 0,
+              complete: true,
+              skippedReason: 'already complete — run without resume to diff again',
+            })
+            continue
+          }
+        }
         try {
-          diffs.push(
-            await diffStream(this.destination, api, env.name, stream, {
-              repair: options.repair,
-              logger: this.logger,
-            }),
-          )
+          const r = await diffStream(this.destination, api, env.name, stream, {
+            repair: options.repair,
+            logger: this.logger,
+            budget,
+          })
+          diffs.push(r)
+          if (r.complete && diffable(stream)) {
+            await this.state.setReconcile(env.name, stream.name, {
+              kind: 'reconcile',
+              status: 'complete',
+              pages: r.pages,
+              completedAt: new Date().toISOString(),
+            })
+          }
         } catch (err) {
           if (isFatal(err)) throw err
-          this.logger.error('reconcile failed', { stream: stream.name, error: String(err) })
+          // Stream-scoped failure: other streams continue. The result says
+          // so rather than leaving the stream out, so a loop that resumes
+          // until every stream is complete does not stop short of it.
+          this.logger.error('reconcile failed', { env: env.name, stream: stream.name, error: String(err) })
+          diffs.push({
+            stream: stream.name,
+            matched: 0,
+            localOnly: [],
+            remoteOnly: [],
+            pages: 0,
+            complete: false,
+            skippedReason: `failed: ${String(err)}`,
+          })
         }
       }
       out.diffs[env.name] = diffs
+    }
+    const incomplete = Object.values(out.diffs)
+      .flat()
+      .filter((d) => !d.complete)
+      .map((d) => d.stream)
+    if (budget && budget.remaining <= 0 && incomplete.length > 0) {
+      this.logger.info('reconcile paused: page budget spent; resume to continue', {
+        maxPages: options.maxPages,
+        incomplete,
+      })
     }
     return out
   }

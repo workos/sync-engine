@@ -52,9 +52,28 @@ export interface BackfillState {
   completedAt?: string
 }
 
-export type StreamState = TailState | BackfillState | Record<string, unknown>
+/**
+ * Reconcile progress for one stream, resumable at stream granularity: a
+ * stream is either still to diff or done. There is no page checkpoint,
+ * because a diff is taken against the whole listing; see `diffStream`.
+ */
+export interface ReconcileState {
+  kind: 'reconcile'
+  status: 'pending' | 'complete'
+  pages?: number
+  completedAt?: string
+}
+
+export type StreamState = TailState | BackfillState | ReconcileState | Record<string, unknown>
 
 const TAIL_STREAM = '__tail__'
+
+/**
+ * Reconcile state is keyed apart from the backfill checkpoint, which lives
+ * under the stream's own name: a diff that records itself complete must not
+ * overwrite a backfill paused inside that stream.
+ */
+const reconcileKey = (stream: string) => `__reconcile__:${stream}`
 
 export interface TailUpdate {
   cursor: string | null
@@ -101,6 +120,14 @@ export class StateStore {
    */
   setTailIfHeld(env: string, next: TailUpdate, holder: string, expected: TailState | null): Promise<boolean> {
     return this.destination.setStateIfHeld(env, TAIL_STREAM, tailRecord(next), holder, expected)
+  }
+
+  getReconcile(env: string, stream: string): Promise<ReconcileState | null> {
+    return this.get<ReconcileState>(env, reconcileKey(stream))
+  }
+
+  setReconcile(env: string, stream: string, state: ReconcileState): Promise<void> {
+    return this.set(env, reconcileKey(stream), state)
   }
 
   /** Forget the tail position entirely; the next capture starts from now. */

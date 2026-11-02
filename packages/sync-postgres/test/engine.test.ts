@@ -1857,3 +1857,128 @@ describe('User-Agent', () => {
     expect(client.userAgent).toBe(`workos-sync-engine/${ENGINE_VERSION}`)
   })
 })
+
+describe('reconcile page budget', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+  })
+  afterEach(async () => {
+    await db.close()
+  })
+
+  const listings = (prefix: string) => fake.requestLog.filter((r) => r.startsWith(prefix)).length
+  const diffFor = (r: Awaited<ReturnType<SyncEngine['reconcile']>>, stream: string) =>
+    r.diffs['prod']!.find((d) => d.stream === stream)!
+
+  it('runs a started stream to its last page, then leaves the rest for a resume', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = makeEngine(db, fake, ['users', 'invitations'])
+    await engine.backfill()
+
+    // Two pages are budgeted and users needs three. The diff is a set
+    // difference against the whole listing, so the stream finishes anyway;
+    // the budget's job is to keep the next stream from starting.
+    const first = await engine.reconcile({ maxPages: 2 })
+    expect(diffFor(first, 'users')).toMatchObject({ pages: 3, complete: true, matched: 250 })
+    expect(diffFor(first, 'invitations')).toMatchObject({ pages: 0, complete: false })
+    expect(diffFor(first, 'invitations').skippedReason).toMatch(/resume/)
+
+    const usersBefore = listings('/user_management/users')
+    const second = await engine.reconcile({ resume: true, maxPages: 2 })
+    expect(diffFor(second, 'users')).toMatchObject({ pages: 0, complete: true })
+    expect(diffFor(second, 'invitations')).toMatchObject({ pages: 1, complete: true })
+    // The resumed call did not list users again.
+    expect(listings('/user_management/users')).toBe(usersBefore)
+  })
+
+  it('forgets completion on a fresh run, so a resume diffs what the budget skipped', async () => {
+    fake.createUser()
+    const engine = makeEngine(db, fake, ['users', 'invitations'])
+    await engine.backfill()
+    await engine.reconcile()
+    const before = listings('/user_management/invitations')
+
+    // A fresh bounded run spends its one page on users and never reaches invitations.
+    const fresh = await engine.reconcile({ maxPages: 1 })
+    expect(diffFor(fresh, 'invitations')).toMatchObject({ pages: 0, complete: false })
+    expect(listings('/user_management/invitations')).toBe(before)
+
+    // Resuming must diff invitations, not trust the completion the earlier run left behind.
+    const resumed = await engine.reconcile({ resume: true })
+    expect(diffFor(resumed, 'invitations')).toMatchObject({ pages: 1, complete: true })
+    expect(listings('/user_management/invitations')).toBe(before + 1)
+  })
+
+  it('still finds and repairs drift inside a bounded call', async () => {
+    const stale = fake.createUser({ email: 'gone@example.com' })
+    const engine = makeEngine(db, fake, ['users', 'invitations'])
+    await engine.backfill()
+    fake.users.delete(stale['id'] as string)
+    fake.events = []
+
+    const r = await engine.reconcile({ repair: true, maxPages: 1 })
+    expect(diffFor(r, 'users')).toMatchObject({ complete: true, localOnly: [stale['id']], repaired: { deleted: 1, inserted: 0 } })
+    expect(diffFor(r, 'invitations')).toMatchObject({ complete: false })
+  })
+
+  it('keeps its progress apart from the backfill checkpoint', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = makeEngine(db, fake, ['users'])
+
+    // A backfill paused inside users...
+    const paused = await engine.backfill({ maxPages: 2 })
+    expect(paused.find((r) => r.stream === 'users')).toMatchObject({ pages: 2, complete: false })
+
+    // ...survives a reconcile that records users as complete for its own purposes.
+    const rec = await engine.reconcile()
+    expect(diffFor(rec, 'users')).toMatchObject({ complete: true })
+
+    const resumed = await engine.backfill({ resume: true })
+    expect(resumed.find((r) => r.stream === 'users')).toMatchObject({ pages: 1, complete: true })
+  })
+
+  it('reports a failed stream as incomplete instead of leaving it out', async () => {
+    fake.createUser()
+    const engine = makeEngine(db, fake, ['users', 'invitations'])
+    await engine.backfill()
+    const added = fake.createUser({ email: 'added@example.com' })
+    fake.events = []
+
+    // Repairing the missed create writes a row, and that write fails.
+    const destination = new FaultyDestination({ db, schema: 'workos' })
+    destination.poison = added['id'] as string
+    const faulty = new SyncEngine(
+      {
+        destination,
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: ['users', 'invitations'],
+        hydrate: 'off',
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({ apiKey: 'sk_test_1', apiUrl: 'http://fake.workos.local', fetchImpl: fake.fetchImpl }),
+      },
+    )
+    const r = await faulty.reconcile({ repair: true })
+    expect(diffFor(r, 'users')).toMatchObject({ complete: false })
+    expect(diffFor(r, 'users').skippedReason).toMatch(/^failed: /)
+    // The other stream was still diffed.
+    expect(diffFor(r, 'invitations')).toMatchObject({ complete: true })
+    // A resume comes back to the failed stream rather than skipping it.
+    expect(diffFor(await engine.reconcile({ resume: true }), 'users')).toMatchObject({ pages: 1, complete: true })
+  })
+
+  it('refuses a page budget that is not a positive integer', async () => {
+    const engine = makeEngine(db, fake, ['users'])
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      await expect(engine.reconcile({ maxPages: bad })).rejects.toThrow(/maxPages/)
+    }
+  })
+})

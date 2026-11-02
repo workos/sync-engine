@@ -75,7 +75,7 @@ and the staleness gate decides which version wins.
 | `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                                         |
 
 Methods: `init()`, `backfill({ resume, maxPages })`, `tick()`, `listen()`,
-`stop()`, `reconcile({ repair, streams })`, `refresh()`, `status()`,
+`stop()`, `reconcile({ repair, streams, resume, maxPages })`, `refresh()`, `status()`,
 `health()`, `redact(userId)`, `rejected({ ids })`, `replayRejected({ ids })`,
 `processWebhook()`, `close()`. Every method except `health()` applies the
 schema first, so `init()` is optional.
@@ -91,6 +91,18 @@ per parent is held back while its parent is incomplete. Together they let a
 host with a time limit — a cron job, an edge function, a workflow activity —
 finish a backfill over several calls: call `backfill({ maxPages })` once, then
 `backfill({ resume: true, maxPages })` until no result has `complete: false`.
+
+`reconcile()` takes the same `maxPages` and `resume`, at stream granularity.
+A diff is a set difference against a stream's whole listing, so a listing
+cannot stop partway: every object on the pages a budget cut off would read as
+a missed delete, and `repair` would tombstone objects that exist upstream. The
+budget therefore decides whether the next stream starts, not where a listing
+stops; a stream that starts runs to its last page, and a call overshoots by at
+most one stream's listing. Each `DiffResult` carries `pages` and `complete`,
+a stream that fails is reported with `complete: false` rather than left out,
+and `resume` skips the streams already diffed. A stream whose own listing does
+not fit the host's limit has to run, selected with `streams`, somewhere
+without one.
 
 The tail has one writer per environment. `listen()` takes a lease in the
 destination before polling and renews it while it runs; if another process
