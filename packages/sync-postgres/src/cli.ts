@@ -295,7 +295,10 @@ Commands
                        fetched (a stream that starts runs to its last page, since
                        a diff needs the whole listing); run again with --resume
                        until every stream reports complete
-  refresh              Re-list top-level streams (refreshes fields events omit)
+  refresh [--resume] [--max-pages <n>]
+                       Re-list top-level streams (refreshes fields events omit);
+                       --max-pages and --resume slice it like backfill, with
+                       which it shares checkpoints
   status               Cursor position, poll age, and per-stream freshness
   redact --user <id>   Delete one subject from the mirror and event archive
   rejected             Show events quarantined by the tail; exits 2 if there are any
@@ -450,7 +453,10 @@ export async function main(argv = process.argv.slice(2), deps: MainDeps = {}): P
         return drift && !flags['repair'] ? 2 : 0
       }
       case 'refresh': {
-        const r = await engine.refresh()
+        const r = await engine.refresh({
+          resume: Boolean(flags['resume']),
+          maxPages: parseMaxPages(flags['max-pages']),
+        })
         process.stdout.write(JSON.stringify(r, null, 2) + '\n')
         return 0
       }

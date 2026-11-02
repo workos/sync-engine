@@ -236,38 +236,3 @@ export async function diffStream(
 
   return result
 }
-
-/**
- * Refresh every row from the list endpoints. This is also how fields that
- * event payloads omit get corrected, so it doubles as the answer to partial
- * event payloads.
- */
-export async function refreshStream(
-  destination: Destination,
-  api: WorkOSClient,
-  env: string,
-  stream: StreamDef,
-): Promise<{ stream: string; refreshed: number }> {
-  if (!stream.list) return { stream: stream.name, refreshed: 0 }
-  destination = redacting(destination)
-  api = api.withPhase('reconcile')
-  let refreshed = 0
-  const rateKey = stream.list.rateKey === 'user_management' ? 'user_management' : 'global'
-  for await (const page of api.paginate(
-    stream.list.path,
-    stream.list.params ?? {},
-    rateKey,
-    stream.list.shape ?? 'list',
-  )) {
-    const rows = page.rows.map((data) => ({
-      data: data as Record<string, unknown>,
-      updatedAt:
-        (typeof (data as Record<string, unknown>)['updated_at'] === 'string' &&
-          ((data as Record<string, unknown>)['updated_at'] as string)) ||
-        new Date().toISOString(),
-    }))
-    const s = await destination.upsert(stream, env, rows, 'replace')
-    refreshed += s.created + s.updated
-  }
-  return { stream: stream.name, refreshed }
-}

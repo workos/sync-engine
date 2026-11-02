@@ -52,6 +52,14 @@ export interface BackfillOptions {
   resume?: boolean
   /** Stop once this is spent, leaving the checkpoint where it stopped. Unbounded when absent. */
   budget?: PageBudget
+  /** Receives the page count as pages arrive, so it survives a failure. */
+  progress?: { pages: number }
+  /**
+   * What the listing is for. A refresh is the same listing with the same
+   * checkpoint, made for the fields event payloads omit; it is labelled as
+   * such in the log and counted under the `reconcile` phase upstream.
+   */
+  purpose?: 'backfill' | 'refresh'
 }
 
 export interface BackfillStreamResult {
@@ -75,9 +83,10 @@ export async function backfillStream(
   opts: BackfillOptions,
 ): Promise<BackfillStreamResult> {
   const stats = emptyStats()
-  let pages = 0
+  const progress = opts.progress ?? { pages: 0 }
+  const label = opts.purpose ?? 'backfill'
   destination = redacting(destination)
-  api = api.withPhase('backfill')
+  api = api.withPhase(label === 'refresh' ? 'reconcile' : 'backfill')
 
   // Organization domains arrive embedded in the organization payload; there is
   // no standalone list endpoint for them. Exploding them costs no API pages,
@@ -99,7 +108,7 @@ export async function backfillStream(
 
   const prior = opts.resume ? await state.get<BackfillState>(opts.env, stream.name) : null
   if (prior?.status === 'complete') {
-    opts.logger?.info('backfill already complete; skipping', { stream: stream.name })
+    opts.logger?.info(`${label} already complete; skipping`, { stream: stream.name })
     return {
       stream: stream.name,
       stats,
@@ -159,14 +168,14 @@ export async function backfillStream(
   }
 
   const paused = (at: Record<string, unknown>): BackfillStreamResult => {
-    opts.logger?.info('backfill paused: page budget spent', { stream: stream.name, pages, ...at })
-    return { stream: stream.name, stats, pages, complete: false }
+    opts.logger?.info(`${label} paused: page budget spent`, { stream: stream.name, pages: progress.pages, ...at })
+    return { stream: stream.name, stats, pages: progress.pages, complete: false }
   }
 
   if (stream.list.parent) {
     const parentDef = streamByName(stream.list.parent.stream)
     const parents = parentDef ? await destination.liveIds(parentDef, opts.env) : []
-    opts.logger?.info('backfill starting (per-parent)', {
+    opts.logger?.info(`${label} starting (per-parent)`, {
       stream: stream.name,
       parents: parents.length,
     })
@@ -188,7 +197,7 @@ export async function backfillStream(
       const startAfter = prior?.parent === pid ? (prior.after ?? null) : null
 
       for await (const page of api.paginate(path, params, key, stream.list.shape ?? 'list', startAfter)) {
-        pages++
+        progress.pages++
         charge()
         Object.assign(stats, addStats(stats, await write(page.rows)))
         // A last page is completion whatever the budget says, and the parent
@@ -215,7 +224,7 @@ export async function backfillStream(
       } satisfies BackfillState)
     }
   } else {
-    opts.logger?.info('backfill starting', { stream: stream.name })
+    opts.logger?.info(`${label} starting`, { stream: stream.name })
     for await (const page of api.paginate(
       stream.list.path,
       stream.list.params ?? {},
@@ -223,7 +232,7 @@ export async function backfillStream(
       stream.list.shape ?? 'list',
       prior?.after ?? null,
     )) {
-      pages++
+      progress.pages++
       charge()
       Object.assign(stats, addStats(stats, await write(page.rows)))
       // Checkpoint after the write, never before it.
@@ -246,8 +255,8 @@ export async function backfillStream(
     completedAt: new Date().toISOString(),
   } satisfies BackfillState)
 
-  opts.logger?.info('backfill complete', { stream: stream.name, pages, ...stats })
-  return { stream: stream.name, stats, pages, complete: true }
+  opts.logger?.info(`${label} complete`, { stream: stream.name, pages: progress.pages, ...stats })
+  return { stream: stream.name, stats, pages: progress.pages, complete: true }
 }
 
 /**

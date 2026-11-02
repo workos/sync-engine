@@ -281,7 +281,8 @@ describe('sync engine', () => {
     const engine = faultyEngine(destination, ['users', 'invitations'])
 
     const r = await engine.backfill({ maxPages: 1 })
-    expect(r.find((s) => s.stream === 'users')).toMatchObject({ complete: false })
+    // The page was fetched before its write failed, so the failure reports it.
+    expect(r.find((s) => s.stream === 'users')).toMatchObject({ pages: 1, complete: false })
     // The one page was fetched, so the budget is spent: invitations is not started.
     expect(r.find((s) => s.stream === 'invitations')).toMatchObject({ pages: 0, complete: false })
     expect(fake.requestLog.some((q) => q.startsWith('/user_management/invitations'))).toBe(false)
@@ -2053,6 +2054,153 @@ describe('reconcile page budget', () => {
     const engine = makeEngine(db, fake, ['users'])
     for (const bad of [0, -1, 1.5, Number.NaN]) {
       await expect(engine.reconcile({ maxPages: bad })).rejects.toThrow(/maxPages/)
+    }
+  })
+})
+
+describe('backfill reset order', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+  })
+  afterEach(async () => {
+    await db.close()
+  })
+
+  it('resets every environment before listing, so a fatal error in the first cannot leave the second stale', async () => {
+    fake.createUser()
+    let denyA = false
+    const engine = new SyncEngine(
+      {
+        destination: new PostgresDestination({ db, schema: 'workos' }),
+        environments: [
+          { name: 'a', apiKey: 'sk_a' },
+          { name: 'b', apiKey: 'sk_b' },
+        ],
+        streams: ['users'],
+        hydrate: 'off',
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: (env) =>
+          new WorkOSClient({
+            apiKey: env.apiKey,
+            apiUrl: 'http://fake.workos.local',
+            pageSize: 100,
+            fetchImpl: async (input, init) =>
+              denyA && env.name === 'a'
+                ? new Response('{"message":"Unauthorized"}', {
+                    status: 401,
+                    headers: { 'content-type': 'application/json' },
+                  })
+                : fake.fetchImpl(input, init),
+          }),
+      },
+    )
+    // Results come back in environment order: users for a, then users for b.
+    const full = await engine.backfill()
+    expect(full.filter((r) => r.stream === 'users').map((r) => r.complete)).toEqual([true, true])
+
+    // A fresh run dies on the first environment's credential before it
+    // lists anything in the second.
+    denyA = true
+    await expect(engine.backfill()).rejects.toThrow(/401/)
+    denyA = false
+
+    // The second environment must be listed again, not skipped on the
+    // completion the earlier full run recorded.
+    const resumed = await engine.backfill({ resume: true })
+    const users = resumed.filter((r) => r.stream === 'users')
+    expect(users).toHaveLength(2)
+    expect(users[1]).toMatchObject({ pages: 1, complete: true })
+    expect(users[1]!.skippedReason).toBeUndefined()
+  })
+})
+
+describe('refresh page budget', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+  })
+  afterEach(async () => {
+    await db.close()
+  })
+
+  const count = async (table: string) => {
+    const r = await db.query<{ n: string }>(`select count(*)::text as n from workos.${table}`)
+    return Number(r.rows[0]!.n)
+  }
+  const userListings = (since: number) =>
+    fake.requestLog.slice(since).filter((r) => r.startsWith('/user_management/users'))
+
+  it('stops at the page budget, resumes from the checkpoint, and lists under the reconcile phase', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = makeEngine(db, fake, ['users', 'invitations'])
+    await engine.backfill()
+    const before = fake.requestLog.length
+
+    const first = await engine.refresh({ maxPages: 2 })
+    expect(first.find((r) => r.stream === 'users')).toMatchObject({ pages: 2, complete: false })
+    expect(first.find((r) => r.stream === 'invitations')).toMatchObject({ pages: 0, complete: false })
+    // Every listing a refresh makes is counted under the reconcile phase
+    // upstream, as it was before it could be sliced.
+    const phases = fake.userAgents.slice(before)
+    expect(phases.length).toBeGreaterThan(0)
+    expect(phases.every((ua) => ua.endsWith('(phase=reconcile)'))).toBe(true)
+
+    const second = await engine.refresh({ resume: true })
+    expect(second.find((r) => r.stream === 'users')).toMatchObject({ pages: 1, complete: true })
+    expect(second.find((r) => r.stream === 'invitations')).toMatchObject({ pages: 1, complete: true })
+    const users = userListings(before)
+    expect(users).toHaveLength(3)
+    expect(users[2]).toContain('after=')
+  })
+
+  it('shares its checkpoint with backfill, so either command resumes the other', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = makeEngine(db, fake, ['users'])
+
+    const paused = await engine.refresh({ maxPages: 2 })
+    expect(paused.find((r) => r.stream === 'users')).toMatchObject({ pages: 2, complete: false })
+    expect(await count('users')).toBe(200)
+
+    const before = fake.requestLog.length
+    const finished = await engine.backfill({ resume: true })
+    expect(finished.find((r) => r.stream === 'users')).toMatchObject({ pages: 1, complete: true })
+    expect(await count('users')).toBe(250)
+    // One request, carrying the cursor the refresh stopped at.
+    const users = userListings(before)
+    expect(users).toHaveLength(1)
+    expect(users[0]).toContain('after=')
+  })
+
+  it('leaves the per-parent streams to backfill', async () => {
+    const org = fake.createOrganization()
+    fake.createMembership(fake.createUser()['id'] as string, org['id'] as string)
+    const engine = makeEngine(db, fake, ['users', 'organizations', 'organization_memberships'])
+    await engine.backfill()
+    const before = fake.requestLog.length
+
+    const r = await engine.refresh()
+    expect(r.map((s) => s.stream).sort()).toEqual(['organizations', 'users'])
+    expect(r.every((s) => s.complete)).toBe(true)
+    const since = fake.requestLog.slice(before)
+    expect(since.some((p) => p.startsWith('/user_management/organization_memberships'))).toBe(false)
+  })
+
+  it('refuses a page budget that is not a positive integer', async () => {
+    const engine = makeEngine(db, fake, ['users'])
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      await expect(engine.refresh({ maxPages: bad })).rejects.toThrow(/maxPages/)
     }
   })
 })

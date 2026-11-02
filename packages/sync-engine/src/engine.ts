@@ -33,7 +33,7 @@ import {
 import { applyEvents, HydrationError } from './sync/apply.js'
 import { applyWithQuarantine, eventObjectId, isTransientError, type SuspectMap } from './sync/quarantine.js'
 import { backfillStream, pageBudget, type BackfillStreamResult } from './sync/backfill.js'
-import { diffable, diffStream, freshness, refreshStream, type DiffResult } from './sync/reconcile.js'
+import { diffable, diffStream, freshness, type DiffResult } from './sync/reconcile.js'
 import { createLogger } from './logger.js'
 import { redacting } from './redact.js'
 import { HealthTracker, type EngineHealth } from './health.js'
@@ -74,6 +74,18 @@ export interface EnvironmentStatus {
    */
   rejected: number
   streams: FreshnessRow[]
+}
+
+/** One stream's share of a `refresh()` call. */
+export interface RefreshStreamResult {
+  stream: string
+  /** Rows replaced from the REST object. */
+  refreshed: number
+  /** Pages this call fetched for the stream. */
+  pages: number
+  /** False when the page budget stopped the stream or it failed; `resume` returns to it. */
+  complete: boolean
+  skippedReason?: string
 }
 
 export interface EngineDeps {
@@ -252,6 +264,22 @@ export class SyncEngine {
   }
 
   /**
+   * Forget the listing checkpoint of each stream, in every environment, so
+   * a fresh run lists from the start. Done before any listing, in every
+   * environment at once: a run that dies in the first environment, on a
+   * denied credential, must not leave the second holding a completion an
+   * earlier run recorded, which a resumed call would then honor.
+   */
+  private async forgetListings(streams: StreamDef[]): Promise<void> {
+    for (const env of this.config.environments) {
+      for (const stream of streams) {
+        if (stream.mode === 'append' || !stream.list) continue
+        await this.state.set(env.name, stream.name, { kind: 'backfill', status: 'pending' })
+      }
+    }
+  }
+
+  /**
    * Page the REST list endpoints. `maxPages` bounds the call: once that many
    * pages have been fetched, across every stream and environment, the rest is
    * left for a later call with `resume`, which continues each stream from its
@@ -263,23 +291,18 @@ export class SyncEngine {
   async backfill(options: { resume?: boolean; maxPages?: number } = {}): Promise<BackfillStreamResult[]> {
     const budget = pageBudget(options.maxPages)
     await this.init()
+    // Parents before children: memberships need organizations, directory
+    // users need directories.
+    const ordered = [...this.streams].sort((a, b) => order(a) - order(b))
+    // A fresh run forgets every selected stream's checkpoint before it lists
+    // anything, the streams a budget never reaches included. Otherwise one of
+    // them keeps a `complete` left by an earlier run, and the next resumed
+    // call skips it instead of listing it.
+    if (!options.resume) await this.forgetListings(ordered)
     const results: BackfillStreamResult[] = []
     for (const env of this.config.environments) {
       await this.captureCursor(env)
       const api = this.clientFor(env)
-      // Parents before children: memberships need organizations, directory
-      // users need directories.
-      const ordered = [...this.streams].sort((a, b) => order(a) - order(b))
-      // A fresh run forgets every selected stream's checkpoint before it
-      // lists anything, the streams a budget never reaches included.
-      // Otherwise one of them keeps a `complete` left by an earlier run, and
-      // the next resumed call skips it instead of listing it.
-      if (!options.resume) {
-        for (const stream of ordered) {
-          if (stream.mode === 'append' || !stream.list) continue
-          await this.state.set(env.name, stream.name, { kind: 'backfill', status: 'pending' })
-        }
-      }
       // Streams this call left unfinished, paused or failed. A stream listed
       // per parent is held back while its parent is among them: run against
       // a partial parent it would be marked complete, and a resumed call
@@ -299,12 +322,16 @@ export class SyncEngine {
           unfinished.add(stream.name)
           continue
         }
+        // Kept outside the call so a stream that fails partway can still say
+        // how many pages it drew on the shared budget before it did.
+        const progress = { pages: 0 }
         try {
           const r = await backfillStream(this.destination, api, this.state, stream, {
             env: env.name,
             logger: this.logger,
             resume: options.resume,
             budget,
+            progress,
           })
           results.push(r)
           if (!r.complete) unfinished.add(stream.name)
@@ -320,7 +347,7 @@ export class SyncEngine {
           results.push({
             stream: stream.name,
             stats: emptyStats(),
-            pages: 0,
+            pages: progress.pages,
             complete: false,
             skippedReason: `failed: ${String(err)}`,
           })
@@ -849,16 +876,61 @@ export class SyncEngine {
     return out
   }
 
-  /** Re-list every stream, refreshing fields that event payloads omit. */
-  async refresh(): Promise<{ stream: string; refreshed: number }[]> {
+  /**
+   * Re-list every top-level stream, replacing each row with the REST object,
+   * which carries the fields event payloads omit. The streams listed per
+   * parent are left to `backfill`. Takes `maxPages` and `resume` the way
+   * `backfill` does, and shares its checkpoints: re-listing a stream is the
+   * same work whichever command asked for it, so a refresh paused inside a
+   * stream is a backfill paused there, and either command resumes it.
+   */
+  async refresh(options: { resume?: boolean; maxPages?: number } = {}): Promise<RefreshStreamResult[]> {
+    const budget = pageBudget(options.maxPages)
     await this.init()
-    const out: { stream: string; refreshed: number }[] = []
+    const topLevel = this.streams.filter((s) => s.list && !s.list.parent && s.mode !== 'append')
+    if (!options.resume) await this.forgetListings(topLevel)
+    const out: RefreshStreamResult[] = []
     for (const env of this.config.environments) {
       const api = this.clientFor(env)
-      for (const stream of this.streams) {
-        if (!stream.list || stream.list.parent) continue
-        out.push(await refreshStream(this.destination, api, env.name, stream))
+      for (const stream of topLevel) {
+        const progress = { pages: 0 }
+        try {
+          const r = await backfillStream(this.destination, api, this.state, stream, {
+            env: env.name,
+            logger: this.logger,
+            resume: options.resume,
+            budget,
+            progress,
+            purpose: 'refresh',
+          })
+          out.push({
+            stream: r.stream,
+            refreshed: r.stats.created + r.stats.updated,
+            pages: r.pages,
+            complete: r.complete,
+            ...(r.skippedReason ? { skippedReason: r.skippedReason } : {}),
+          })
+        } catch (err) {
+          if (isFatal(err)) throw err
+          // Stream-scoped, like a backfill: the checkpoint is where it
+          // stopped, and the result says so rather than leaving it out.
+          this.logger.error('refresh failed', { env: env.name, stream: stream.name, error: String(err) })
+          out.push({
+            stream: stream.name,
+            refreshed: 0,
+            pages: progress.pages,
+            complete: false,
+            skippedReason: `failed: ${String(err)}`,
+          })
+        }
       }
+    }
+    const incomplete = out.filter((r) => !r.complete).map((r) => r.stream)
+    if (budget && budget.remaining <= 0 && incomplete.length > 0) {
+      this.logger.info('refresh paused: page budget spent; resume to continue', {
+        maxPages: options.maxPages,
+        incomplete,
+      })
     }
     return out
   }

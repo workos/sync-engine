@@ -283,7 +283,9 @@ and `locale`. Three things prevent or repair that:
   object when its create event arrives. New rows are complete from the start.
 - **`refresh`** re-lists every top-level stream from the REST API and replaces
   each row. It skips streams that are listed per parent (memberships,
-  sessions, directory users and groups, groups, organization roles).
+  sessions, directory users and groups, groups, organization roles). It takes
+  `--max-pages` and `--resume` like `backfill`, with which it shares
+  checkpoints.
 - **`backfill`** without `--resume` re-lists everything, including the
   per-parent streams, and replaces each row. This is the complete refresh.
 
@@ -399,6 +401,10 @@ whose own listing does not fit the host's limit has to run somewhere without
 one. Each result carries `pages` and `complete`, a stream that fails is
 reported with `complete: false` rather than left out, and `--resume` skips
 the streams already diffed.
+
+`refresh` takes the same two flags and shares backfill's checkpoints. For the
+schedules that tie these commands together on a host with a time limit, see
+[Serverless hosts](serverless.md).
 
 ## Rejected events
 
