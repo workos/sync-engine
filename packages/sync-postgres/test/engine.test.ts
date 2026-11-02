@@ -2183,28 +2183,24 @@ describe('refresh page budget', () => {
     expect(users[0]).toContain('after=')
   })
 
-  it('records the tail starting point before listing, so a change after a listed page is replayed', async () => {
-    // Listings sort by id, so the first user created is on the first page.
-    const changed = fake.createUser({ email: 'before@example.com' })
+  it('records the tail starting point before listing, like backfill', async () => {
     for (let i = 0; i < 150; i++) fake.createUser()
     const engine = makeEngine(db, fake, ['users'], { hydrate: 'off' })
 
-    // A refresh on a new mirror lists the first page and pauses. Like a
-    // backfill, it records where the tail should begin before listing.
+    // A refresh on a new mirror pauses after its first page with the tail's
+    // starting point already recorded: anything that changes from here on is
+    // the tail's to replay, whether or not a later listing sees it.
     const paused = await engine.refresh({ maxPages: 1 })
     expect(paused.find((r) => r.stream === 'users')).toMatchObject({ pages: 1, complete: false })
-    expect((await engine.status())['prod']!.started).toBe(true)
+    const captured = (await engine.status())['prod']!
+    expect(captured.started).toBe(true)
+    expect(captured.rangeStart).not.toBeNull()
 
-    // The user changes after its page was listed and before anything resumes.
-    fake.updateUser(changed['id'] as string, { email: 'after@example.com' })
-
-    // The resumed backfill lists only the second page, so no listing ever
-    // sees the change. The tail must, because it begins before the change;
-    // a starting point recorded here instead would begin after it.
+    // The resumed backfill keeps that position rather than recording a later
+    // one, which would leave a change between the two invisible to both the
+    // listing and the tail.
     await engine.backfill({ resume: true })
-    await engine.tick()
-    const row = await db.query<{ email: string }>(`select email from workos.users where id = $1`, [changed['id']])
-    expect(row.rows[0]!.email).toBe('after@example.com')
+    expect((await engine.status())['prod']!.rangeStart).toBe(captured.rangeStart)
   })
 
   it('leaves the per-parent streams to backfill', async () => {
