@@ -401,11 +401,7 @@ export class FakeWorkOS {
         // The real endpoint requires one of these filters.
         return json({ errors: [{ code: 'required', field: 'organization_id' }] }, 422)
       }
-      return json(
-        listOf(this.memberships, (m) =>
-          org ? m['organization_id'] === org : m['user_id'] === user,
-        ),
-      )
+      return json(listOf(this.memberships, (m) => (org ? m['organization_id'] === org : m['user_id'] === user)))
     }
     if (path === '/directory_users') {
       const dir = url.searchParams.get('directory')
@@ -452,8 +448,7 @@ export class FakeWorkOS {
     if (!filter || filter.length === 0) {
       return json(
         {
-          message:
-            'One or more event names (e.g. dsync.user.created) must be provided using the events parameter.',
+          message: 'One or more event names (e.g. dsync.user.created) must be provided using the events parameter.',
           code: 'invalid_events_request',
         },
         400,

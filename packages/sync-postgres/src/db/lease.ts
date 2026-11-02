@@ -94,11 +94,12 @@ export async function setStateIfHeld(
 ): Promise<boolean> {
   const s = quoteIdent(schema)
   const params = [syncId, env, stream, JSON.stringify(state)]
-  const sql = expected == null
-    ? `insert into ${s}."_sync_state" (sync_id, env, stream, state, updated_at)
+  const sql =
+    expected == null
+      ? `insert into ${s}."_sync_state" (sync_id, env, stream, state, updated_at)
        values ($1, $2, $3, $4::jsonb, now())
        on conflict (sync_id, env, stream) do nothing returning 1`
-    : `update ${s}."_sync_state" set state = $4::jsonb, updated_at = now()
+      : `update ${s}."_sync_state" set state = $4::jsonb, updated_at = now()
        where sync_id = $1 and env = $2 and stream = $3 and state = $5::jsonb
        returning 1`
   if (expected != null) params.push(JSON.stringify(expected))
@@ -123,12 +124,7 @@ export async function setStateIfHeld(
   })
 }
 
-export async function getLease(
-  db: SqlClient,
-  schema: string,
-  syncId: string,
-  env: string,
-): Promise<Lease | null> {
+export async function getLease(db: SqlClient, schema: string, syncId: string, env: string): Promise<Lease | null> {
   const r = await db.query<LeaseRow>(
     `select holder, ${iso('expires_at')} as expires_at
      from ${quoteIdent(schema)}."_sync_lease"

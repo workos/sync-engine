@@ -21,7 +21,12 @@ describe('webhook verification', () => {
     const now = Date.now()
     const sig = sign(body, now)
     expect(() =>
-      verifyWebhook({ payload: body.replace('user.created', 'user.deleted'), signature: sig, secret: SECRET, now: () => now }),
+      verifyWebhook({
+        payload: body.replace('user.created', 'user.deleted'),
+        signature: sig,
+        secret: SECRET,
+        now: () => now,
+      }),
     ).toThrow(WebhookVerificationError)
   })
 
@@ -70,8 +75,8 @@ describe('webhook verification', () => {
 
   it('rejects a signature of the wrong length without a timing leak', () => {
     const now = Date.now()
-    expect(() => verifyWebhook({ payload: body, signature: `t=${now},v1=short`, secret: SECRET, now: () => now })).toThrow(
-      /signature mismatch/,
-    )
+    expect(() =>
+      verifyWebhook({ payload: body, signature: `t=${now},v1=short`, secret: SECRET, now: () => now }),
+    ).toThrow(/signature mismatch/)
   })
 })

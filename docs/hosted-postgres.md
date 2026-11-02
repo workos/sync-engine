@@ -14,11 +14,11 @@ manages for its own features, such as authentication.
 
 Providers typically offer two or three URIs for the same database:
 
-| Connection | For a persistent sync process |
-| --- | --- |
-| **Direct** | Works. Some providers resolve the direct host to IPv6 only, so check that your host can reach it. |
-| **Session pooler** | Works. Session semantics are the same as a direct connection. |
-| **Transaction pooler** | Works, and has passed the compatibility test below against a live hosted endpoint. |
+| Connection             | For a persistent sync process                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------- |
+| **Direct**             | Works. Some providers resolve the direct host to IPv6 only, so check that your host can reach it. |
+| **Session pooler**     | Works. Session semantics are the same as a direct connection.                                     |
+| **Transaction pooler** | Works, and has passed the compatibility test below against a live hosted endpoint.                |
 
 Copy the complete URI from the provider rather than assembling one. A pooler
 may use a tenant-qualified username and a hostname of its own, and a provider's

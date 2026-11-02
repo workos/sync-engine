@@ -46,8 +46,7 @@ export async function diffIdsInSql(
     const table = `${quoteIdent(opts.schema)}.${quoteIdent(safeIdentifier(stream.name))}`
     const keys = stream.key.map((name) => `l.${quoteIdent(safeIdentifier(name))}::text`).join(', ')
     // Append-only tables have no tombstone column; every row is live.
-    const live =
-      stream.mode === 'append' ? `l."_env" = $1` : `l."_env" = $1 and l."_deleted_at" is null`
+    const live = stream.mode === 'append' ? `l."_env" = $1` : `l."_env" = $1 and l."_deleted_at" is null`
 
     // A call nested inside an outer transaction would find the previous
     // tables still there, because ON COMMIT DROP waits for that outer
@@ -55,9 +54,7 @@ export async function diffIdsInSql(
     await tx.exec(`drop table if exists ${LOCAL}`)
     await tx.exec(`drop table if exists ${STAGING}`)
     await tx.exec(`create temp table "_reconcile_local" (id text[] primary key) on commit drop`)
-    await tx.exec(
-      `create temp table "_reconcile_remote" (id text[] primary key, raw jsonb not null) on commit drop`,
-    )
+    await tx.exec(`create temp table "_reconcile_remote" (id text[] primary key, raw jsonb not null) on commit drop`)
 
     // The live ids are frozen before the first page is requested, not read
     // once the pages are in. Listing a large stream takes minutes under the
@@ -68,10 +65,7 @@ export async function diffIdsInSql(
     // later event would undo that. Captured here, such a row is simply not a
     // candidate, which is how the in-memory diff behaved when it read
     // `liveIds` first.
-    await tx.query(
-      `insert into ${LOCAL} (id) select array[${keys}] from ${table} l where ${live}`,
-      [env],
-    )
+    await tx.query(`insert into ${LOCAL} (id) select array[${keys}] from ${table} l where ${live}`, [env])
 
     let skipped = 0
     for await (const page of remote) {

@@ -110,12 +110,7 @@ export async function countRejected(db: SqlClient, opts: RejectedOptions, env: s
   return Number(r.rows[0]?.n ?? 0)
 }
 
-export async function clearRejected(
-  db: SqlClient,
-  opts: RejectedOptions,
-  env: string,
-  ids: string[],
-): Promise<number> {
+export async function clearRejected(db: SqlClient, opts: RejectedOptions, env: string, ids: string[]): Promise<number> {
   if (ids.length === 0) return 0
   const params: unknown[] = [opts.syncId, env]
   const list = ids.map((id) => `$${params.push(id)}`).join(', ')

@@ -734,6 +734,9 @@ export class SyncEngine {
 
   /** Heartbeat body. Failures are logged, not thrown: the next loop pass renews again. */
   private async renewHeld(): Promise<void> {
+    // Iterate a snapshot: the body awaits, and lostLease() deletes from `held`
+    // while a release elsewhere may clear it entirely.
+    // oxlint-disable-next-line unicorn/no-useless-spread
     for (const env of [...this.held]) {
       try {
         const r = await this.destination.acquireLease(env, this.holder, this.leaseTtlMs)
@@ -789,9 +792,7 @@ export class SyncEngine {
   }> {
     const budget = pageBudget(options.maxPages)
     await this.init()
-    const chosen = options.streams
-      ? this.streams.filter((s) => options.streams!.includes(s.name))
-      : this.streams
+    const chosen = options.streams ? this.streams.filter((s) => options.streams!.includes(s.name)) : this.streams
     const out = {
       freshness: {} as Record<string, FreshnessRow[]>,
       diffs: {} as Record<string, DiffResult[]>,

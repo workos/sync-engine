@@ -181,9 +181,8 @@ export class WorkOSClient {
       // so never try to parse it for control flow.
       if ((res.status === 429 || res.status >= 500) && attempt < maxRetries) {
         const retryAfter = Number(res.headers.get('retry-after'))
-        const backoff = Number.isFinite(retryAfter) && retryAfter > 0
-          ? retryAfter * 1000
-          : Math.min(30_000, 2 ** attempt * 500)
+        const backoff =
+          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : Math.min(30_000, 2 ** attempt * 500)
         this.opts.logger?.warn('rate limited or server error, retrying', {
           path,
           status: res.status,
@@ -199,18 +198,18 @@ export class WorkOSClient {
     }
   }
 
-  /** One page of a list endpoint. Handles both envelope shapes. */
+  /**
+   * One page of a list endpoint. Handles both envelope shapes: the response is
+   * inspected at runtime, so `_shape` is accepted for symmetry with `paginate`
+   * and the catalog but does not change how the page is read.
+   */
   async list<T = Record<string, unknown>>(
     path: string,
     params: Record<string, string> = {},
     rateKey = 'global',
-    shape: 'list' | 'array' = 'list',
+    _shape: 'list' | 'array' = 'list',
   ): Promise<ListPage<T>> {
-    const res = await this.request<unknown>(
-      path,
-      { limit: String(this.pageSize), ...params },
-      rateKey,
-    )
+    const res = await this.request<unknown>(path, { limit: String(this.pageSize), ...params }, rateKey)
     // A few endpoints (identities) return a bare array, and the roles
     // endpoints return {object:'list', data:[]} with no list_metadata at all.
     if (Array.isArray(res)) return { data: res as T[], listMetadata: { after: null } }
@@ -231,12 +230,7 @@ export class WorkOSClient {
   ): AsyncGenerator<{ rows: T[]; after: string | null }> {
     let after: string | null = startAfter ?? null
     for (;;) {
-      const page: ListPage<T> = await this.list<T>(
-        path,
-        after ? { ...params, after } : params,
-        rateKey,
-        shape,
-      )
+      const page: ListPage<T> = await this.list<T>(path, after ? { ...params, after } : params, rateKey, shape)
       yield { rows: page.data, after: page.listMetadata.after }
       if (!page.listMetadata.after || page.data.length === 0) return
       after = page.listMetadata.after

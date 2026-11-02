@@ -91,7 +91,12 @@ describe('events tail', () => {
         new Response(
           JSON.stringify({
             data: [
-              { id: 'event_00000000000000000001', event: 'user.created', data: {}, created_at: '2020-01-01T00:00:00.000Z' },
+              {
+                id: 'event_00000000000000000001',
+                event: 'user.created',
+                data: {},
+                created_at: '2020-01-01T00:00:00.000Z',
+              },
             ],
             list_metadata: { after: null },
           }),

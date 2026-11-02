@@ -98,7 +98,12 @@ describe('redactPayload', () => {
     const out = redactPayload(organizationDomains, domain())
     expect(out['verification_token']).toBeUndefined()
     expect(out['verification_prefix']).toBeUndefined()
-    expect(out).toMatchObject({ id: 'org_domain_1', domain: 'foo-corp.com', state: 'pending', verification_strategy: 'dns' })
+    expect(out).toMatchObject({
+      id: 'org_domain_1',
+      domain: 'foo-corp.com',
+      state: 'pending',
+      verification_strategy: 'dns',
+    })
   })
 
   it('traverses arrays, stripping the challenge from every embedded domain', () => {
@@ -285,10 +290,7 @@ describe('RedactingDestination', () => {
 
     await new RedactingDestination(inner).diffIds(invitations, 'prod', remote())
 
-    expect(staged.map((page) => page.map((d) => d['id']))).toEqual([
-      ['invitation_1', 'invitation_2'],
-      ['invitation_3'],
-    ])
+    expect(staged.map((page) => page.map((d) => d['id']))).toEqual([['invitation_1', 'invitation_2'], ['invitation_3']])
     expect(JSON.stringify(staged)).not.toContain(TOKEN)
     for (const data of staged.flat()) {
       expect(data['token']).toBeUndefined()

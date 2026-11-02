@@ -8,12 +8,12 @@ long-lived process.
 
 ## What fits in a slot
 
-| Command                     | Bounded by                              | Continues with                                |
-| --------------------------- | --------------------------------------- | --------------------------------------------- |
-| `tick`                      | `maxEventsPerTick` events, one poll     | the cursor, automatically                     |
-| `backfill --max-pages <n>`  | `n` pages across every stream           | `--resume`                                    |
-| `refresh --max-pages <n>`   | `n` pages across the top-level streams  | `--resume`; shares backfill's checkpoints     |
-| `reconcile --max-pages <n>` | `n` pages, stopping between streams     | `--resume`                                    |
+| Command                     | Bounded by                             | Continues with                            |
+| --------------------------- | -------------------------------------- | ----------------------------------------- |
+| `tick`                      | `maxEventsPerTick` events, one poll    | the cursor, automatically                 |
+| `backfill --max-pages <n>`  | `n` pages across every stream          | `--resume`                                |
+| `refresh --max-pages <n>`   | `n` pages across the top-level streams | `--resume`; shares backfill's checkpoints |
+| `reconcile --max-pages <n>` | `n` pages, stopping between streams    | `--resume`                                |
 
 `tick` takes the writer lease and renews it while it runs. A second invocation
 that overlaps it exits 3, or throws `LeaseHeldError` in the library, and should
@@ -60,10 +60,17 @@ The same shape as exported handlers, for a runtime that calls functions on a
 schedule and on HTTP requests:
 
 ```ts
-import { SyncEngine, PostgresDestination, LeaseHeldError, verifyWebhook } from "@workos/sync-postgres";
+import {
+  SyncEngine,
+  PostgresDestination,
+  LeaseHeldError,
+  verifyWebhook,
+} from "@workos/sync-postgres";
 
 const engine = new SyncEngine({
-  destination: new PostgresDestination({ databaseUrl: process.env.DATABASE_URL! }),
+  destination: new PostgresDestination({
+    databaseUrl: process.env.DATABASE_URL!,
+  }),
   environments: [{ name: "production", apiKey: process.env.WORKOS_API_KEY! }],
   maxEventsPerTick: 2000,
 });
@@ -73,27 +80,36 @@ export async function tick() {
   try {
     return await engine.tick();
   } catch (err) {
-    if (err instanceof LeaseHeldError) return { skipped: "another invocation is polling" };
+    if (err instanceof LeaseHeldError)
+      return { skipped: "another invocation is polling" };
     throw err;
   }
 }
 
 // Every few minutes. A no-op once every stream reports complete.
-export const backfillSlice = () => engine.backfill({ resume: true, maxPages: 50 });
+export const backfillSlice = () =>
+  engine.backfill({ resume: true, maxPages: 50 });
 
 // Weekly, fresh; then hourly with resume until every stream reports complete.
-export const reconcileFresh = () => engine.reconcile({ repair: true, maxPages: 50 });
-export const reconcileSlice = () => engine.reconcile({ repair: true, resume: true, maxPages: 50 });
+export const reconcileFresh = () =>
+  engine.reconcile({ repair: true, maxPages: 50 });
+export const reconcileSlice = () =>
+  engine.reconcile({ repair: true, resume: true, maxPages: 50 });
 
 // On a WorkOS webhook delivery: verify the raw body, then poll now. A held
 // lease means another invocation is already polling, and the events stream
 // carries the change either way, so the delivery is still acknowledged.
 export async function webhook(rawBody: string, signature: string) {
-  verifyWebhook({ payload: rawBody, signature, secret: process.env.WORKOS_WEBHOOK_SECRET! });
+  verifyWebhook({
+    payload: rawBody,
+    signature,
+    secret: process.env.WORKOS_WEBHOOK_SECRET!,
+  });
   try {
     return await engine.processWebhook();
   } catch (err) {
-    if (err instanceof LeaseHeldError) return { skipped: "another invocation is polling" };
+    if (err instanceof LeaseHeldError)
+      return { skipped: "another invocation is polling" };
     throw err;
   }
 }
@@ -145,7 +161,11 @@ is plenty:
 
 ```ts
 import { Pool } from "pg";
-import { SyncEngine, PostgresDestination, fromPgPool } from "@workos/sync-postgres";
+import {
+  SyncEngine,
+  PostgresDestination,
+  fromPgPool,
+} from "@workos/sync-postgres";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 3 });
 // `pg` emits `error` when the server closes a connection sitting idle in the

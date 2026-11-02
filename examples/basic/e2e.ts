@@ -20,8 +20,7 @@ import { PGlite } from '@electric-sql/pglite'
 import { SyncEngine, WorkOSClient, PostgresDestination, type SqlClient } from '@workos/sync-postgres'
 import { FakeWorkOS } from '../../packages/sync-engine/test/helpers/fake-workos.js'
 
-const heading = (n: number, title: string) =>
-  console.log(`\n\x1b[1m${n}. ${title}\x1b[0m\n${'─'.repeat(60)}`)
+const heading = (n: number, title: string) => console.log(`\n\x1b[1m${n}. ${title}\x1b[0m\n${'─'.repeat(60)}`)
 
 const table = (rows: Record<string, unknown>[]) => {
   if (rows.length === 0) return console.log('  (no rows)')
@@ -82,26 +81,29 @@ async function main() {
   const directory = fake.createDirectory(acme['id'] as string)
   fake.createDirectoryUser(directory['id'] as string, acme['id'] as string)
 
-  const engine = new SyncEngine({
-    destination: new PostgresDestination({ db, schema: 'workos' }),
-    environments: [{ name: 'production', apiKey: 'sk_test_example', apiUrl: url }],
-    streams: [
-      'users',
-      'organizations',
-      'organization_memberships',
-      'organization_domains',
-      'directories',
-      'directory_users',
-      'events',
-      'auth_attempts',
-    ],
-    // Hold nothing back: the fake's clock is deterministic.
-    lagWindowMs: 0,
-    hydrate: { users: 'on_create' },
-    logger: { debug: () => {}, info: () => {}, warn: () => {}, error: (m, f) => console.error(m, f) },
-  }, {
-    clientFor: (env) => new WorkOSClient({ apiKey: env.apiKey, apiUrl: url, pageSize: 100 }),
-  })
+  const engine = new SyncEngine(
+    {
+      destination: new PostgresDestination({ db, schema: 'workos' }),
+      environments: [{ name: 'production', apiKey: 'sk_test_example', apiUrl: url }],
+      streams: [
+        'users',
+        'organizations',
+        'organization_memberships',
+        'organization_domains',
+        'directories',
+        'directory_users',
+        'events',
+        'auth_attempts',
+      ],
+      // Hold nothing back: the fake's clock is deterministic.
+      lagWindowMs: 0,
+      hydrate: { users: 'on_create' },
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: (m, f) => console.error(m, f) },
+    },
+    {
+      clientFor: (env) => new WorkOSClient({ apiKey: env.apiKey, apiUrl: url, pageSize: 100 }),
+    },
+  )
 
   // ------------------------------------------------------------ 1. schema
   heading(1, 'Create the schema')
@@ -258,15 +260,20 @@ async function main() {
   const after = await engine.reconcile()
   const fixed = after.diffs['production']!.find((d) => d.stream === 'users')!
   console.log(`\n  after repair — localOnly: ${fixed.localOnly.length}, remoteOnly: ${fixed.remoteOnly.length}`)
-  console.log(`  ${missed['email']} is now present:`,
-    (await db.query(`select 1 from workos.users where email = 'missed@acme.com' and "_deleted_at" is null`)).rows.length === 1)
+  console.log(
+    `  ${missed['email']} is now present:`,
+    (await db.query(`select 1 from workos.users where email = 'missed@acme.com' and "_deleted_at" is null`)).rows
+      .length === 1,
+  )
 
   // ------------------------------------------------------------- 6. status
   heading(6, 'Operational view')
   const status = await engine.status()
   const prod = status['production']!
   console.log(`  cursor: ${prod.cursor}`)
-  console.log(`  cursor age: ${prod.cursorAgeDays === null ? 'n/a' : prod.cursorAgeDays.toFixed(4)} days (alarm at 75, data gone at 90)`)
+  console.log(
+    `  cursor age: ${prod.cursorAgeDays === null ? 'n/a' : prod.cursorAgeDays.toFixed(4)} days (alarm at 75, data gone at 90)`,
+  )
   table(
     prod.streams
       .filter((s) => s.rows > 0)

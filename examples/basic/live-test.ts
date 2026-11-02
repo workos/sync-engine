@@ -20,7 +20,10 @@ const API_URL = 'https://api.workos.com'
 const step = (n: string, t: string) => console.log(`\n\x1b[1m${n} ${t}\x1b[0m\n${'─'.repeat(64)}`)
 const ok = (m: string) => console.log(`  \x1b[32m✓\x1b[0m ${m}`)
 const info = (m: string) => console.log(`  ${m}`)
-const fail = (m: string) => { console.log(`  \x1b[31m✗ ${m}\x1b[0m`); failures.push(m) }
+const fail = (m: string) => {
+  console.log(`  \x1b[31m✗ ${m}\x1b[0m`)
+  failures.push(m)
+}
 const failures: string[] = []
 const check = (cond: boolean, m: string) => (cond ? ok(m) : fail(m))
 
@@ -30,7 +33,7 @@ async function api(path: string, init?: RequestInit): Promise<any> {
     headers: {
       Authorization: `Bearer ${API_KEY}`,
       'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
+      ...init?.headers,
     },
   })
   const text = await res.text()
@@ -49,13 +52,23 @@ async function main() {
       const r = await pg.query(sql, params as never[])
       return { rows: r.rows as never[] }
     },
-    async exec(sql) { await pg.exec(sql) },
+    async exec(sql) {
+      await pg.exec(sql)
+    },
     async transaction(fn) {
       await pg.exec('begin')
-      try { const o = await fn(this); await pg.exec('commit'); return o }
-      catch (e) { await pg.exec('rollback'); throw e }
+      try {
+        const o = await fn(this)
+        await pg.exec('commit')
+        return o
+      } catch (e) {
+        await pg.exec('rollback')
+        throw e
+      }
     },
-    async close() { await pg.close() },
+    async close() {
+      await pg.close()
+    },
   }
 
   const engine = new SyncEngine(
@@ -63,15 +76,27 @@ async function main() {
       destination: new PostgresDestination({ db, schema: 'workos' }),
       environments: [{ name: 'pgsync-test', apiKey: API_KEY!, apiUrl: API_URL }],
       streams: [
-        'users', 'organizations', 'organization_memberships', 'organization_domains',
-        'invitations', 'connections', 'directories', 'directory_users',
-        'roles', 'permissions', 'feature_flags', 'events', 'auth_attempts',
+        'users',
+        'organizations',
+        'organization_memberships',
+        'organization_domains',
+        'invitations',
+        'connections',
+        'directories',
+        'directory_users',
+        'roles',
+        'permissions',
+        'feature_flags',
+        'events',
+        'auth_attempts',
       ],
       lagWindowMs: 0,
       hydrate: { users: 'on_create' },
       logger: {
         debug: () => {},
-        info: (m, f) => { if (m === 'processed events') info(`   ${m}: ${JSON.stringify(f)}`) },
+        info: (m, f) => {
+          if (m === 'processed events') info(`   ${m}: ${JSON.stringify(f)}`)
+        },
         warn: (m, f) => console.warn('   warn:', m, f ?? ''),
         error: (m, f) => console.error('   error:', m, f ?? ''),
       },
@@ -110,7 +135,9 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({
       email: `ada+${stamp}@pgsync-test.example.com`,
-      first_name: 'Ada', last_name: 'Lovelace', email_verified: true,
+      first_name: 'Ada',
+      last_name: 'Lovelace',
+      email_verified: true,
       external_id: `ext_ada_${stamp}`,
       metadata: { plan: 'enterprise', seat: 'admin' },
     }),
@@ -119,7 +146,9 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({
       email: `grace+${stamp}@pgsync-test.example.com`,
-      first_name: 'Grace', last_name: 'Hopper', email_verified: true,
+      first_name: 'Grace',
+      last_name: 'Hopper',
+      email_verified: true,
       external_id: `ext_grace_${stamp}`,
       metadata: { plan: 'pro' },
     }),
@@ -128,12 +157,18 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({
       email: `alan+${stamp}@pgsync-test.example.com`,
-      first_name: 'Alan', last_name: 'Turing', email_verified: true,
+      first_name: 'Alan',
+      last_name: 'Turing',
+      email_verified: true,
     }),
   })
   ok(`created users: Ada, Grace, Alan`)
 
-  for (const [u, o] of [[ada, acme], [grace, acme], [alan, initech]] as const) {
+  for (const [u, o] of [
+    [ada, acme],
+    [grace, acme],
+    [alan, initech],
+  ] as const) {
     await api('/user_management/organization_memberships', {
       method: 'POST',
       body: JSON.stringify({ user_id: u.id, organization_id: o.id }),
@@ -175,8 +210,10 @@ async function main() {
   check(!!adaRow, 'Ada is in the mirror')
   check(adaRow?.external_id === `ext_ada_${stamp}`, `external_id survived backfill: ${adaRow?.external_id}`)
   check(adaRow?.metadata?.plan === 'enterprise', `metadata survived backfill: ${JSON.stringify(adaRow?.metadata)}`)
-  check(adaRow?.created_at instanceof Date || typeof adaRow?.created_at === 'string',
-    `created_at parsed to a real timestamp: ${adaRow?.created_at}`)
+  check(
+    adaRow?.created_at instanceof Date || typeof adaRow?.created_at === 'string',
+    `created_at parsed to a real timestamp: ${adaRow?.created_at}`,
+  )
 
   const orgs = await q(`select id, name, domains from workos.organizations order by name`)
   check(orgs.length >= 2, `mirrored ${orgs.length} organizations`)
@@ -200,8 +237,11 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({
       email: `katherine+${stamp}@pgsync-test.example.com`,
-      first_name: 'Katherine', last_name: 'Johnson', email_verified: true,
-      external_id: `ext_kat_${stamp}`, metadata: { plan: 'pro' },
+      first_name: 'Katherine',
+      last_name: 'Johnson',
+      email_verified: true,
+      external_id: `ext_kat_${stamp}`,
+      metadata: { plan: 'pro' },
     }),
   })
   info('created Katherine')
@@ -228,19 +268,22 @@ async function main() {
   const desc = await api(`/events?limit=5&order=desc&events=${encodeURIComponent(evParam)}`)
   const none = await api(`/events?limit=5&events=${encodeURIComponent(evParam)}`)
   const ids = (r: any) => r.data.map((e: any) => e.id).join(',')
-  check(ids(asc) === ids(desc) && ids(asc) === ids(none),
-    'order=asc, order=desc and omitting order return identical pages — `order` has no effect')
+  check(
+    ids(asc) === ids(desc) && ids(asc) === ids(none),
+    'order=asc, order=desc and omitting order return identical pages — `order` has no effect',
+  )
   const ascending = asc.data.every((e: any, i: number) => i === 0 || e.id > asc.data[i - 1].id)
   check(ascending, 'the stream is always oldest-first')
 
   const oldest = await api(`/events?limit=1&order=asc&events=${encodeURIComponent(evParam)}`)
   const oldestId = oldest.data[0]?.id
-  const afterOldest = await api(
-    `/events?limit=100&order=asc&after=${oldestId}&events=${encodeURIComponent(evParam)}`)
+  const afterOldest = await api(`/events?limit=100&order=asc&after=${oldestId}&events=${encodeURIComponent(evParam)}`)
   const allNewer = afterOldest.data.every((e: any) => e.id > oldestId)
-  check(allNewer && afterOldest.data.length > 0,
-    `after=<oldest> returns ${afterOldest.data.length} strictly newer events — forward paging confirmed`)
-  info('   → order=asc + after = tail forward in time. The engine\'s assumption is correct.')
+  check(
+    allNewer && afterOldest.data.length > 0,
+    `after=<oldest> returns ${afterOldest.data.length} strictly newer events — forward paging confirmed`,
+  )
+  info("   → order=asc + after = tail forward in time. The engine's assumption is correct.")
 
   let processed = 0
   for (let i = 0; i < 6; i++) {
@@ -255,15 +298,18 @@ async function main() {
   check(graceRow?.last_name === 'Hopper-Murray', `update applied: last_name = ${graceRow?.last_name}`)
   // The critical WorkOS-specific behaviour: user.updated events do NOT carry
   // external_id or metadata. A whole-row replace would null them here.
-  check(graceRow?.external_id === `ext_grace_${stamp}`,
-    `external_id NOT nulled by the update event: ${graceRow?.external_id}`)
-  check(graceRow?.metadata?.plan === 'pro',
-    `metadata NOT nulled by the update event: ${JSON.stringify(graceRow?.metadata)}`)
+  check(
+    graceRow?.external_id === `ext_grace_${stamp}`,
+    `external_id NOT nulled by the update event: ${graceRow?.external_id}`,
+  )
+  check(
+    graceRow?.metadata?.plan === 'pro',
+    `metadata NOT nulled by the update event: ${JSON.stringify(graceRow?.metadata)}`,
+  )
 
   const katRow = (await q(`select email, external_id, metadata from workos.users where id=$1`, [katherine.id]))[0]
   check(!!katRow, 'new user arrived via the event stream')
-  check(katRow?.external_id === `ext_kat_${stamp}`,
-    `hydration filled external_id on create: ${katRow?.external_id}`)
+  check(katRow?.external_id === `ext_kat_${stamp}`, `hydration filled external_id on create: ${katRow?.external_id}`)
 
   const alanRow = (await q(`select email, "_deleted_at" from workos.users where id=$1`, [alan.id]))[0]
   check(!!alanRow?._deleted_at, 'deleted user is tombstoned, not dropped')
@@ -291,7 +337,10 @@ async function main() {
   for (const d of diffs) {
     if (d.skippedReason) continue
     const clean = d.localOnly.length === 0 && d.remoteOnly.length === 0
-    if (clean) { ok(`${d.stream}: ${d.matched} matched, no drift`); continue }
+    if (clean) {
+      ok(`${d.stream}: ${d.matched} matched, no drift`)
+      continue
+    }
     // Drift here is legitimate rather than a defect. Replaying 90 days of
     // history can teach the mirror about an object that was created and later
     // deleted before this sync existed: the create event is still in the
@@ -299,8 +348,10 @@ async function main() {
     // ever mention it again. That is precisely the missed-delete case only a
     // set difference can detect.
     realDrift += d.localOnly.length + d.remoteOnly.length
-    info(`   ${d.stream}: ${d.localOnly.length} local-only, ${d.remoteOnly.length} remote-only ` +
-         `(objects known only from historical events — repaired below)`)
+    info(
+      `   ${d.stream}: ${d.localOnly.length} local-only, ${d.remoteOnly.length} remote-only ` +
+        `(objects known only from historical events — repaired below)`,
+    )
   }
   ok(`reconcile surfaced ${realDrift} drifted row(s) that no event could correct`)
 
@@ -310,14 +361,15 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({
       email: `ghost+${stamp}@pgsync-test.example.com`,
-      first_name: 'Ghost', last_name: 'User', email_verified: true,
+      first_name: 'Ghost',
+      last_name: 'User',
+      email_verified: true,
     }),
   })
   info(`created a user WITHOUT syncing it: ${ghost.id}`)
   // Advance the cursor past its event so the tail will never see it.
   await sleep(6000)
-  const cur = await api(
-    `/events?limit=1&order=desc&events=${encodeURIComponent(engine.eventTypes.join(','))}`)
+  const cur = await api(`/events?limit=1&order=desc&events=${encodeURIComponent(engine.eventTypes.join(','))}`)
   await db.query(
     `update workos."_sync_state" set state = jsonb_set(state, '{cursor}', $1::jsonb) where stream='__tail__'`,
     [JSON.stringify(cur.data[0]?.id ?? null)],
@@ -362,10 +414,14 @@ async function main() {
   info(`cursor: ${s.cursor}`)
   info(`cursor age: ${s.cursorAgeDays === null ? 'n/a' : (s.cursorAgeDays * 24 * 60).toFixed(2) + ' minutes'}`)
   console.table(
-    s.streams.filter((x) => x.rows > 0).map((x) => ({
-      stream: x.stream, rows: x.rows, deleted: x.deleted,
-      'lag(s)': x.lagSeconds === null ? '—' : x.lagSeconds.toFixed(1),
-    })),
+    s.streams
+      .filter((x) => x.rows > 0)
+      .map((x) => ({
+        stream: x.stream,
+        rows: x.rows,
+        deleted: x.deleted,
+        'lag(s)': x.lagSeconds === null ? '—' : x.lagSeconds.toFixed(1),
+      })),
   )
 
   // -------------------------------------------------------- summary
@@ -380,15 +436,24 @@ async function main() {
 
   // Record what was created so it can be cleaned up.
   console.log('\nCreated in WorkOS (for cleanup):')
-  console.log(JSON.stringify({
-    organizations: [acme.id, initech.id],
-    users: [ada.id, grace.id, katherine.id, ghost.id],
-    deletedAlready: [alan.id],
-  }, null, 2))
+  console.log(
+    JSON.stringify(
+      {
+        organizations: [acme.id, initech.id],
+        users: [ada.id, grace.id, katherine.id, ghost.id],
+        deletedAlready: [alan.id],
+      },
+      null,
+      2,
+    ),
+  )
 
   await engine.close()
   await db.close()
   process.exit(failures.length === 0 ? 0 : 1)
 }
 
-main().catch((err) => { console.error('\n\x1b[31mFATAL:\x1b[0m', err); process.exit(1) })
+main().catch((err) => {
+  console.error('\n\x1b[31mFATAL:\x1b[0m', err)
+  process.exit(1)
+})

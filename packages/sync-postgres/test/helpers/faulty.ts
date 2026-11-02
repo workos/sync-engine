@@ -50,9 +50,11 @@ export interface LogLine {
 /** A logger that keeps every line, so a test can assert on what was said. */
 export function captureLogger(): { logger: Logger; lines: LogLine[] } {
   const lines: LogLine[] = []
-  const at = (level: LogLine['level']) => (msg: string, fields: Record<string, unknown> = {}) => {
-    lines.push({ level, msg, fields })
-  }
+  const at =
+    (level: LogLine['level']) =>
+    (msg: string, fields: Record<string, unknown> = {}) => {
+      lines.push({ level, msg, fields })
+    }
   return {
     lines,
     logger: { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error') },

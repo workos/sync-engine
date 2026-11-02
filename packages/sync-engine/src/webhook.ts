@@ -54,9 +54,7 @@ export function verifyWebhook(opts: VerifyOptions): boolean {
   const tolerance = opts.toleranceMs ?? 180_000
 
   if (Math.abs(now - timestamp) > tolerance) {
-    throw new WebhookVerificationError(
-      `timestamp outside tolerance (${Math.abs(now - timestamp)}ms > ${tolerance}ms)`,
-    )
+    throw new WebhookVerificationError(`timestamp outside tolerance (${Math.abs(now - timestamp)}ms > ${tolerance}ms)`)
   }
 
   const body = typeof opts.payload === 'string' ? opts.payload : opts.payload.toString('utf8')

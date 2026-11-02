@@ -280,10 +280,7 @@ async function hasGeneratedDefinition(db: SqlClient, view: string, body: string)
  * apart from the foreign one because only it can be an interrupted creation
  * of ours; another tool's comment is that tool's claim and is never adopted.
  */
-async function commentOn(
-  db: SqlClient,
-  view: string,
-): Promise<'missing' | 'uncommented' | 'foreign' | 'commented'> {
+async function commentOn(db: SqlClient, view: string): Promise<'missing' | 'uncommented' | 'foreign' | 'commented'> {
   const r = await db.query<{ comment: string | null }>(
     `select obj_description(c.oid, 'pg_class') as comment from pg_class c where c.oid = to_regclass($1)`,
     [view],

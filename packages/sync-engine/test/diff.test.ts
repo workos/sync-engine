@@ -32,9 +32,7 @@ describe('reconciliation keys', () => {
   it('reads and reconstructs keys at their catalog paths', () => {
     const nested = {
       ...roles,
-      columns: roles.columns.map((c) => roles.key.includes(c.name)
-        ? { ...c, path: ['identity', c.name] }
-        : c),
+      columns: roles.columns.map((c) => (roles.key.includes(c.name) ? { ...c, path: ['identity', c.name] } : c)),
     }
     const data = { identity: { organization_id: 'org_1', slug: 'admin' } }
     const key = remoteKey(nested, data)!
@@ -43,7 +41,8 @@ describe('reconciliation keys', () => {
   })
 
   it.each(['not-json', 'null', '["org_1"]', '["org_1",null]', '["org_1",""]'])(
-    'refuses a malformed deletion key: %s', (key) => {
+    'refuses a malformed deletion key: %s',
+    (key) => {
       expect(() => keyPayload(roles, key)).toThrow()
     },
   )

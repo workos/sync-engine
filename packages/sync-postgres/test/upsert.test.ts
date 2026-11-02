@@ -74,35 +74,54 @@ describe('write path', () => {
   })
 
   const readUser = async (id = 'user_1') => {
-    const r = await db.query<Record<string, unknown>>(
-      `select * from workos.users where "_env" = 'prod' and id = $1`,
-      [id],
-    )
+    const r = await db.query<Record<string, unknown>>(`select * from workos.users where "_env" = 'prod' and id = $1`, [
+      id,
+    ])
     return r.rows[0]
   }
 
   it('inserts and reports created vs updated', async () => {
-    const first = await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' },
-    ], 'replace')
+    const first = await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }],
+      'replace',
+    )
     expect(first).toMatchObject({ created: 1, updated: 0 })
 
-    const second = await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ email: 'changed@example.com' }), updatedAt: '2026-01-02T00:00:00.000Z' },
-    ], 'replace')
+    const second = await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ email: 'changed@example.com' }), updatedAt: '2026-01-02T00:00:00.000Z' }],
+      'replace',
+    )
     expect(second).toMatchObject({ created: 0, updated: 1 })
     expect((await readUser())!['email']).toBe('changed@example.com')
   })
 
   it('rejects a write that is older than the stored row', async () => {
-    await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ email: 'current@example.com' }), updatedAt: '2026-01-05T00:00:00.000Z' },
-    ], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ email: 'current@example.com' }), updatedAt: '2026-01-05T00:00:00.000Z' }],
+      'replace',
+    )
 
     // An out-of-order delivery arriving late must not win.
-    const stale = await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ email: 'stale@example.com' }), updatedAt: '2026-01-01T00:00:00.000Z' },
-    ], 'replace')
+    const stale = await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ email: 'stale@example.com' }), updatedAt: '2026-01-01T00:00:00.000Z' }],
+      'replace',
+    )
 
     expect(stale).toMatchObject({ created: 0, updated: 0, skipped: 1 })
     expect((await readUser())!['email']).toBe('current@example.com')
@@ -113,20 +132,44 @@ describe('write path', () => {
     // a strict comparison the second is dropped forever — which is how a
     // comparable engine kept showing trialing subscriptions after they converted.
     const ts = '2026-01-05T00:00:00.000Z'
-    await upsertRows(db, opts, users, 'prod', [{ data: userPayload({ email: 'first@example.com' }), updatedAt: ts }], 'replace')
-    const same = await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ email: 'second@example.com' }), updatedAt: ts },
-    ], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ email: 'first@example.com' }), updatedAt: ts }],
+      'replace',
+    )
+    const same = await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ email: 'second@example.com' }), updatedAt: ts }],
+      'replace',
+    )
 
     expect(same.updated).toBe(1)
     expect((await readUser())!['email']).toBe('second@example.com')
   })
 
   it('skips a write with the same payload and timestamp', async () => {
-    await upsertRows(db, opts, users, 'prod', [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }], 'replace')
-    const again = await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' },
-    ], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }],
+      'replace',
+    )
+    const again = await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }],
+      'replace',
+    )
     // Rewriting an identical observation would bloat WAL for nothing.
     expect(again).toMatchObject({ created: 0, updated: 0, skipped: 1 })
   })
@@ -136,10 +179,23 @@ describe('write path', () => {
     // The snapshot alone carries external_id and metadata; the update is the
     // documented subset. One at a time, merge mode overlays the second on the
     // first, and a batch has to come out the same.
-    const stats = await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ external_id: 'ext_1', metadata: { plan: 'pro' } }), updatedAt: '2026-01-01T00:00:00.000Z' },
-      { data: { object: 'user', id: 'user_1', email: 'ada@example.com', first_name: 'Grace' }, updatedAt: '2026-01-02T00:00:00.000Z' },
-    ], 'merge')
+    const stats = await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [
+        {
+          data: userPayload({ external_id: 'ext_1', metadata: { plan: 'pro' } }),
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          data: { object: 'user', id: 'user_1', email: 'ada@example.com', first_name: 'Grace' },
+          updatedAt: '2026-01-02T00:00:00.000Z',
+        },
+      ],
+      'merge',
+    )
 
     expect(stats).toMatchObject({ created: 1, updated: 1, skipped: 0 })
     const row = (await readUser())!
@@ -149,17 +205,29 @@ describe('write path', () => {
   })
 
   it('gates every row of a merge batch against the stored row, not only against the batch', async () => {
-    await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ metadata: { plan: 'current' } }), updatedAt: '2026-01-02T00:00:00.000Z' },
-    ], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ metadata: { plan: 'current' } }), updatedAt: '2026-01-02T00:00:00.000Z' }],
+      'replace',
+    )
 
     // Older than the stored row, then newer, in one batch. The older row is
     // refused as it would be on its own: its metadata must not ride in under
     // the newer row's timestamp.
-    const stats = await upsertRows(db, opts, users, 'prod', [
-      { data: { object: 'user', id: 'user_1', metadata: { plan: 'old' } }, updatedAt: '2026-01-01T00:00:00.000Z' },
-      { data: { object: 'user', id: 'user_1', first_name: 'Grace' }, updatedAt: '2026-01-03T00:00:00.000Z' },
-    ], 'merge')
+    const stats = await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [
+        { data: { object: 'user', id: 'user_1', metadata: { plan: 'old' } }, updatedAt: '2026-01-01T00:00:00.000Z' },
+        { data: { object: 'user', id: 'user_1', first_name: 'Grace' }, updatedAt: '2026-01-03T00:00:00.000Z' },
+      ],
+      'merge',
+    )
 
     expect(stats).toMatchObject({ created: 0, updated: 1, skipped: 1 })
     const row = (await readUser())!
@@ -171,49 +239,66 @@ describe('write path', () => {
   it.each(['merge', 'replace'] as const)('advances the timestamp for unchanged payloads in %s mode', async (mode) => {
     const roles = streamByName('roles')!
     const data = { slug: 'admin', permissions: ['read'] }
-    await upsertRows(db, opts, roles, 'prod', [
-      { data, updatedAt: '2026-01-01T00:00:00.000Z' },
-    ], mode)
-    const newer = await upsertRows(db, opts, roles, 'prod', [
-      { data, updatedAt: '2026-01-03T00:00:00.000Z' },
-    ], mode)
-    const stale = await upsertRows(db, opts, roles, 'prod', [
-      { data: { ...data, permissions: ['write'] }, updatedAt: '2026-01-02T00:00:00.000Z' },
-    ], mode)
+    await upsertRows(db, opts, roles, 'prod', [{ data, updatedAt: '2026-01-01T00:00:00.000Z' }], mode)
+    const newer = await upsertRows(db, opts, roles, 'prod', [{ data, updatedAt: '2026-01-03T00:00:00.000Z' }], mode)
+    const stale = await upsertRows(
+      db,
+      opts,
+      roles,
+      'prod',
+      [{ data: { ...data, permissions: ['write'] }, updatedAt: '2026-01-02T00:00:00.000Z' }],
+      mode,
+    )
 
     expect(newer).toMatchObject({ created: 0, updated: 1, skipped: 0 })
     expect(stale).toMatchObject({ created: 0, updated: 0, skipped: 1 })
     const result = await db.query(`select permissions, "_updated_at" from workos.roles`)
-    expect(result.rows).toEqual([{
-      permissions: ['read'],
-      _updated_at: new Date('2026-01-03T00:00:00.000Z'),
-    }])
+    expect(result.rows).toEqual([
+      {
+        permissions: ['read'],
+        _updated_at: new Date('2026-01-03T00:00:00.000Z'),
+      },
+    ])
   })
 
   it('merges event payloads instead of nulling the fields events omit', async () => {
     // The whole reason `merge` exists: user.* events do not carry external_id,
     // metadata, last_sign_in_at or locale.
-    await upsertRows(db, opts, users, 'prod', [
-      {
-        data: userPayload({ external_id: 'ext_42', metadata: { plan: 'enterprise' }, locale: 'fr' }),
-        updatedAt: '2026-01-01T00:00:00.000Z',
-      },
-    ], 'replace')
-
-    await upsertRows(db, opts, users, 'prod', [
-      {
-        // Exactly what a user.updated event contains.
-        data: {
-          object: 'user',
-          id: 'user_1',
-          email: 'renamed@example.com',
-          first_name: 'Ada',
-          created_at: '2026-01-01T00:00:00.000Z',
-          updated_at: '2026-01-09T00:00:00.000Z',
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [
+        {
+          data: userPayload({ external_id: 'ext_42', metadata: { plan: 'enterprise' }, locale: 'fr' }),
+          updatedAt: '2026-01-01T00:00:00.000Z',
         },
-        updatedAt: '2026-01-09T00:00:00.000Z',
-      },
-    ], 'merge')
+      ],
+      'replace',
+    )
+
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [
+        {
+          // Exactly what a user.updated event contains.
+          data: {
+            object: 'user',
+            id: 'user_1',
+            email: 'renamed@example.com',
+            first_name: 'Ada',
+            created_at: '2026-01-01T00:00:00.000Z',
+            updated_at: '2026-01-09T00:00:00.000Z',
+          },
+          updatedAt: '2026-01-09T00:00:00.000Z',
+        },
+      ],
+      'merge',
+    )
 
     const row = await readUser()
     expect(row!['email']).toBe('renamed@example.com')
@@ -223,19 +308,36 @@ describe('write path', () => {
   })
 
   it('replaces the payload when the row came from the REST API', async () => {
-    await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ locale: 'fr' }), updatedAt: '2026-01-01T00:00:00.000Z' },
-    ], 'replace')
-    await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ updated_at: '2026-02-01T00:00:00.000Z' }), updatedAt: '2026-02-01T00:00:00.000Z' },
-    ], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ locale: 'fr' }), updatedAt: '2026-01-01T00:00:00.000Z' }],
+      'replace',
+    )
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ updated_at: '2026-02-01T00:00:00.000Z' }), updatedAt: '2026-02-01T00:00:00.000Z' }],
+      'replace',
+    )
     // The REST object is authoritative and complete: a field removed upstream
     // must disappear here too.
     expect((await readUser())!['locale']).toBeNull()
   })
 
   it('tombstones on delete and keeps the last known payload', async () => {
-    await upsertRows(db, opts, users, 'prod', [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }],
+      'replace',
+    )
     const stats = await deleteRows(db, opts, users, 'prod', [
       { data: { id: 'user_1' }, updatedAt: '2026-01-10T00:00:00.000Z' },
     ])
@@ -256,11 +358,23 @@ describe('write path', () => {
   })
 
   it('does not resurrect a deleted row when a late update arrives', async () => {
-    await upsertRows(db, opts, users, 'prod', [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00.000Z' }],
+      'replace',
+    )
     await deleteRows(db, opts, users, 'prod', [{ data: { id: 'user_1' }, updatedAt: '2026-01-10T00:00:00.000Z' }])
-    await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ email: 'zombie@example.com' }), updatedAt: '2026-01-20T00:00:00.000Z' },
-    ], 'merge')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ email: 'zombie@example.com' }), updatedAt: '2026-01-20T00:00:00.000Z' }],
+      'merge',
+    )
 
     const row = await readUser()
     // Deletion is terminal: ids are ULIDs and are never reused upstream.
@@ -268,16 +382,24 @@ describe('write path', () => {
   })
 
   it('keeps environments isolated under one schema', async () => {
-    await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ email: 'prod@example.com' }), updatedAt: '2026-01-01T00:00:00.000Z' },
-    ], 'replace')
-    await upsertRows(db, opts, users, 'staging', [
-      { data: userPayload({ email: 'staging@example.com' }), updatedAt: '2026-01-01T00:00:00.000Z' },
-    ], 'replace')
-
-    const r = await db.query<{ _env: string; email: string }>(
-      `select "_env", email from workos.users order by "_env"`,
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ email: 'prod@example.com' }), updatedAt: '2026-01-01T00:00:00.000Z' }],
+      'replace',
     )
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'staging',
+      [{ data: userPayload({ email: 'staging@example.com' }), updatedAt: '2026-01-01T00:00:00.000Z' }],
+      'replace',
+    )
+
+    const r = await db.query<{ _env: string; email: string }>(`select "_env", email from workos.users order by "_env"`)
     expect(r.rows).toEqual([
       { _env: 'prod', email: 'prod@example.com' },
       { _env: 'staging', email: 'staging@example.com' },
@@ -311,12 +433,16 @@ describe('write path', () => {
 
     // Replayed out of order from quarantine: the removal predates the re-add
     // that is already in the row, so it is stale and must not land.
-    const stale = await unlinkRows(db, opts, memberships, 'prod', [{ data: pair, updatedAt: '2026-01-02T00:00:00.000Z' }])
+    const stale = await unlinkRows(db, opts, memberships, 'prod', [
+      { data: pair, updatedAt: '2026-01-02T00:00:00.000Z' },
+    ])
     expect(stale).toMatchObject({ deleted: 0, skipped: 1 })
     expect(await deletedAt()).toBeNull()
 
     // A removal that is newer than the row lands, as always.
-    const fresh = await unlinkRows(db, opts, memberships, 'prod', [{ data: pair, updatedAt: '2026-01-04T00:00:00.000Z' }])
+    const fresh = await unlinkRows(db, opts, memberships, 'prod', [
+      { data: pair, updatedAt: '2026-01-04T00:00:00.000Z' },
+    ])
     expect(fresh).toMatchObject({ deleted: 1, skipped: 0 })
     expect(await deletedAt()).not.toBeNull()
   })
@@ -325,9 +451,14 @@ describe('write path', () => {
     const events = streamByName('events')!
     const e = { id: 'event_1', event: 'user.created', data: { id: 'user_1' }, created_at: '2026-01-01T00:00:00.000Z' }
     await upsertRows(db, opts, events, 'prod', [{ data: e, updatedAt: e.created_at }], 'replace')
-    const dup = await upsertRows(db, opts, events, 'prod', [
-      { data: { ...e, event: 'tampered' }, updatedAt: e.created_at },
-    ], 'replace')
+    const dup = await upsertRows(
+      db,
+      opts,
+      events,
+      'prod',
+      [{ data: { ...e, event: 'tampered' }, updatedAt: e.created_at }],
+      'replace',
+    )
 
     expect(dup.created).toBe(0)
     const r = await db.query<{ event: string }>(`select event from workos.events`)
@@ -366,9 +497,14 @@ describe('freshness reporting', () => {
     const { PostgresDestination } = await import('../src/destination.js')
     const destination = new PostgresDestination({ db, schema: 'workos' })
 
-    await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ id: 'user_old' }), updatedAt: '2024-01-01T00:00:00.000Z' },
-    ], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ id: 'user_old' }), updatedAt: '2024-01-01T00:00:00.000Z' }],
+      'replace',
+    )
 
     const stale = await destination.freshness(users, 'prod', 24)
     expect(stale.rows).toBe(1)
@@ -376,9 +512,14 @@ describe('freshness reporting', () => {
     expect(stale.lagSeconds).toBeNull()
 
     // A row that changed upstream moments ago does produce a lag figure.
-    await upsertRows(db, opts, users, 'prod', [
-      { data: userPayload({ id: 'user_fresh' }), updatedAt: new Date(Date.now() - 2000).toISOString() },
-    ], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ id: 'user_fresh' }), updatedAt: new Date(Date.now() - 2000).toISOString() }],
+      'replace',
+    )
 
     const fresh = await destination.freshness(users, 'prod', 24)
     expect(fresh.lagSampleSize).toBe(1)

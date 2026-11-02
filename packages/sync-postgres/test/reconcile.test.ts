@@ -73,11 +73,24 @@ describe('diff in sql', () => {
     const kept = { organization_id: 'org_1', slug: 'auditor' }
     const elsewhere = { organization_id: 'org_2', slug: 'admin' }
     const added = { organization_id: 'org_1', slug: 'member', permissions: ['read'] }
-    await destination.upsert(roles, 'prod', [removed, kept, elsewhere].map((data) => ({
-      data, updatedAt: '2026-01-01T00:00:00.000Z',
-    })), 'replace')
-    const remote = [kept, elsewhere, added, { ...added, permissions: [] },
-      { organization_id: 'org_1' }, { slug: 'admin' }, { organization_id: 'org_1', slug: '' }]
+    await destination.upsert(
+      roles,
+      'prod',
+      [removed, kept, elsewhere].map((data) => ({
+        data,
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      })),
+      'replace',
+    )
+    const remote = [
+      kept,
+      elsewhere,
+      added,
+      { ...added, permissions: [] },
+      { organization_id: 'org_1' },
+      { slug: 'admin' },
+      { organization_id: 'org_1', slug: '' },
+    ]
 
     const diff = await diffIdsInSql(db, opts, roles, 'prod', pages(remote, 1))
 
@@ -88,10 +101,14 @@ describe('diff in sql', () => {
       skipped: 3,
     })
     expect(await destination.liveIds(roles, 'prod')).toEqual([
-      '["org_1","admin"]', '["org_1","auditor"]', '["org_2","admin"]',
+      '["org_1","admin"]',
+      '["org_1","auditor"]',
+      '["org_2","admin"]',
     ])
     expect(await diffIdsInMemory(destination, roles, 'prod', pages(remote, 1))).toEqual({
-      matched: diff.matched, localOnly: diff.localOnly, remoteOnly: diff.remoteOnly,
+      matched: diff.matched,
+      localOnly: diff.localOnly,
+      remoteOnly: diff.remoteOnly,
     })
   })
 
@@ -102,10 +119,13 @@ describe('diff in sql', () => {
     const kept = { organization_id: 'org_1', slug: 'auditor' }
     const added = { organization_id: 'org_1', slug: 'member' }
     const updatedAt = '2026-01-01T00:00:00.000Z'
-    await destination.upsert(streamByName('organizations')!, 'prod', [
-      { data: { id: 'org_1' }, updatedAt },
-    ], 'replace')
-    await destination.upsert(roles, 'prod', [removed, kept].map((data) => ({ data, updatedAt })), 'replace')
+    await destination.upsert(streamByName('organizations')!, 'prod', [{ data: { id: 'org_1' }, updatedAt }], 'replace')
+    await destination.upsert(
+      roles,
+      'prod',
+      [removed, kept].map((data) => ({ data, updatedAt })),
+      'replace',
+    )
     const api = new WorkOSClient({
       apiKey: 'sk_test_1',
       fetchImpl: async (input) => {
@@ -130,7 +150,9 @@ describe('diff in sql', () => {
       { slug: 'member', deleted: false },
     ])
     expect(await diffStream(destination, api, 'prod', roles)).toMatchObject({
-      matched: 2, localOnly: [], remoteOnly: [],
+      matched: 2,
+      localOnly: [],
+      remoteOnly: [],
     })
   })
 
@@ -150,9 +172,7 @@ describe('diff in sql', () => {
 
   it('reports a tombstoned local row that still exists upstream as remoteOnly', async () => {
     await seed([user(1), user(2)])
-    await deleteRows(db, opts, users, 'prod', [
-      { data: { id: user(2).id }, updatedAt: '2026-01-02T00:00:00.000Z' },
-    ])
+    await deleteRows(db, opts, users, 'prod', [{ data: { id: user(2).id }, updatedAt: '2026-01-02T00:00:00.000Z' }])
 
     const diff = await diffIdsInSql(db, opts, users, 'prod', pages([user(1), user(2)]))
 

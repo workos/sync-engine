@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { SyncEngine, WorkOSClient, selectStreams, silentLogger } from '@workos/sync-engine'
-import { main, parseHydrate, parseLeaseTtl, parseMaxPages, parseSslCa, printSchemaSql, repairRequested } from '../src/cli.js'
+import {
+  main,
+  parseHydrate,
+  parseLeaseTtl,
+  parseMaxPages,
+  parseSslCa,
+  printSchemaSql,
+  repairRequested,
+} from '../src/cli.js'
 import { fingerprint, migrate } from '../src/schema/migrate.js'
 import { buildSchemaSql } from '../src/schema/ddl.js'
 import { createTestDb } from './helpers/pg.js'
@@ -372,8 +380,11 @@ describe('reconcile command', () => {
   })
 
   const lastDiffs = () =>
-    (JSON.parse(out[out.length - 1]!) as { diffs: Record<string, { stream: string; pages: number; complete: boolean }[]> })
-      .diffs['prod']!
+    (
+      JSON.parse(out[out.length - 1]!) as {
+        diffs: Record<string, { stream: string; pages: number; complete: boolean }[]>
+      }
+    ).diffs['prod']!
 
   it('slices with --max-pages and converges with --resume, exiting 0 either way', async () => {
     for (let i = 0; i < 250; i++) fake.createUser()

@@ -61,19 +61,32 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('checkpoint fencing on PostgreSQ
   }
 
   async function waitForExpiry(): Promise<void> {
-    await expect.poll(async () => {
-      const result = await observer.query(`select expires_at <= clock_timestamp() as expired from "${schema}"._sync_lease`)
-      return result.rows[0]?.expired
-    }, { timeout: 5_000, interval: 20 }).toBe(true)
+    await expect
+      .poll(
+        async () => {
+          const result = await observer.query(
+            `select expires_at <= clock_timestamp() as expired from "${schema}"._sync_lease`,
+          )
+          return result.rows[0]?.expired
+        },
+        { timeout: 5_000, interval: 20 },
+      )
+      .toBe(true)
   }
 
   async function waitForLock(): Promise<void> {
-    await expect.poll(async () => {
-      const result = await observer.query(
-        `select wait_event_type from pg_stat_activity where application_name = $1`, [schema],
+    await expect
+      .poll(
+        async () => {
+          const result = await observer.query(
+            `select wait_event_type from pg_stat_activity where application_name = $1`,
+            [schema],
+          )
+          return result.rows[0]?.wait_event_type
+        },
+        { timeout: 5_000, interval: 10 },
       )
-      return result.rows[0]?.wait_event_type
-    }, { timeout: 5_000, interval: 10 }).toBe('Lock')
+      .toBe('Lock')
   }
 
   it('refuses a blocked checkpoint after takeover without delaying the replacement', async () => {
@@ -121,20 +134,23 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('checkpoint fencing on PostgreSQ
     expect(await dest.getState('prod', '__tail__')).toEqual({ cursor: 'recaptured' })
   })
 
-  it.each(['commit', 'rollback'])('allows takeover while the first checkpoint waits for an insert to %s', async (end) => {
-    await dest.acquireLease('prod', 'old', 2_000)
-    await insertCursor()
-    startCheckpoint(null)
-    await waitForLock()
-    await waitForExpiry()
-    await observer.query(`select 1 from "${schema}"._sync_lease for update nowait`)
-    expect((await other.acquireLease('prod', 'new', 60_000)).acquired).toBe(true)
-    await blocker!.query(end)
-    expect(await checkpoint).toBe(false)
-    const expected = end === 'commit' ? { cursor: 'recaptured' } : null
-    expect(await dest.getState('prod', '__tail__')).toEqual(expected)
-    expect(await other.setStateIfHeld('prod', '__tail__', { cursor: 'c3' }, 'new', expected)).toBe(true)
-  })
+  it.each(['commit', 'rollback'])(
+    'allows takeover while the first checkpoint waits for an insert to %s',
+    async (end) => {
+      await dest.acquireLease('prod', 'old', 2_000)
+      await insertCursor()
+      startCheckpoint(null)
+      await waitForLock()
+      await waitForExpiry()
+      await observer.query(`select 1 from "${schema}"._sync_lease for update nowait`)
+      expect((await other.acquireLease('prod', 'new', 60_000)).acquired).toBe(true)
+      await blocker!.query(end)
+      expect(await checkpoint).toBe(false)
+      const expected = end === 'commit' ? { cursor: 'recaptured' } : null
+      expect(await dest.getState('prod', '__tail__')).toEqual(expected)
+      expect(await other.setStateIfHeld('prod', '__tail__', { cursor: 'c3' }, 'new', expected)).toBe(true)
+    },
+  )
 
   it('refuses an expired first checkpoint after a competing insert rolls back', async () => {
     await dest.acquireLease('prod', 'old', 2_000)
@@ -156,24 +172,29 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('checkpoint fencing on PostgreSQ
     expect(await dest.getState('prod', '__tail__')).toEqual({ cursor: 'c2' })
   })
 
-  it.each([null, { cursor: 'c1' }])('rolls back a refused checkpoint inside a caller transaction (%j)', async (expected) => {
-    if (expected === null) await observer.query(`delete from "${schema}"._sync_state`)
-    await fromPgPool(writer).transaction(async (tx) => {
-      const nested = new PostgresDestination({ db: tx, schema })
-      await nested.setState('prod', 'unrelated', { keep: true })
-      expect(await nested.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'wrong', expected)).toBe(false)
-    })
-    expect(await dest.getState('prod', '__tail__')).toEqual(expected)
-    expect(await dest.getState('prod', 'unrelated')).toEqual({ keep: true })
-  })
+  it.each([null, { cursor: 'c1' }])(
+    'rolls back a refused checkpoint inside a caller transaction (%j)',
+    async (expected) => {
+      if (expected === null) await observer.query(`delete from "${schema}"._sync_state`)
+      await fromPgPool(writer).transaction(async (tx) => {
+        const nested = new PostgresDestination({ db: tx, schema })
+        await nested.setState('prod', 'unrelated', { keep: true })
+        expect(await nested.setStateIfHeld('prod', '__tail__', { cursor: 'c2' }, 'wrong', expected)).toBe(false)
+      })
+      expect(await dest.getState('prod', '__tail__')).toEqual(expected)
+      expect(await dest.getState('prod', 'unrelated')).toEqual({ keep: true })
+    },
+  )
 
   it('preserves compare-and-swap for competing inserts and updates', async () => {
     await observer.query(`delete from "${schema}"._sync_state`)
     for (let round = 0; round < 2; round++) {
       const expected = await dest.getState('prod', '__tail__')
-      const writes = await Promise.all(Array.from({ length: 8 }, (_, i) =>
-        other.setStateIfHeld('prod', '__tail__', { cursor: `${round}_${i}` }, 'old', expected),
-      ))
+      const writes = await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          other.setStateIfHeld('prod', '__tail__', { cursor: `${round}_${i}` }, 'old', expected),
+        ),
+      )
       expect(writes.filter(Boolean)).toHaveLength(1)
     }
   })

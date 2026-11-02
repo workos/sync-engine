@@ -31,13 +31,23 @@ async function main() {
       const r = await pg.query(sql, params as never[])
       return { rows: r.rows as never[] }
     },
-    async exec(sql) { await pg.exec(sql) },
+    async exec(sql) {
+      await pg.exec(sql)
+    },
     async transaction(fn) {
       await pg.exec('begin')
-      try { const o = await fn(this); await pg.exec('commit'); return o }
-      catch (e) { await pg.exec('rollback'); throw e }
+      try {
+        const o = await fn(this)
+        await pg.exec('commit')
+        return o
+      } catch (e) {
+        await pg.exec('rollback')
+        throw e
+      }
     },
-    async close() { await pg.close() },
+    async close() {
+      await pg.close()
+    },
   }
   const q = async (sql: string, p: unknown[] = []) => (await db.query(sql, p)).rows as any[]
 
@@ -46,9 +56,20 @@ async function main() {
       destination: new PostgresDestination({ db, schema: 'workos' }),
       environments: [{ name: ENV_LABEL, apiKey: API_KEY!, apiUrl: API_URL }],
       streams: [
-        'users', 'organizations', 'organization_memberships', 'organization_domains',
-        'invitations', 'connections', 'directories', 'directory_users', 'directory_groups',
-        'roles', 'permissions', 'feature_flags', 'events', 'auth_attempts',
+        'users',
+        'organizations',
+        'organization_memberships',
+        'organization_domains',
+        'invitations',
+        'connections',
+        'directories',
+        'directory_users',
+        'directory_groups',
+        'roles',
+        'permissions',
+        'feature_flags',
+        'events',
+        'auth_attempts',
       ],
       lagWindowMs: 0,
       logger: {
@@ -65,11 +86,13 @@ async function main() {
   await engine.init()
   const tables = await q(
     `select table_name from information_schema.tables
-     where table_schema='workos' and table_name not like '\\_%' order by table_name`)
+     where table_schema='workos' and table_name not like '\\_%' order by table_name`,
+  )
   ok(`${tables.length} tables created`)
   const gen = await q(
     `select count(*)::int n from information_schema.columns
-     where table_schema='workos' and is_generated='ALWAYS'`)
+     where table_schema='workos' and is_generated='ALWAYS'`,
+  )
   ok(`${gen[0].n} generated columns projected from _raw across all tables`)
 
   step('2.', 'Backfill from the live API (read-only)')
@@ -86,10 +109,14 @@ async function main() {
   check(total > 0, `backfilled ${total} rows total`)
 
   step('3.', 'Verify real payloads landed correctly')
-  const users = await q(`select id, email, email_verified, external_id, metadata, created_at, updated_at from workos.users order by email`)
+  const users = await q(
+    `select id, email, email_verified, external_id, metadata, created_at, updated_at from workos.users order by email`,
+  )
   check(users.length > 0, `${users.length} users mirrored`)
   for (const u of users.slice(0, 12)) {
-    info(`   ${String(u.email).padEnd(34)} verified=${u.email_verified} created=${u.created_at ? new Date(u.created_at).toISOString().slice(0, 10) : 'NULL'}`)
+    info(
+      `   ${String(u.email).padEnd(34)} verified=${u.email_verified} created=${u.created_at ? new Date(u.created_at).toISOString().slice(0, 10) : 'NULL'}`,
+    )
   }
   // Real timestamps, parsed by the immutable generated column, not a cast.
   const badTs = users.filter((u) => u.created_at === null)
@@ -126,9 +153,15 @@ async function main() {
   const rec = await engine.reconcile()
   const diffs = rec.diffs[ENV_LABEL]!
   for (const d of diffs) {
-    if (d.skippedReason) { info(`   ${d.stream.padEnd(26)} — ${d.skippedReason}`); continue }
+    if (d.skippedReason) {
+      info(`   ${d.stream.padEnd(26)} — ${d.skippedReason}`)
+      continue
+    }
     const clean = d.localOnly.length === 0 && d.remoteOnly.length === 0
-    check(clean, `${d.stream.padEnd(26)} ${d.matched} matched${clean ? ', no drift' : `, ${d.localOnly.length} local-only / ${d.remoteOnly.length} remote-only`}`)
+    check(
+      clean,
+      `${d.stream.padEnd(26)} ${d.matched} matched${clean ? ', no drift' : `, ${d.localOnly.length} local-only / ${d.remoteOnly.length} remote-only`}`,
+    )
   }
 
   step('6.', 'Idempotency — a second backfill must change nothing')
@@ -146,26 +179,36 @@ async function main() {
      join workos.users u on u.id=m.user_id and u."_env"=m."_env"
      join workos.organizations o on o.id=m.organization_id and o."_env"=m."_env"
      where u."_deleted_at" is null and m."_deleted_at" is null
-     order by o.name, u.email limit 20`)
+     order by o.name, u.email limit 20`,
+  )
   if (rows.length) console.table(rows)
   else info('   (no memberships in this environment)')
 
   const orphans = await q(
     `select u.email from workos.users u
      left join workos.organization_memberships m on m.user_id=u.id and m."_deleted_at" is null
-     where u."_deleted_at" is null and m.id is null order by u.email`)
+     where u."_deleted_at" is null and m.id is null order by u.email`,
+  )
   info(`users belonging to no organization: ${orphans.length}`)
 
   step('8.', 'Freshness view')
   console.table(
-    s.streams.filter((x) => x.rows > 0).map((x) => ({
-      stream: x.stream, rows: x.rows, deleted: x.deleted,
-      'lag(s)': x.lagSeconds === null ? 'n/a (no recent changes)' : x.lagSeconds.toFixed(2),
-    })))
+    s.streams
+      .filter((x) => x.rows > 0)
+      .map((x) => ({
+        stream: x.stream,
+        rows: x.rows,
+        deleted: x.deleted,
+        'lag(s)': x.lagSeconds === null ? 'n/a (no recent changes)' : x.lagSeconds.toFixed(2),
+      })),
+  )
 
   console.log('\n' + '═'.repeat(64))
   if (failures.length === 0) console.log('\x1b[32m✓ ALL READ-ONLY CHECKS PASSED against the live WorkOS API\x1b[0m')
-  else { console.log(`\x1b[31m✗ ${failures.length} FAILED:\x1b[0m`); failures.forEach((f) => console.log('   - ' + f)) }
+  else {
+    console.log(`\x1b[31m✗ ${failures.length} FAILED:\x1b[0m`)
+    failures.forEach((f) => console.log('   - ' + f))
+  }
   console.log('═'.repeat(64))
   console.log('\nNothing was created, modified, or deleted in WorkOS.')
 
@@ -174,4 +217,7 @@ async function main() {
   process.exit(failures.length === 0 ? 0 : 1)
 }
 
-main().catch((e) => { console.error('\n\x1b[31mFATAL:\x1b[0m', e); process.exit(1) })
+main().catch((e) => {
+  console.error('\n\x1b[31mFATAL:\x1b[0m', e)
+  process.exit(1)
+})

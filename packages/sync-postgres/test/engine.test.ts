@@ -726,9 +726,7 @@ describe('sync engine', () => {
     )
     await engine.backfill()
 
-    const r = await db.query<{ _env: string; email: string }>(
-      `select "_env", email from workos.users order by "_env"`,
-    )
+    const r = await db.query<{ _env: string; email: string }>(`select "_env", email from workos.users order by "_env"`)
     expect(r.rows).toEqual([
       { _env: 'prod', email: 'prod@example.com' },
       { _env: 'staging', email: 'staging@example.com' },
@@ -1852,9 +1850,10 @@ describe('User-Agent', () => {
       logger: silentLogger,
     })
     // The client the engine builds for itself when no `clientFor` is injected.
-    const client = (
-      engine as unknown as { clientFor(env: { name: string; apiKey: string }): WorkOSClient }
-    ).clientFor({ name: 'prod', apiKey: 'sk_test_1' })
+    const client = (engine as unknown as { clientFor(env: { name: string; apiKey: string }): WorkOSClient }).clientFor({
+      name: 'prod',
+      apiKey: 'sk_test_1',
+    })
     expect(client.userAgent).toBe(`workos-sync-engine/${ENGINE_VERSION}`)
   })
 })
@@ -1923,7 +1922,11 @@ describe('reconcile page budget', () => {
     fake.events = []
 
     const r = await engine.reconcile({ repair: true, maxPages: 1 })
-    expect(diffFor(r, 'users')).toMatchObject({ complete: true, localOnly: [stale['id']], repaired: { deleted: 1, inserted: 0 } })
+    expect(diffFor(r, 'users')).toMatchObject({
+      complete: true,
+      localOnly: [stale['id']],
+      repaired: { deleted: 1, inserted: 0 },
+    })
     expect(diffFor(r, 'invitations')).toMatchObject({ complete: false })
   })
 

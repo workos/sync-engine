@@ -4,7 +4,9 @@ import { STREAMS, defaultStreams, selectStreams } from '../src/catalog.js'
 describe('selectStreams', () => {
   it('selects the defaults, with events, when given nothing', () => {
     const names = selectStreams().map((s) => s.name)
-    expect(names).toEqual(STREAMS.filter((s) => defaultStreams().includes(s.name) || s.name === 'events').map((s) => s.name))
+    expect(names).toEqual(
+      STREAMS.filter((s) => defaultStreams().includes(s.name) || s.name === 'events').map((s) => s.name),
+    )
     expect(names).toContain('events')
   })
 
