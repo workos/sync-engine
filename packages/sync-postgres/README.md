@@ -97,6 +97,10 @@ for the metric names and a Kubernetes probe snippet.
 
 ## Embed it
 
+A hosted Postgres uses this same destination. See the
+[hosted Postgres guide](https://github.com/workos/workos-pg-sync/blob/main/docs/hosted-postgres.md)
+for connection selection, TLS, and the provider compatibility test.
+
 Most deployments embed the engine in a service that already has a Postgres
 connection:
 
