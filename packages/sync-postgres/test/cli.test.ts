@@ -410,3 +410,56 @@ describe('reconcile command', () => {
     expect(diffs.find((d) => d.stream === 'invitations')).toMatchObject({ pages: 1, complete: true })
   })
 })
+
+describe('refresh command', () => {
+  let db: SqlClient
+  let fake: FakeWorkOS
+  let out: string[]
+
+  beforeEach(async () => {
+    db = await createTestDb()
+    resetIds()
+    fake = new FakeWorkOS()
+    out = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk))
+      return true
+    })
+  })
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await db.close()
+  })
+
+  const lastResults = () => JSON.parse(out[out.length - 1]!) as { stream: string; pages: number; complete: boolean }[]
+
+  it('slices with --max-pages and converges with --resume, exiting 0 either way', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = new SyncEngine(
+      {
+        destination: new PostgresDestination({ db, schema: 'workos' }),
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: ['users'],
+        hydrate: 'off',
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({
+            apiKey: 'sk_test_1',
+            apiUrl: 'http://fake.workos.local',
+            fetchImpl: fake.fetchImpl,
+            pageSize: 100,
+          }),
+      },
+    )
+    await engine.backfill()
+
+    expect(await main(['refresh', '--max-pages', '2'], { engine })).toBe(0)
+    expect(lastResults().find((r) => r.stream === 'users')).toMatchObject({ pages: 2, complete: false })
+
+    expect(await main(['refresh', '--resume'], { engine })).toBe(0)
+    expect(lastResults().find((r) => r.stream === 'users')).toMatchObject({ pages: 1, complete: true })
+  })
+})

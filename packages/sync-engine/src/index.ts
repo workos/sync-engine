@@ -11,7 +11,7 @@
  * keep writes and authoritative post-signup checks on the WorkOS API.
  */
 export { SyncEngine, LeaseHeldError } from './engine.js'
-export type { EngineDeps, EnvironmentStatus } from './engine.js'
+export type { EngineDeps, EnvironmentStatus, RefreshStreamResult } from './engine.js'
 
 export { startHealthServer, healthReport, renderMetrics, DEFAULT_MAX_POLL_AGE_MS } from './health.js'
 export type {
@@ -62,7 +62,7 @@ export {
 export type { QuarantineResult, RejectedRow, Suspect, SuspectMap } from './sync/quarantine.js'
 export { backfillStream, pageBudget } from './sync/backfill.js'
 export type { BackfillOptions, BackfillStreamResult, PageBudget } from './sync/backfill.js'
-export { diffStream, freshness, refreshStream } from './sync/reconcile.js'
+export { diffStream, freshness } from './sync/reconcile.js'
 export { diffIdsInMemory, encodeKey } from './sync/diff.js'
 
 export { createLogger, silentLogger } from './logger.js'

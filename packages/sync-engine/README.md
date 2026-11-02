@@ -30,9 +30,9 @@ Install this package directly only to write a new destination.
   buckets, retries on 429.
 - **Events tail** — `fetchEvents`: a durable cursor, a lag window for a briefly
   non-monotonic feed, and a hard stop if `after` ever pages backwards.
-- **Backfill and reconcile** — `backfillStream`, `diffStream`, `freshness`,
-  `refreshStream`: the REST list endpoints as the source of pre-event state,
-  and the id-set difference that is the only way to find a missed delete.
+- **Backfill and reconcile** — `backfillStream`, `diffStream`, `freshness`:
+  the REST list endpoints as the source of pre-event state, and the id-set
+  difference that is the only way to find a missed delete.
 - **Webhook verification** — `verifyWebhook`: a verified delivery is a nudge
   to poll now; state still flows through the ordered events stream.
 - **Quarantine** — `applyWithQuarantine`: a write that fails deterministically
@@ -75,7 +75,8 @@ and the staleness gate decides which version wins.
 | `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                                         |
 
 Methods: `init()`, `backfill({ resume, maxPages })`, `tick()`, `listen()`,
-`stop()`, `reconcile({ repair, streams, resume, maxPages })`, `refresh()`, `status()`,
+`stop()`, `reconcile({ repair, streams, resume, maxPages })`,
+`refresh({ resume, maxPages })`, `status()`,
 `health()`, `redact(userId)`, `rejected({ ids })`, `replayRejected({ ids })`,
 `processWebhook()`, `close()`. Every method except `health()` applies the
 schema first, so `init()` is optional.
@@ -103,6 +104,15 @@ a stream that fails is reported with `complete: false` rather than left out,
 and `resume` skips the streams already diffed. A stream whose own listing does
 not fit the host's limit has to run, selected with `streams`, somewhere
 without one.
+
+`refresh()` takes the same `maxPages` and `resume` and shares backfill's
+checkpoints, since re-listing a top-level stream is the same work whichever
+command asked for it: a refresh paused inside a stream is a backfill paused
+there, and either command resumes it. Each result carries `refreshed`,
+`pages` and `complete`. A fresh `backfill` or `refresh` forgets the
+checkpoints of every selected stream in every environment before listing
+anything, so a run that dies in the first environment cannot leave the second
+with a completion a resumed call would honor.
 
 The tail has one writer per environment. `listen()` takes a lease in the
 destination before polling and renews it while it runs; if another process
