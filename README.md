@@ -85,6 +85,9 @@ await engine.listen();
 
 ## Configuration
 
+For Neon or Supabase connection selection, TLS, and endpoint verification, see
+[Hosted Postgres setup](docs/hosted-postgres.md).
+
 The command reads its settings from the environment, and a flag overrides the
 variable where both exist. Every variable, command and flag is documented in
 the [`@workos/sync-postgres` README](packages/sync-postgres/README.md), which
