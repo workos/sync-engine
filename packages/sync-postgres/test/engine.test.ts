@@ -1967,12 +1967,86 @@ describe('reconcile page budget', () => {
       },
     )
     const r = await faulty.reconcile({ repair: true })
-    expect(diffFor(r, 'users')).toMatchObject({ complete: false })
+    // The listing was fetched before the repair failed, and that page came
+    // off the shared budget, so the failure still reports it.
+    expect(diffFor(r, 'users')).toMatchObject({ pages: 1, complete: false })
     expect(diffFor(r, 'users').skippedReason).toMatch(/^failed: /)
     // The other stream was still diffed.
     expect(diffFor(r, 'invitations')).toMatchObject({ complete: true })
     // A resume comes back to the failed stream rather than skipping it.
     expect(diffFor(await engine.reconcile({ resume: true }), 'users')).toMatchObject({ pages: 1, complete: true })
+  })
+
+  it('reports one result per stream when recording its completion fails', async () => {
+    fake.createUser()
+    class Unrecordable extends PostgresDestination {
+      override async setState(env: string, stream: string, state: unknown): Promise<void> {
+        if (stream.startsWith('__reconcile__:') && (state as { status?: string }).status === 'complete') {
+          throw new Error('state write refused')
+        }
+        return super.setState(env, stream, state)
+      }
+    }
+    const engine = makeEngine(db, fake, ['users'], { destination: new Unrecordable({ db, schema: 'workos' }) })
+    await engine.backfill()
+
+    const r = await engine.reconcile()
+    const users = r.diffs['prod']!.filter((d) => d.stream === 'users')
+    // The diff itself succeeded, but the stream is reported once, as the
+    // failure, so a caller using find() cannot pick up a success beside it.
+    expect(users).toHaveLength(1)
+    expect(users[0]).toMatchObject({ pages: 1, complete: false })
+    expect(users[0]!.skippedReason).toMatch(/^failed: /)
+  })
+
+  it('resets every environment before listing, so a fatal error in the first cannot leave the second stale', async () => {
+    fake.createUser()
+    let denyA = false
+    const engine = new SyncEngine(
+      {
+        destination: new PostgresDestination({ db, schema: 'workos' }),
+        environments: [
+          { name: 'a', apiKey: 'sk_a' },
+          { name: 'b', apiKey: 'sk_b' },
+        ],
+        streams: ['users'],
+        hydrate: 'off',
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: (env) =>
+          new WorkOSClient({
+            apiKey: env.apiKey,
+            apiUrl: 'http://fake.workos.local',
+            pageSize: 100,
+            fetchImpl: async (input, init) =>
+              denyA && env.name === 'a'
+                ? new Response('{"message":"Unauthorized"}', {
+                    status: 401,
+                    headers: { 'content-type': 'application/json' },
+                  })
+                : fake.fetchImpl(input, init),
+          }),
+      },
+    )
+    await engine.backfill()
+    const full = await engine.reconcile()
+    expect(full.diffs['a']!.find((d) => d.stream === 'users')).toMatchObject({ complete: true })
+    expect(full.diffs['b']!.find((d) => d.stream === 'users')).toMatchObject({ complete: true })
+
+    // A fresh run dies on the first environment's credential before it
+    // lists anything in the second.
+    denyA = true
+    await expect(engine.reconcile()).rejects.toThrow(/401/)
+    denyA = false
+
+    // The second environment must be diffed again, not skipped on the
+    // completion the earlier full run recorded.
+    const resumed = await engine.reconcile({ resume: true })
+    const b = resumed.diffs['b']!.find((d) => d.stream === 'users')!
+    expect(b).toMatchObject({ pages: 1, complete: true })
+    expect(b.skippedReason).toBeUndefined()
   })
 
   it('refuses a page budget that is not a positive integer', async () => {

@@ -86,7 +86,13 @@ export async function diffStream(
   api: WorkOSClient,
   env: string,
   stream: StreamDef,
-  opts: { repair?: boolean; logger?: Logger; budget?: PageBudget } = {},
+  opts: {
+    repair?: boolean
+    logger?: Logger
+    budget?: PageBudget
+    /** Receives the page count as pages arrive, so it survives a failure. */
+    progress?: { pages: number }
+  } = {},
 ): Promise<DiffResult> {
   destination = redacting(destination)
   api = api.withPhase('reconcile')
@@ -146,10 +152,12 @@ export async function diffStream(
   const parents = parent ? await destination.liveIds(streamByName(parent.stream)!, env) : []
 
   // Charged as each page arrives, before the destination stages it, the way
-  // a backfill charges a page before its write.
-  let pages = 0
+  // a backfill charges a page before its write. The count lives in the
+  // caller's `progress` when one is given, so a stream that fails partway
+  // can still report the pages it drew on the budget.
+  const progress = opts.progress ?? { pages: 0 }
   const charge = () => {
-    pages++
+    progress.pages++
     if (budget) budget.remaining--
   }
 
@@ -190,7 +198,14 @@ export async function diffStream(
   // A destination never returns an unkeyed payload; the filter is belt and braces.
   const remoteOnly = diff.remoteOnly.flatMap((data) => remoteKey(stream, data) ?? [])
 
-  const result: DiffResult = { stream: stream.name, matched, localOnly, remoteOnly, pages, complete: true }
+  const result: DiffResult = {
+    stream: stream.name,
+    matched,
+    localOnly,
+    remoteOnly,
+    pages: progress.pages,
+    complete: true,
+  }
 
   if (opts.repair && (localOnly.length > 0 || diff.remoteOnly.length > 0)) {
     const now = new Date().toISOString()

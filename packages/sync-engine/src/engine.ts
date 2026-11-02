@@ -759,19 +759,24 @@ export class SyncEngine {
       freshness: {} as Record<string, FreshnessRow[]>,
       diffs: {} as Record<string, DiffResult[]>,
     }
-    for (const env of this.config.environments) {
-      out.freshness[env.name] = await freshness(this.destination, env.name, chosen)
-      const api = this.clientFor(env)
-      // A fresh run forgets every selected stream's completion before it
-      // diffs anything, the streams a budget never reaches included, for the
-      // reason `backfill` does: a resumed call must not skip a stream on the
-      // strength of an earlier run.
-      if (!options.resume) {
+    // A fresh run forgets every selected stream's completion, in every
+    // environment, before it diffs anything. The streams a budget never
+    // reaches are included for the reason `backfill` does it: a resumed call
+    // must not skip a stream on the strength of an earlier run. The later
+    // environments are included because a run that dies in the first one, on
+    // a denied credential, must not leave the second holding a completion an
+    // earlier run recorded, which a resumed call would then honor.
+    if (!options.resume) {
+      for (const env of this.config.environments) {
         for (const stream of chosen) {
           if (!diffable(stream)) continue
           await this.state.setReconcile(env.name, stream.name, { kind: 'reconcile', status: 'pending' })
         }
       }
+    }
+    for (const env of this.config.environments) {
+      out.freshness[env.name] = await freshness(this.destination, env.name, chosen)
+      const api = this.clientFor(env)
       const diffs: DiffResult[] = []
       for (const stream of chosen) {
         if (options.resume && diffable(stream)) {
@@ -790,13 +795,19 @@ export class SyncEngine {
             continue
           }
         }
+        // Kept outside the call so a stream that fails partway can still say
+        // how many pages it drew on the shared budget before it did.
+        const progress = { pages: 0 }
         try {
           const r = await diffStream(this.destination, api, env.name, stream, {
             repair: options.repair,
             logger: this.logger,
             budget,
+            progress,
           })
-          diffs.push(r)
+          // Recorded before the result is reported, so a stream has exactly
+          // one entry whatever happens: a checkpoint that fails to write is
+          // reported below as the stream's failure, not beside its success.
           if (r.complete && diffable(stream)) {
             await this.state.setReconcile(env.name, stream.name, {
               kind: 'reconcile',
@@ -805,6 +816,7 @@ export class SyncEngine {
               completedAt: new Date().toISOString(),
             })
           }
+          diffs.push(r)
         } catch (err) {
           if (isFatal(err)) throw err
           // Stream-scoped failure: other streams continue. The result says
@@ -816,7 +828,7 @@ export class SyncEngine {
             matched: 0,
             localOnly: [],
             remoteOnly: [],
-            pages: 0,
+            pages: progress.pages,
             complete: false,
             skippedReason: `failed: ${String(err)}`,
           })
