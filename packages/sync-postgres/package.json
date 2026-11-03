@@ -35,8 +35,13 @@
     "pg": "^8.23.1",
     "pg-connection-string": "^2.14.1"
   },
+  "optionalDependencies": {
+    "@opentelemetry/sdk-node": "^0.300.0"
+  },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.10",
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/sdk-metrics": "^3.0.0",
     "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "typescript": "^7.0.2",

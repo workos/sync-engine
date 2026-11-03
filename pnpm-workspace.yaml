@@ -3,5 +3,7 @@ packages:
   - 'examples/*'
 allowBuilds:
   esbuild: true
+  # Pulled in by @opentelemetry/sdk-node; its postinstall only prints a notice.
+  protobufjs: false
 minimumReleaseAgeExclude:
   - '@workos/openapi-spec@0.143.0'
