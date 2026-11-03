@@ -3,7 +3,7 @@
  *
  * It implements the parts of the surface the engine depends on, including the
  * behaviours that make syncing hard: cursor pagination with a 100-item cap,
- * event payloads that are strict subsets of the REST objects, out-of-order and
+ * event payloads that omit exactly what the real ones omit, out-of-order and
  * duplicate delivery, rate limiting, and deletes that vanish from list
  * endpoints entirely.
  *
@@ -89,8 +89,6 @@ export class FakeWorkOS {
       first_name: 'Ada',
       last_name: 'Lovelace',
       profile_picture_url: null,
-      // These four are absent from user.* event payloads. They exist only via
-      // the REST object, which is exactly the trap the engine has to survive.
       external_id: `ext_${uid.slice(-4)}`,
       metadata: { plan: 'pro' },
       last_sign_in_at: this.now(),
@@ -104,19 +102,9 @@ export class FakeWorkOS {
     return user
   }
 
-  /** The documented subset that `user.*` events actually carry. */
+  /** What `user.*` events carry: the full REST object. */
   userEventPayload(user: Record<string, unknown>): Record<string, unknown> {
-    return {
-      object: 'user',
-      id: user['id'],
-      email: user['email'],
-      email_verified: user['email_verified'],
-      first_name: user['first_name'],
-      last_name: user['last_name'],
-      profile_picture_url: user['profile_picture_url'],
-      created_at: user['created_at'],
-      updated_at: user['updated_at'],
-    }
+    return { ...user }
   }
 
   updateUser(uid: string, patch: Record<string, unknown>): Record<string, unknown> {
@@ -152,21 +140,22 @@ export class FakeWorkOS {
     return org
   }
 
+  updateOrganization(oid: string, patch: Record<string, unknown>): Record<string, unknown> {
+    const org = { ...this.organizations.get(oid)!, ...patch, updated_at: this.now() }
+    this.organizations.set(oid, org)
+    this.emit('organization.updated', this.organizationEventPayload(org))
+    return org
+  }
+
   /**
-   * The documented subset that `organization.*` events carry: no metadata,
-   * stripe_customer_id or allow_profiles_outside_organization. `domains` is
-   * carried whole, DNS challenge and all.
+   * What `organization.*` events carry: the REST object minus its deprecated
+   * field, `allow_profiles_outside_organization`, since deprecated fields are
+   * left out of events. `domains` is carried whole, DNS challenge and all.
    */
   organizationEventPayload(org: Record<string, unknown>): Record<string, unknown> {
-    return {
-      object: 'organization',
-      id: org['id'],
-      name: org['name'],
-      external_id: org['external_id'],
-      domains: org['domains'],
-      created_at: org['created_at'],
-      updated_at: org['updated_at'],
-    }
+    const payload = { ...org }
+    delete payload['allow_profiles_outside_organization']
+    return payload
   }
 
   /**

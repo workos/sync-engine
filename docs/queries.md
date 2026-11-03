@@ -30,10 +30,8 @@ SELECT o.name AS organization,
    ORDER BY dormant DESC;
 ```
 
-`last_sign_in_at` is `null` for a user who has never signed in, and also for a
-row that only events have touched, since `user.*` events omit it. Hydration on
-create and `refresh` fill it in; the `is null` branch keeps the never-signed-in
-seats counted either way.
+`last_sign_in_at` is `null` for a user who has never signed in; the `is null`
+branch keeps those seats counted as dormant.
 
 **Users who signed up but never joined an organization.**
 

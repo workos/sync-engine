@@ -103,12 +103,11 @@ change. Leave it running as a service. If a few minutes of lag is acceptable,
 
 ### New objects are complete immediately
 
-WorkOS event payloads are subsets of the REST objects: `user.created` does not
-carry `external_id` or `metadata`. By default the engine re-fetches a user or
-organization when its create event arrives, so the row is complete from the
-start rather than at the next backfill. Creates are low-volume, so this costs
-one extra request each. Set `WORKOS_SYNC_HYDRATE=off` (or `hydrate: 'off'` in
-the library) to turn it off.
+Event payloads carry the full REST object apart from deprecated fields, so a
+row written from an event is complete from the start, not at the next
+backfill. The engine can re-fetch an object when its event arrives
+(`WORKOS_SYNC_HYDRATE`, or `hydrate` in the library); that is off by default
+because it costs a request per event and rarely changes anything.
 
 ## Query it
 

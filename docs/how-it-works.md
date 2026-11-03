@@ -109,32 +109,32 @@ replacing, defeating the gate entirely.
 
 ### Event writes merge; REST writes replace
 
-WorkOS event payloads are documented subsets of the REST objects. A
-`user.updated` event does not carry `external_id`, `metadata`,
-`last_sign_in_at` or `locale`. `organization.*` events omit `metadata` and
-`stripe_customer_id`. `role.*` events have no `id` at all.
+Most WorkOS event payloads are the full REST object. Not every payload is,
+though: deprecated fields are left out of event payloads, and `role.*` events
+have no `id` at all, only a `slug`.
 
-A naive implementation replaces the whole row on every event and silently nulls
-out exactly the columns people join on, `external_id` most of all. So event
-writes shallow-merge into `_raw` (`t._raw || excluded._raw`), preserving what
+A naive implementation replaces the whole row on every event, and the first
+event that omits a field silently nulls its column. So event writes
+shallow-merge into `_raw` (`t._raw || excluded._raw`), preserving what
 backfill established, while REST writes replace it outright, because the REST
 object is complete and a field removed upstream should disappear.
 
-Two further mechanisms close the gap:
+Two further mechanisms repair whatever an event leaves out:
 
-- **Hydration** re-fetches an object by id when its create event arrives, so
-  a new user or organization has its full payload immediately. It is on by
-  default for those two streams, which are the only ones with a get-by-id
-  endpoint. Creates are low-volume, which makes this cheap. `hydrate: 'off'`
-  disables it; `'always'` re-fetches on every event, which is rarely worth
-  the requests. The snapshot is written with its own `updated_at`, not the
-  event's: it is the object as it is now, which may be newer than the event
-  that prompted the fetch. That is what lets a quarantined create, replayed
-  after a later update has already made the row, still land the fields only
-  the snapshot carries instead of losing to the staleness gate.
+- **Hydration** re-fetches an object by id when its event arrives and writes
+  the REST object instead of the payload. It is off by default: event
+  payloads already carry the full object apart from deprecated fields, so a
+  re-fetch costs a request per event and changes next to nothing. Turn it on per stream
+  (`hydrate: { organizations: 'on_create' }`) for users or organizations,
+  the only streams with a get-by-id endpoint; `'always'` re-fetches on every
+  event. The snapshot is written with its own `updated_at`, not the event's:
+  it is the object as it is now, which may be newer than the event that
+  prompted the fetch. That is what lets a quarantined create, replayed after
+  a later update has already made the row, still land the fields only the
+  snapshot carries instead of losing to the staleness gate.
 - **Backfill and `refresh`** re-list from the REST endpoints and replace every
-  row, which repairs any field an event left behind. Reconciliation does not:
-  it compares ids and only writes the rows that are missing on one side.
+  row. Reconciliation does not: it compares ids and only writes the rows that
+  are missing on one side.
 
 ### Idempotency lives in the primary key
 

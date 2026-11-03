@@ -176,9 +176,10 @@ describe('write path', () => {
 
   it('keeps the fields of a full snapshot under a later subset in one merge batch', async () => {
     // A hydrated create and the update event that followed it share a poll.
-    // The snapshot alone carries external_id and metadata; the update is the
-    // documented subset. One at a time, merge mode overlays the second on the
-    // first, and a batch has to come out the same.
+    // The snapshot carries external_id and metadata; the update's payload
+    // omits them, as an event narrower than its REST object does. One at a
+    // time, merge mode overlays the second on the first, and a batch has to
+    // come out the same.
     const stats = await upsertRows(
       db,
       opts,
@@ -262,8 +263,9 @@ describe('write path', () => {
   })
 
   it('merges event payloads instead of nulling the fields events omit', async () => {
-    // The whole reason `merge` exists: user.* events do not carry external_id,
-    // metadata, last_sign_in_at or locale.
+    // The whole reason `merge` exists: an event payload narrower than the REST
+    // object (deprecated fields are left out of events) must not null out the
+    // fields it leaves out.
     await upsertRows(
       db,
       opts,
@@ -285,7 +287,7 @@ describe('write path', () => {
       'prod',
       [
         {
-          // Exactly what a user.updated event contains.
+          // A payload that omits the fields the first write established.
           data: {
             object: 'user',
             id: 'user_1',

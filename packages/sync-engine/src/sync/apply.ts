@@ -105,9 +105,9 @@ export async function applyEvents(
     let data = action.data
     let updatedAt = sourceUpdatedAt(event, data)
 
-    // Optional hydration: re-fetch the object so fields the event payload
-    // omits (external_id, metadata, ...) are correct immediately rather than
-    // at the next reconcile.
+    // Optional hydration: re-fetch the object and write the REST object as it
+    // is now instead of the event payload, so anything the payload omits is
+    // correct immediately rather than at the next refresh.
     if (opts.api && (action.kind === 'upsert' || action.kind === 'delete')) {
       const def = streamByName(action.stream)
       const mode = hydrateModeFor(opts, action.stream)
