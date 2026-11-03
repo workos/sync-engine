@@ -15,11 +15,8 @@ on:
         type: string
         required: true
     secrets:
-      # Optional until Socket Firewall is turned on below: the secret does not
-      # exist in this repo yet, and a required-but-missing secret fails the
-      # call at startup.
       PUBLIC_SOCKET_FIREWALL_TOKEN:
-        required: false
+        required: true
   workflow_dispatch:
     inputs:
       tag_name:
