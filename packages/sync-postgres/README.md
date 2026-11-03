@@ -93,17 +93,17 @@ or the engine has stopped, and `GET /metrics` in Prometheus text format. Both
 are served from memory, with no database query, so a probe keeps working when
 the database does not. The container image turns this on and declares a
 `HEALTHCHECK` against it; see
-[Operations](https://github.com/workos/workos-pg-sync/blob/main/docs/operations.md)
+[Operations](https://github.com/workos/sync-engine/blob/main/docs/operations.md)
 for the metric names and a Kubernetes probe snippet. With
 `WORKOS_SYNC_OTEL=1` the same numbers, plus poll and request latencies, are
 exported as OpenTelemetry metrics; the
-[instruments](https://github.com/workos/workos-pg-sync/blob/main/docs/operations.md#opentelemetry)
+[instruments](https://github.com/workos/sync-engine/blob/main/docs/operations.md#opentelemetry)
 are listed there too.
 
 ## Embed it
 
 A hosted Postgres uses this same destination. See the
-[hosted Postgres guide](https://github.com/workos/workos-pg-sync/blob/main/docs/hosted-postgres.md)
+[hosted Postgres guide](https://github.com/workos/sync-engine/blob/main/docs/hosted-postgres.md)
 for connection selection, TLS, and the provider compatibility test.
 
 Most deployments embed the engine in a service that already has a Postgres
@@ -217,11 +217,11 @@ sync is one-directional; there is no write-back.
 
 ## Documentation
 
-- [Getting started](https://github.com/workos/workos-pg-sync/blob/main/docs/getting-started.md)
-- [How it works](https://github.com/workos/workos-pg-sync/blob/main/docs/how-it-works.md) — backfill, tail, reconcile, and why all three
-- [Schema](https://github.com/workos/workos-pg-sync/blob/main/docs/schema.md) and [example queries](https://github.com/workos/workos-pg-sync/blob/main/docs/queries.md)
-- [Operations](https://github.com/workos/workos-pg-sync/blob/main/docs/operations.md) — deployment, alerting, the 90-day retention cliff
-- [Consistency](https://github.com/workos/workos-pg-sync/blob/main/docs/consistency.md) — what the mirror does and does not guarantee
+- [Getting started](https://github.com/workos/sync-engine/blob/main/docs/getting-started.md)
+- [How it works](https://github.com/workos/sync-engine/blob/main/docs/how-it-works.md) — backfill, tail, reconcile, and why all three
+- [Schema](https://github.com/workos/sync-engine/blob/main/docs/schema.md) and [example queries](https://github.com/workos/sync-engine/blob/main/docs/queries.md)
+- [Operations](https://github.com/workos/sync-engine/blob/main/docs/operations.md) — deployment, alerting, the 90-day retention cliff
+- [Consistency](https://github.com/workos/sync-engine/blob/main/docs/consistency.md) — what the mirror does and does not guarantee
 
 ## License
 

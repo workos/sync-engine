@@ -1,6 +1,5 @@
 {
-  "name": "workos-pg-sync-workspace",
-  "private": true,
+  "name": "workos-sync-engine",
   "type": "module",
   "scripts": {
     "build": "pnpm -r build",

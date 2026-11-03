@@ -161,7 +161,7 @@ request latencies the in-memory state does not keep. The engine depends on
 SDK; install one before the first poll and every instrument under the
 `@workos/sync-engine` scope is live, with nothing to configure here. The
 instruments are listed in
-[Operations](https://github.com/workos/workos-pg-sync/blob/main/docs/operations.md#opentelemetry).
+[Operations](https://github.com/workos/sync-engine/blob/main/docs/operations.md#opentelemetry).
 
 A rejected credential (401 or 403) and a cursor that pages backwards are
 fatal: the engine stops rather than retrying. Everything else is retried or

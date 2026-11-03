@@ -68,7 +68,7 @@ RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
 # Only the deployed package, its production dependencies, and Node.
 FROM node:${NODE_VERSION}-alpine
 ARG DESTINATION
-LABEL org.opencontainers.image.source="https://github.com/workos/workos-pg-sync"
+LABEL org.opencontainers.image.source="https://github.com/workos/sync-engine"
 LABEL org.opencontainers.image.title="workos-sync-${DESTINATION}"
 LABEL org.opencontainers.image.licenses="MIT"
 WORKDIR /app
