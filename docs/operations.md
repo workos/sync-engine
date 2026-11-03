@@ -225,6 +225,72 @@ Every per-environment series carries an `env` label.
   expr: workos_sync_cursor_age_days > 60
 ```
 
+### OpenTelemetry
+
+The same numbers, and a few the in-memory state does not keep, are
+available as OpenTelemetry metrics. The engine depends on the OpenTelemetry
+API only, which does nothing until the process installs an SDK, so there is
+no cost until you turn it on. `WORKOS_SYNC_OTEL=1` makes the CLI start the
+Node SDK before the engine and flush it when the command returns; the SDK
+reads the standard `OTEL_*` variables:
+
+```bash
+WORKOS_SYNC_OTEL=1 \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
+OTEL_TRACES_EXPORTER=none OTEL_LOGS_EXPORTER=none \
+npx workos-sync-postgres listen
+```
+
+Metrics go out as OTLP over HTTP unless `OTEL_METRICS_EXPORTER` says
+otherwise (`otlp`, `prometheus`, `console` or `none`). The engine emits no
+traces or logs through OpenTelemetry, so the two `none`s stop the SDK from
+setting up exporters nothing will use. The service name defaults to
+`workos-sync-postgres`; `OTEL_SERVICE_NAME` overrides it. Any OpenTelemetry
+Collector accepts OTLP, as do the Datadog Agent and Grafana Alloy.
+
+The flush on exit is what makes this work on a [serverless host](serverless.md):
+`tick` and the sliced commands return seconds after they start, long before
+the SDK's periodic export (`OTEL_METRIC_EXPORT_INTERVAL`, 60 s by default)
+would have fired.
+
+Every series carries `env`. The first group is read from the same in-memory
+state as `/metrics`, once per export, so the two never disagree.
+
+| Instrument                                  | Kind      | Attributes                                                       | What it is                                                                                                                                                       |
+| ------------------------------------------- | --------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workos.sync.up`                            | gauge     |                                                                  | As `workos_sync_up`.                                                                                                                                             |
+| `workos.sync.poll_age_seconds`              | gauge     | `env`                                                            | As `workos_sync_poll_age_seconds`. **Alert on this.**                                                                                                            |
+| `workos.sync.cursor_age_days`               | gauge     | `env`                                                            | As `workos_sync_cursor_age_days`.                                                                                                                                |
+| `workos.sync.ticks`                         | counter   | `env`                                                            | As `workos_sync_ticks_total`.                                                                                                                                    |
+| `workos.sync.events`                        | counter   | `env`                                                            | As `workos_sync_events_total`.                                                                                                                                   |
+| `workos.sync.writes`                        | counter   | `env`, `kind`                                                    | As `workos_sync_writes_total`.                                                                                                                                   |
+| `workos.sync.errors`                        | counter   | `env`                                                            | As `workos_sync_errors_total`.                                                                                                                                   |
+| `workos.sync.events.rejected`               | counter   | `env`                                                            | Events the tail quarantined. Alert on this too; see `rejected` above.                                                                                            |
+| `workos.sync.tick.duration_seconds`         | histogram | `env`, `outcome`                                                 | One environment's share of a poll, by how it ended: `ok`, `empty`, `refused` (the lease was lost mid-poll), `error`, `fatal`.                                    |
+| `workos.sync.api.request.duration_seconds`  | histogram | `phase`, `rate_key`, `http.response.status_code` or `error.type` | One sample per HTTP attempt to WorkOS, response body included. A slow poll over fast requests is the destination's time; slow requests are the API's.            |
+| `workos.sync.api.throttle.duration_seconds` | histogram | `phase`, `rate_key`                                              | Time a request waited for the local rate limiter. Only waits are recorded, so this count over the request count is the fraction of requests that were held back. |
+| `workos.sync.api.retries`                   | counter   | `phase`, `rate_key`, `reason`                                    | Attempts retried, by reason: `network`, `rate_limited` (429), `server_error` (5xx).                                                                              |
+
+`phase` is `tail`, `backfill`, `reconcile` or `hydrate`, the same label the
+`User-Agent` carries; `rate_key` is the bucket the endpoint draws on
+(`global`, `user_management`, or `directory:<id>`).
+
+Names carry their unit so that the OpenTelemetry Prometheus exporter
+(`OTEL_METRICS_EXPORTER=prometheus`, or the collector's) produces the series
+in the table above verbatim, `_total` included, and the alert rules apply
+unchanged. Elsewhere a dotted name is shown as is.
+
+To use an SDK you already run, leave `WORKOS_SYNC_OTEL` unset and have it in
+place before the engine polls: `NODE_OPTIONS="--import
+@opentelemetry/auto-instrumentations-node/register"` with the same `OTEL_*`
+variables for the CLI, or your own `NodeSDK` started before the first
+`tick()` in a service that embeds the library. Instruments are created from
+the global meter provider at the moment of use, so an SDK installed after the
+engine is built but before its first poll still catches everything. The SDK
+package is an optional dependency of `@workos/sync-postgres`: the container
+image ships it, an install with `--omit=optional` does not, and
+`WORKOS_SYNC_OTEL=1` without it fails at startup saying so.
+
 ## Reconciliation schedule
 
 Three cadences, cheapest first:

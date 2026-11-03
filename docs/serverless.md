@@ -54,6 +54,14 @@ time one page takes, and both are visible; start at 50 and raise it until a
 slice fills most of the slot. `WORKOS_SYNC_MAX_EVENTS_PER_TICK` bounds `tick`
 the same way.
 
+## Metrics from a slot
+
+Set `WORKOS_SYNC_OTEL=1` with the `OTEL_*` variables for your collector and
+each invocation exports its metrics before it exits: the CLI starts the
+OpenTelemetry SDK ahead of the engine and flushes it when the command
+returns, which a periodic exporter on its own never gets to do in a slot this
+short. The instruments are listed in [Operations](operations.md#opentelemetry).
+
 ## From the library
 
 The same shape as exported handlers, for a runtime that calls functions on a

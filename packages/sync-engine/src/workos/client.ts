@@ -12,6 +12,7 @@
  */
 import type { Logger } from '../types.js'
 import { VERSION } from '../version.js'
+import { ClientInstruments } from '../otel.js'
 
 export interface ListPage<T = Record<string, unknown>> {
   data: T[]
@@ -60,6 +61,14 @@ export class TokenBucket {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+const secondsSince = (start: number) => (performance.now() - start) / 1000
+
+/** What a failed fetch is called in `error.type`: the socket error's code when there is one, else the error's class. */
+function errorType(err: unknown): string {
+  const cause = (err as { cause?: { code?: unknown } } | null)?.cause
+  if (cause && typeof cause.code === 'string') return cause.code
+  return err instanceof Error ? err.name : 'Error'
+}
 
 /** Which part of the engine a request serves. Sent in the User-Agent; see `WorkOSClient.withPhase`. */
 export type RequestPhase = 'tail' | 'backfill' | 'reconcile' | 'hydrate'
@@ -95,6 +104,8 @@ export class WorkOSClient {
   readonly pageSize: number
   /** Set only by `withPhase`; there is deliberately no option for it. */
   private label: RequestPhase | undefined
+  /** Shared with every `withPhase` view, as the rate buckets are. See otel.ts. */
+  private instruments = new ClientInstruments()
 
   constructor(private opts: WorkOSClientOptions) {
     this.apiUrl = (opts.apiUrl ?? 'https://api.workos.com').replace(/\/$/, '')
@@ -123,6 +134,7 @@ export class WorkOSClient {
     const child = new WorkOSClient(this.opts)
     child.label = phase
     child.buckets = this.buckets
+    child.instruments = this.instruments
     return child
   }
 
@@ -142,8 +154,12 @@ export class WorkOSClient {
   }
 
   async request<T>(path: string, params?: Record<string, string>, rateKey = 'global'): Promise<T> {
+    const tagged = { phase: this.label, rateKey }
     const wait = this.bucketFor(rateKey).take()
-    if (wait > 0) await sleep(wait)
+    if (wait > 0) {
+      this.instruments.throttled(wait / 1000, tagged)
+      await sleep(wait)
+    }
 
     const url = new URL(this.apiUrl + path)
     for (const [k, v] of Object.entries(params ?? {})) {
@@ -155,6 +171,7 @@ export class WorkOSClient {
 
     for (;;) {
       let res: Response
+      const started = performance.now()
       try {
         res = await this.fetchImpl(url.toString(), {
           headers: {
@@ -164,7 +181,9 @@ export class WorkOSClient {
           },
         })
       } catch (err) {
+        this.instruments.request(secondsSince(started), { ...tagged, errorType: errorType(err) })
         if (attempt >= maxRetries) throw err
+        this.instruments.retry({ ...tagged, reason: 'network' })
         const backoff = Math.min(30_000, 2 ** attempt * 250)
         this.opts.logger?.warn('network error, retrying', { path, attempt, backoff })
         await sleep(backoff)
@@ -172,14 +191,22 @@ export class WorkOSClient {
         continue
       }
 
-      if (res.ok) return (await res.json()) as T
+      // The body is part of the request: a page of a hundred events arrives
+      // well after its headers, and the time to read it is time the poll spent.
+      if (res.ok) {
+        const parsed = (await res.json()) as T
+        this.instruments.request(secondsSince(started), { ...tagged, status: res.status })
+        return parsed
+      }
 
       const body = await res.text().catch(() => '')
+      this.instruments.request(secondsSince(started), { ...tagged, status: res.status })
 
       // 429s and 5xx are transient. Honour Retry-After when present; the
       // 429 body on some endpoints is a bare JSON string, not an error object,
       // so never try to parse it for control flow.
       if ((res.status === 429 || res.status >= 500) && attempt < maxRetries) {
+        this.instruments.retry({ ...tagged, reason: res.status === 429 ? 'rate_limited' : 'server_error' })
         const retryAfter = Number(res.headers.get('retry-after'))
         const backoff =
           Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : Math.min(30_000, 2 ** attempt * 500)

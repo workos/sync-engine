@@ -85,6 +85,9 @@ ENV NODE_ENV=production
 # backfill, tick, ...) ignore it and exit long before the check below would
 # run, so the HEALTHCHECK is only meaningful for a long-running `listen`.
 ENV WORKOS_SYNC_HEALTH_PORT=8080
+# The OpenTelemetry SDK is an optional dependency that `pnpm deploy` keeps, so
+# `-e WORKOS_SYNC_OTEL=1` with the usual OTEL_* variables exports metrics from
+# any command, one-shot ones included; see docs/operations.md.
 EXPOSE 8080
 # The check resolves the port the way `listen` does, so `listen --health-port
 # <n>` keeps the container healthy just as `-e WORKOS_SYNC_HEALTH_PORT=<n>`

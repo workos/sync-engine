@@ -36,6 +36,7 @@ import { PostgresDestination } from './destination.js'
 import { buildSchemaSql } from './schema/ddl.js'
 import { fingerprint } from './schema/migrate.js'
 import { healthOptionsFromEnv } from './health.js'
+import { startOtel } from './otel.js'
 import type { SqlClient } from './db/client.js'
 
 interface Args {
@@ -329,6 +330,8 @@ Environment
   WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS
                                /healthz returns 503 once any environment's last successful
                                poll is older than this (default: 60000)
+  WORKOS_SYNC_OTEL             1 starts the OpenTelemetry Node SDK for the command, configured by
+                               the OTEL_* variables, and flushes it on exit (default: off)
   LOG_LEVEL                    debug | info | warn | error | silent
 `
 
@@ -367,6 +370,19 @@ export async function main(argv = process.argv.slice(2), deps: MainDeps = {}): P
     return 0
   }
 
+  // The SDK, when asked for, goes up before the engine is built, so that the
+  // instruments the engine makes at construction are real ones, and comes
+  // down after the command returns, which is what exports a one-shot
+  // command's metrics at all.
+  const otel = await startOtel()
+  try {
+    return await runCommand(command, flags, deps)
+  } finally {
+    await otel?.shutdown()
+  }
+}
+
+async function runCommand(command: string, flags: Record<string, string | boolean>, deps: MainDeps): Promise<number> {
   // With an injected engine there is no destination of ours to read the
   // drift report from, and nothing to build from the environment.
   const destination = deps.engine ? undefined : destinationFromEnv(flags, repairRequested(command, flags), deps.db)

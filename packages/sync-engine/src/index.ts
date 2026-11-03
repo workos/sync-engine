@@ -63,6 +63,8 @@ export { diffStream, freshness } from './sync/reconcile.js'
 export { diffIdsInMemory, encodeKey } from './sync/diff.js'
 
 export { createLogger, silentLogger } from './logger.js'
+export { METER_NAME } from './otel.js'
+export type { TickOutcome, RetryReason } from './otel.js'
 export type { LogLevel } from './logger.js'
 
 export { addStats, emptyStats, DEFAULT_HYDRATE } from './types.js'

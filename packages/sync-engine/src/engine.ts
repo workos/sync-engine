@@ -37,6 +37,7 @@ import { diffable, diffStream, freshness, type DiffResult } from './sync/reconci
 import { createLogger } from './logger.js'
 import { redacting } from './redact.js'
 import { HealthTracker, type EngineHealth } from './health.js'
+import { EngineInstruments, type TickOutcome } from './otel.js'
 import type {
   EnvironmentConfig,
   HydrateMode,
@@ -133,6 +134,8 @@ export class SyncEngine {
   private stopping = false
   /** In-memory bookkeeping behind `health()`; see health.ts. */
   private healthTracker: HealthTracker
+  /** OpenTelemetry instruments; see otel.ts. No-ops until the host installs an SDK. */
+  private instruments: EngineInstruments
   /**
    * The identity leases are held under. Host and pid make it recognisable in
    * logs; the random suffix keeps two engines in one process (or a recycled
@@ -198,6 +201,11 @@ export class SyncEngine {
       seen.add(env.name)
     }
     this.healthTracker = new HealthTracker([...seen])
+    // Made now so that, with an SDK already installed, the observable series
+    // exist before the first poll, as they do on `/metrics`; made again on
+    // first use if the SDK arrives later.
+    this.instruments = new EngineInstruments(() => this.healthTracker.snapshot())
+    this.instruments.register()
     // A zero TTL expires on arrival, so every acquire would succeed and the
     // lease would exclude nobody; NaN fails in SQL on the first poll instead.
     // Both are caught here, before anything runs, rather than at either end.
@@ -438,6 +446,8 @@ export class SyncEngine {
 
     for (const env of this.config.environments) {
       const api = this.clientFor(env)
+      const started = performance.now()
+      let outcome: TickOutcome = 'error'
       const tail = await this.state.getTail(env.name)
       checkCursorAge(tail?.lastEventAt, this.logger)
 
@@ -489,6 +499,7 @@ export class SyncEngine {
               lastEventAt: tail?.lastEventAt ?? null,
             })
           }
+          outcome = saved ? 'empty' : 'refused'
           continue
         }
 
@@ -512,6 +523,7 @@ export class SyncEngine {
           })
         }
         rejected += result.rejected.length
+        this.instruments.rejected(env.name, result.rejected.length)
 
         // Checkpoint only after the writes above are durable. A batch whose
         // checkpoint was refused is not counted: its rows are written, but
@@ -524,7 +536,11 @@ export class SyncEngine {
           rangeStart: tail?.rangeStart ?? null,
           lastPolledAt: polledAt,
         })
-        if (!saved) continue
+        if (!saved) {
+          outcome = 'refused'
+          continue
+        }
+        outcome = 'ok'
         this.healthTracker.polled(env.name, {
           polledAt,
           cursor,
@@ -545,6 +561,7 @@ export class SyncEngine {
       } catch (err) {
         if (err instanceof CursorDirectionError) {
           // Loud and fatal: continuing would rewrite the mirror with history.
+          outcome = 'fatal'
           this.healthTracker.fatalError(err)
           this.logger.error('cursor direction check failed; stopping', { error: String(err) })
           throw err
@@ -552,12 +569,15 @@ export class SyncEngine {
         if (isFatal(err)) {
           // A rejected credential will not fix itself; retrying every poll
           // interval would only hide the problem behind a healthy-looking process.
+          outcome = 'fatal'
           this.healthTracker.fatalError(err)
           this.logger.error('authentication failed; stopping', { env: env.name, error: String(err) })
           throw err
         }
         this.healthTracker.failed(env.name, err)
         this.logger.error('tick failed', { env: env.name, error: String(err) })
+      } finally {
+        this.instruments.tick(env.name, outcome, (performance.now() - started) / 1000)
       }
     }
     this.healthTracker.tickCompleted()

@@ -203,7 +203,8 @@ export interface HealthReport extends EngineHealth {
 
 export const DEFAULT_MAX_POLL_AGE_MS = 60_000
 
-function pollAgeMs(e: EnvironmentHealth, now: number): number | null {
+/** Milliseconds since the last successful poll, or null before the first. */
+export function pollAgeMs(e: EnvironmentHealth, now: number): number | null {
   if (!e.lastPolledAt) return null
   const t = Date.parse(e.lastPolledAt)
   return Number.isFinite(t) ? Math.max(0, now - t) : null
