@@ -67,24 +67,25 @@ different label each; cursors are kept per label, so they never collide.
 The command reads its settings from the environment; where a flag exists for
 the same setting, the flag wins.
 
-| Variable                             | Default                             | What it does                                                                                                                          |
-| ------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                       | required                            | Postgres connection string.                                                                                                           |
-| `WORKOS_API_KEY`                     | required                            | API key for the environment to mirror. One key, one environment, one process; dedicate it to the sync (see Operations).               |
-| `WORKOS_ENVIRONMENT_NAME`            | `production`                        | Label written to `_env` on every row. Must not change once you have data. Run one process per environment to mirror several.          |
-| `WORKOS_API_URL`                     | `https://api.workos.com`            | API base URL.                                                                                                                         |
-| `WORKOS_SYNC_SCHEMA`                 | `workos`                            | Schema the mirror lives in, for DDL and queries alike.                                                                                |
-| `WORKOS_SYNC_ID`                     | `default`                           | Identifier when several syncs share one database. Each keeps its own cursors.                                                         |
-| `WORKOS_SYNC_HYDRATE`                | users and organizations `on_create` | Re-fetch objects when their events arrive: `off`, `on_create`, `always`, or per stream as `users=always,organizations=off`.           |
-| `WORKOS_SYNC_POLL_MS`                | `5000`                              | Idle wait between polls, in ms, when the last poll returned nothing.                                                                  |
-| `WORKOS_SYNC_LAG_MS`                 | `5000`                              | Hold back events younger than this, in ms, before advancing the cursor.                                                               |
-| `WORKOS_SYNC_MAX_EVENTS_PER_TICK`    | one page (100)                      | Events to apply per poll, fetched across as many pages as needed.                                                                     |
-| `WORKOS_SYNC_HEALTH_PORT`            | off (`8080` in the container image) | `listen` only: serve `GET /healthz` and `GET /metrics` on this port, from in-memory state, with no database query.                    |
-| `WORKOS_SYNC_HEALTH_HOST`            | `0.0.0.0`                           | Interface the health server binds.                                                                                                    |
-| `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` | `60000`                             | `/healthz` returns 503 once any environment's last successful poll is older than this.                                                |
-| `WORKOS_SYNC_LEASE_TTL_MS`           | `60000`                             | How long the tail lease outlives a crashed listener, in ms; at least 1. The most lag a crash can add before a replacement takes over. |
-| `WORKOS_SYNC_PG_SSL_CA`              | system trust store                  | CA certificate the database's certificate must chain to, as PEM or base64 of it. TLS is then required and verified against it.        |
-| `LOG_LEVEL`                          | `info`                              | `debug`, `info`, `warn`, `error` or `silent`. Logs are JSON lines on stdout.                                                          |
+| Variable                             | Default                             | What it does                                                                                                                                                  |
+| ------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                       | required                            | Postgres connection string.                                                                                                                                   |
+| `WORKOS_API_KEY`                     | required                            | API key for the environment to mirror. One key, one environment, one process; dedicate it to the sync (see Operations).                                       |
+| `WORKOS_ENVIRONMENT_NAME`            | `production`                        | Label written to `_env` on every row. Must not change once you have data. Run one process per environment to mirror several.                                  |
+| `WORKOS_API_URL`                     | `https://api.workos.com`            | API base URL.                                                                                                                                                 |
+| `WORKOS_SYNC_SCHEMA`                 | `workos`                            | Schema the mirror lives in, for DDL and queries alike.                                                                                                        |
+| `WORKOS_SYNC_ID`                     | `default`                           | Identifier when several syncs share one database. Each keeps its own cursors.                                                                                 |
+| `WORKOS_SYNC_HYDRATE`                | users and organizations `on_create` | Re-fetch objects when their events arrive: `off`, `on_create`, `always`, or per stream as `users=always,organizations=off`.                                   |
+| `WORKOS_SYNC_POLL_MS`                | `5000`                              | Idle wait between polls, in ms, when the last poll returned nothing.                                                                                          |
+| `WORKOS_SYNC_LAG_MS`                 | `5000`                              | Hold back events younger than this, in ms, before advancing the cursor.                                                                                       |
+| `WORKOS_SYNC_MAX_EVENTS_PER_TICK`    | one page (100)                      | Events to apply per poll, fetched across as many pages as needed.                                                                                             |
+| `WORKOS_SYNC_HEALTH_PORT`            | off (`8080` in the container image) | `listen` only: serve `GET /healthz` and `GET /metrics` on this port, from in-memory state, with no database query.                                            |
+| `WORKOS_SYNC_HEALTH_HOST`            | `0.0.0.0`                           | Interface the health server binds.                                                                                                                            |
+| `WORKOS_SYNC_HEALTH_MAX_POLL_AGE_MS` | `60000`                             | `/healthz` returns 503 once any environment's last successful poll is older than this.                                                                        |
+| `WORKOS_SYNC_OTEL`                   | off                                 | `1` starts the OpenTelemetry Node SDK for the command, configured by the standard `OTEL_*` variables, and flushes it on exit. Every command, `tick` included. |
+| `WORKOS_SYNC_LEASE_TTL_MS`           | `60000`                             | How long the tail lease outlives a crashed listener, in ms; at least 1. The most lag a crash can add before a replacement takes over.                         |
+| `WORKOS_SYNC_PG_SSL_CA`              | system trust store                  | CA certificate the database's certificate must chain to, as PEM or base64 of it. TLS is then required and verified against it.                                |
+| `LOG_LEVEL`                          | `info`                              | `debug`, `info`, `warn`, `error` or `silent`. Logs are JSON lines on stdout.                                                                                  |
 
 `listen` with a health port answers `GET /healthz` with `200` while the tail
 is polling (and while it is still starting) and `503` once a poll is overdue
@@ -93,7 +94,11 @@ are served from memory, with no database query, so a probe keeps working when
 the database does not. The container image turns this on and declares a
 `HEALTHCHECK` against it; see
 [Operations](https://github.com/workos/workos-pg-sync/blob/main/docs/operations.md)
-for the metric names and a Kubernetes probe snippet.
+for the metric names and a Kubernetes probe snippet. With
+`WORKOS_SYNC_OTEL=1` the same numbers, plus poll and request latencies, are
+exported as OpenTelemetry metrics; the
+[instruments](https://github.com/workos/workos-pg-sync/blob/main/docs/operations.md#opentelemetry)
+are listed there too.
 
 ## Embed it
 
