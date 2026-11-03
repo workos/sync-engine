@@ -30,7 +30,7 @@ describe('WORKOS_SYNC_HYDRATE', () => {
   })
 
   it('accepts per-stream overrides on top of the default', () => {
-    expect(parseHydrate('users=always')).toEqual({ users: 'always', organizations: 'on_create' })
+    expect(parseHydrate('users=always')).toEqual({ users: 'always' })
     expect(parseHydrate('users=off, organizations=off')).toEqual({ users: 'off', organizations: 'off' })
   })
 

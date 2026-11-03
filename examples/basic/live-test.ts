@@ -91,7 +91,6 @@ async function main() {
         'auth_attempts',
       ],
       lagWindowMs: 0,
-      hydrate: { users: 'on_create' },
       logger: {
         debug: () => {},
         info: (m, f) => {
@@ -296,8 +295,8 @@ async function main() {
 
   const graceRow = (await q(`select last_name, external_id, metadata from workos.users where id=$1`, [grace.id]))[0]
   check(graceRow?.last_name === 'Hopper-Murray', `update applied: last_name = ${graceRow?.last_name}`)
-  // The critical WorkOS-specific behaviour: user.updated events do NOT carry
-  // external_id or metadata. A whole-row replace would null them here.
+  // user.updated carries external_id and metadata, and the merge write keeps
+  // them either way; a whole-row replace of a narrower payload would not.
   check(
     graceRow?.external_id === `ext_grace_${stamp}`,
     `external_id NOT nulled by the update event: ${graceRow?.external_id}`,
@@ -309,7 +308,7 @@ async function main() {
 
   const katRow = (await q(`select email, external_id, metadata from workos.users where id=$1`, [katherine.id]))[0]
   check(!!katRow, 'new user arrived via the event stream')
-  check(katRow?.external_id === `ext_kat_${stamp}`, `hydration filled external_id on create: ${katRow?.external_id}`)
+  check(katRow?.external_id === `ext_kat_${stamp}`, `user.created carried external_id: ${katRow?.external_id}`)
 
   const alanRow = (await q(`select email, "_deleted_at" from workos.users where id=$1`, [alan.id]))[0]
   check(!!alanRow?._deleted_at, 'deleted user is tombstoned, not dropped')

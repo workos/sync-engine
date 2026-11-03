@@ -97,7 +97,6 @@ async function main() {
       ],
       // Hold nothing back: the fake's clock is deterministic.
       lagWindowMs: 0,
-      hydrate: { users: 'on_create' },
       logger: { debug: () => {}, info: () => {}, warn: () => {}, error: (m, f) => console.error(m, f) },
     },
     {

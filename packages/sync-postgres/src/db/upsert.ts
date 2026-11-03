@@ -14,11 +14,12 @@
  *    top-level streams, `backfill` for those listed per parent — because
  *    `reconcile` compares ids only and cannot see a wrong payload.
  *
- * 2. **Merge, don't replace, when writing from an event.** WorkOS event
- *    payloads are subsets of the REST objects, so a whole-row replace would
- *    null out `external_id`, `metadata`, `last_sign_in_at` and friends —
- *    precisely the columns people join on. Event writes shallow-merge into
- *    `_raw`; REST-sourced writes (backfill, reconcile, hydrate) replace it.
+ * 2. **Merge, don't replace, when writing from an event.** Most WorkOS event
+ *    payloads are the full REST object, but deprecated fields are left out
+ *    of them, and any stream whose events are narrower than its REST object
+ *    would have those columns nulled by a whole-row replace. Event writes
+ *    shallow-merge into `_raw`; REST-sourced writes (backfill, reconcile,
+ *    hydrate) replace it.
  *
  * 3. **Deletion is terminal.** Tombstones are not staleness-gated, and
  *    `_deleted_at` is never cleared. A late `updated` event arriving after a
@@ -87,7 +88,7 @@ export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropp
  *
  * Keeping the newest row, as `dedupeByKey` does, is wrong for a merge write:
  * a hydrated create (the whole REST object) followed in the same poll by an
- * update event (the documented subset) would lose every field the subset
+ * update event whose payload is narrower would lose every field the event
  * omits until the next refresh, which is what hydration exists to prevent.
  * Folding the payloads here instead would be wrong the other way: a row
  * older than the stored one is refused on its own, but folded under a newer

@@ -349,12 +349,12 @@ misleading zero:
 
 ## Refreshing partial fields
 
-Event payloads are subsets of the REST objects, so a row that has only ever
-been touched by events is missing `external_id`, `metadata`, `last_sign_in_at`
-and `locale`. Three things prevent or repair that:
+Most event payloads are the full REST object, so a row written from events is
+as complete as one written from the REST API. Deprecated fields are the
+exception: they are left out of event payloads, so on a row only events have
+touched they are `null`. Two commands re-list from the REST API and replace
+each row, which also repairs anything a future event payload leaves out:
 
-- **Hydration**, on by default for users and organizations, re-fetches the
-  object when its create event arrives. New rows are complete from the start.
 - **`refresh`** re-lists every top-level stream from the REST API and replaces
   each row. It skips streams that are listed per parent (memberships,
   sessions, directory users and groups, groups, organization roles). It takes
@@ -368,13 +368,15 @@ npx workos-sync-postgres refresh     # top-level streams
 npx workos-sync-postgres backfill    # everything
 ```
 
-Hydration is configurable per stream:
+Hydration re-fetches an object by id when its event arrives and writes the
+REST object instead of the payload. It is off by default, since it costs a
+request per event and rarely changes anything. Turn it on per stream:
 
 ```ts
-hydrate: { users: 'on_create', organizations: 'off' }
+hydrate: { organizations: 'on_create' }, // or 'always' to re-fetch on every event
 ```
 
-or `WORKOS_SYNC_HYDRATE=off` to disable it everywhere.
+or `WORKOS_SYNC_HYDRATE=organizations=on_create` from the CLI.
 
 ## Rate limits
 

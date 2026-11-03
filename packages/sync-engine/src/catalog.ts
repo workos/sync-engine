@@ -4,12 +4,12 @@
  *
  * Two facts from the WorkOS API shape the definitions here:
  *
- * 1. Event payloads are documented *subsets* of the REST objects. `user.*`
- *    events omit `external_id`, `metadata`, `last_sign_in_at` and `locale`;
- *    `organization.*` events omit `metadata` and `stripe_customer_id`. Columns
- *    for those fields still exist — they are populated by backfill, reconcile
- *    and hydration, and event writes merge into the row rather than replacing
- *    it so they are never nulled out. See `db/upsert.ts`.
+ * 1. Most event payloads are the full REST object, but not every one is:
+ *    deprecated fields are left out of event payloads, and `role.*` events
+ *    have no `id` at all. A whole-row replace would null every column an
+ *    event leaves out, so event writes merge into the row, and backfill,
+ *    reconcile and hydration, which write the REST object, replace it. See
+ *    `db/upsert.ts`.
  *
  * 2. Several objects have events but no usable list endpoint, and several have
  *    list endpoints but no events. Both are represented honestly: a stream with
@@ -58,7 +58,6 @@ export const STREAMS: StreamDef[] = [
       { name: 'first_name', type: 'text', path: 'first_name' },
       { name: 'last_name', type: 'text', path: 'last_name' },
       { name: 'profile_picture_url', type: 'text', path: 'profile_picture_url' },
-      // Not present on user.* events — backfill/hydrate/reconcile populate it.
       { name: 'external_id', type: 'text', path: 'external_id', index: true },
       { name: 'metadata', type: 'jsonb', path: 'metadata' },
       { name: 'last_sign_in_at', type: 'timestamptz', path: 'last_sign_in_at' },
@@ -83,6 +82,8 @@ export const STREAMS: StreamDef[] = [
       { name: 'metadata', type: 'jsonb', path: 'metadata' },
       // Billing customer id: the join key to a billing mirror, if you run one.
       { name: 'stripe_customer_id', type: 'text', path: 'stripe_customer_id' },
+      // Deprecated upstream and, like every deprecated field, left out of
+      // events; backfill, refresh and hydration populate it from the REST object.
       {
         name: 'allow_profiles_outside_organization',
         type: 'boolean',

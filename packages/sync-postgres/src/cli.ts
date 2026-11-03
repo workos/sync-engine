@@ -86,7 +86,7 @@ const HYDRATE_MODES: HydrateMode[] = ['off', 'on_create', 'always']
 /**
  * `WORKOS_SYNC_HYDRATE` is either one mode for every stream (`off`,
  * `on_create`, `always`) or a per-stream list (`users=always,organizations=off`).
- * Unset means the engine default: users and organizations on create.
+ * Unset means the engine default: off.
  */
 export function parseHydrate(value: string | undefined): SyncEngineConfig['hydrate'] {
   if (!value || !value.trim()) return undefined
@@ -295,7 +295,7 @@ Commands
                        a diff needs the whole listing); run again with --resume
                        until every stream reports complete
   refresh [--resume] [--max-pages <n>]
-                       Re-list top-level streams (refreshes fields events omit);
+                       Re-list top-level streams, replacing each row;
                        --max-pages and --resume slice it like backfill, with
                        which it shares checkpoints
   status               Cursor position, poll age, and per-stream freshness
@@ -320,7 +320,7 @@ Environment
   WORKOS_SYNC_SCHEMA           Target schema (default: workos)
   WORKOS_SYNC_ID               Sync identifier when several syncs share a database (default: default)
   WORKOS_SYNC_HYDRATE          off | on_create | always, or users=always,organizations=off
-                               (default: users and organizations on_create)
+                               (default: off)
   WORKOS_SYNC_POLL_MS          Idle wait between polls (default: 5000)
   WORKOS_SYNC_LAG_MS           Hold back events younger than this (default: 5000)
   WORKOS_SYNC_MAX_EVENTS_PER_TICK  Events to apply per poll (default: one page)

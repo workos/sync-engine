@@ -59,20 +59,20 @@ The lifecycle is deliberately overlapping: the cursor is captured _before_
 backfill starts, so anything that changes mid-backfill is replayed afterwards
 and the staleness gate decides which version wins.
 
-| Option             | Default                             |                                                                                                                                                         |
-| ------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `destination`      | —                                   | A `Destination` implementation. Required.                                                                                                               |
-| `environments`     | —                                   | `{ name, apiKey, apiUrl? }[]`. `name` is written to every row and must never change.                                                                    |
-| `streams`          | `defaultStreams()`                  | Stream names to sync: every stream with events. Poll-only streams are opt-in. `events` is always included.                                              |
-| `extraColumns`     | —                                   | Extra typed columns to project out of `_raw`, keyed by stream. Add-only.                                                                                |
-| `eventTypes`       | derived from `streams`              | The `GET /events` filter. Widen it to archive event families with no mirror table.                                                                      |
-| `hydrate`          | users and organizations `on_create` | Re-fetch objects on event receipt: `off`, `on_create`, `always`, or a per-stream map. Only streams with a get-by-id endpoint can be hydrated.           |
-| `pollIntervalMs`   | `5000`                              | Idle wait between polls.                                                                                                                                |
-| `lagWindowMs`      | `5000`                              | Never advance the cursor past events younger than this.                                                                                                 |
-| `pageSize`         | `100`                               | Page size for list and event calls.                                                                                                                     |
-| `maxEventsPerTick` | one page                            | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive.                                 |
-| `leaseTtlMs`       | `60000`                             | How long the events-tail lease outlives a crashed process; at least 1. Renewed every third of this while polling; a clean stop releases it immediately. |
-| `logger`           | JSON to stdout                      | `{ debug, info, warn, error }`.                                                                                                                         |
+| Option             | Default                |                                                                                                                                                         |
+| ------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `destination`      | —                      | A `Destination` implementation. Required.                                                                                                               |
+| `environments`     | —                      | `{ name, apiKey, apiUrl? }[]`. `name` is written to every row and must never change.                                                                    |
+| `streams`          | `defaultStreams()`     | Stream names to sync: every stream with events. Poll-only streams are opt-in. `events` is always included.                                              |
+| `extraColumns`     | —                      | Extra typed columns to project out of `_raw`, keyed by stream. Add-only.                                                                                |
+| `eventTypes`       | derived from `streams` | The `GET /events` filter. Widen it to archive event families with no mirror table.                                                                      |
+| `hydrate`          | off                    | Re-fetch objects on event receipt: `off`, `on_create`, `always`, or a per-stream map. Only streams with a get-by-id endpoint can be hydrated.           |
+| `pollIntervalMs`   | `5000`                 | Idle wait between polls.                                                                                                                                |
+| `lagWindowMs`      | `5000`                 | Never advance the cursor past events younger than this.                                                                                                 |
+| `pageSize`         | `100`                  | Page size for list and event calls.                                                                                                                     |
+| `maxEventsPerTick` | one page               | Events to apply per tick, across as many pages as needed. Raise it for destinations where every statement is expensive.                                 |
+| `leaseTtlMs`       | `60000`                | How long the events-tail lease outlives a crashed process; at least 1. Renewed every third of this while polling; a clean stop releases it immediately. |
+| `logger`           | JSON to stdout         | `{ debug, info, warn, error }`.                                                                                                                         |
 
 Methods: `init()`, `backfill({ resume, maxPages })`, `tick()`, `listen()`,
 `stop()`, `reconcile({ repair, streams, resume, maxPages })`,
@@ -270,9 +270,9 @@ The engine relies on seven properties of your implementation.
    is older than the stored one and accepts an equal one. With a strict `<`,
    two events sharing a timestamp drop the second forever.
 2. **Merge vs replace.** `mode: 'merge'` shallow-merges the payload into the
-   stored one; `'replace'` overwrites it. Event payloads are subsets of the
-   REST objects, so event writes merge and a whole-row replace would null out
-   exactly the columns people join on.
+   stored one; `'replace'` overwrites it. Not every event payload is the full
+   REST object (deprecated fields are left out), so event writes merge: a
+   whole-row replace would null out whatever an event leaves out.
 3. **Deletion is terminal.** `delete` tombstones without a staleness check and
    never clears the tombstone. Memberships are the exception, in both
    directions and only when the write is at least as new as the row: `relink`

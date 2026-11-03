@@ -81,7 +81,7 @@ describe('sync engine', () => {
     return Number(r.rows[0]!.n)
   }
 
-  it('backfills existing state, including fields events never carry', async () => {
+  it('backfills existing state, including the field events omit', async () => {
     const org = fake.createOrganization({ name: 'Acme' })
     const user = fake.createUser({ email: 'ada@acme.com' })
     fake.createMembership(user['id'] as string, org['id'] as string, 'admin')
@@ -103,10 +103,15 @@ describe('sync engine', () => {
     const u = await db.query<{ email: string; external_id: string; metadata: unknown }>(
       `select email, external_id, metadata from workos.users`,
     )
-    // external_id and metadata only exist on the REST object, never on events.
     expect(u.rows[0]!.email).toBe('ada@acme.com')
     expect(u.rows[0]!.external_id).toMatch(/^ext_/)
     expect(u.rows[0]!.metadata).toEqual({ plan: 'pro' })
+
+    const o = await db.query<{ allow_profiles_outside_organization: boolean | null }>(
+      `select allow_profiles_outside_organization from workos.organizations`,
+    )
+    // Deprecated fields are left out of events; only the REST object carries it.
+    expect(o.rows[0]!.allow_profiles_outside_organization).toBe(false)
 
     const m = await db.query<{ role_slug: string }>(`select role_slug from workos.organization_memberships`)
     expect(m.rows[0]!.role_slug).toBe('admin')
@@ -334,23 +339,21 @@ describe('sync engine', () => {
   })
 
   it('does not null out backfilled fields when an event arrives', async () => {
-    // The single most consequential WorkOS-specific behaviour: user.* event
-    // payloads omit external_id, metadata, last_sign_in_at and locale.
-    const user = fake.createUser({ email: 'ada@example.com' })
+    // Events leave out deprecated fields, allow_profiles_outside_organization
+    // here. The event write has to merge into the backfilled row, not replace it.
+    const org = fake.createOrganization({ name: 'Acme' })
     const engine = makeEngine(db, fake)
     await engine.backfill()
     await engine.tick()
 
-    fake.updateUser(user['id'] as string, { first_name: 'Grace' })
+    fake.updateOrganization(org['id'] as string, { name: 'Acme Corp' })
     await engine.tick()
 
-    const row = await db.query<{ first_name: string; external_id: string; metadata: unknown; locale: string }>(
-      `select first_name, external_id, metadata, locale from workos.users`,
+    const row = await db.query<{ name: string; allow_profiles_outside_organization: boolean | null }>(
+      `select name, allow_profiles_outside_organization from workos.organizations`,
     )
-    expect(row.rows[0]!.first_name).toBe('Grace')
-    expect(row.rows[0]!.external_id).toMatch(/^ext_/)
-    expect(row.rows[0]!.metadata).toEqual({ plan: 'pro' })
-    expect(row.rows[0]!.locale).toBe('en')
+    expect(row.rows[0]!.name).toBe('Acme Corp')
+    expect(row.rows[0]!.allow_profiles_outside_organization).toBe(false)
   })
 
   it('is idempotent when the same events are delivered twice', async () => {
@@ -627,7 +630,8 @@ describe('sync engine', () => {
     }
 
     // Backfill writes the REST organization, domains inline, then explodes them.
-    const engine = makeEngine(db, fake)
+    // Hydration is on so the hydrated path is covered below as well.
+    const engine = makeEngine(db, fake, TIER1, { hydrate: { organizations: 'on_create' } })
     await engine.backfill()
     expect((await stored()).state).toBe('pending')
     expect((await stored()).raw['domain']).toBe('acme.com')
@@ -685,8 +689,10 @@ describe('sync engine', () => {
       `select "_raw" as raw from workos.organizations where id = $1`,
       [otherId],
     )
-    // Only the REST object carries stripe_customer_id, so its presence proves the hydration ran.
-    expect(hydrated.rows[0]!.raw['stripe_customer_id']).toBe(other['stripe_customer_id'])
+    // Only the REST object carries allow_profiles_outside_organization, so its presence proves the hydration ran.
+    expect(hydrated.rows[0]!.raw['allow_profiles_outside_organization']).toBe(
+      other['allow_profiles_outside_organization'],
+    )
     expect(await copies('vt_initech_challenge')).toBe(0)
     expect(await copies('superapp-domain-verification-initech')).toBe(0)
 
@@ -836,67 +842,72 @@ describe('sync engine', () => {
     expect(r.rows[0]!.is_generated).toBe('ALWAYS')
   })
 
-  it('hydrates users and organizations on create by default', async () => {
+  it('does not hydrate by default', async () => {
     const engine = makeEngine(db, fake)
-    expect(engine.hydrate).toEqual({ users: 'on_create', organizations: 'on_create' })
+    expect(engine.hydrate).toEqual({})
     await engine.backfill()
 
     fake.createUser({ email: 'default@example.com' })
     await engine.tick()
-    const r = await db.query<{ external_id: string }>(
-      `select external_id from workos.users where email = 'default@example.com'`,
+    const r = await db.query<{ external_id: string; metadata: unknown; locale: string }>(
+      `select external_id, metadata, locale from workos.users where email = 'default@example.com'`,
     )
+    // user.created carries the full object, so the row is complete without a re-fetch.
     expect(r.rows[0]!.external_id).toMatch(/^ext_/)
-    // The re-fetch is the last request of the tick, and says it is one.
-    expect(fake.userAgents.at(-1)).toMatch(/\(phase=hydrate\)$/)
+    expect(r.rows[0]!.metadata).toEqual({ plan: 'pro' })
+    expect(r.rows[0]!.locale).toBe('en')
+    // The events page was the last request of the tick: nothing was re-fetched.
+    expect(fake.userAgents.at(-1)).toMatch(/\(phase=tail\)$/)
   })
 
   it('keeps the hydrated fields when the create and a later update share a tick', async () => {
-    const engine = makeEngine(db, fake)
+    const engine = makeEngine(db, fake, TIER1, { hydrate: { organizations: 'on_create' } })
     await engine.backfill()
 
     // Both events land in one poll. The create is hydrated from the REST
-    // object, which alone carries external_id and metadata; the update's
-    // payload is the documented subset. They become one write, and neither
-    // may lose to the other.
-    const user = fake.createUser({ email: 'both@example.com' })
-    fake.updateUser(user['id'] as string, { first_name: 'Grace' })
+    // object, which alone carries allow_profiles_outside_organization; the
+    // update's payload omits it. They become one write, and neither may lose
+    // to the other.
+    const org = fake.createOrganization({ name: 'Both' })
+    fake.updateOrganization(org['id'] as string, { name: 'Both Corp' })
     expect((await engine.tick()).processed).toBe(2)
 
-    const r = await db.query<{ first_name: string; external_id: string | null; metadata: unknown }>(
-      `select first_name, external_id, metadata from workos.users where email = 'both@example.com'`,
+    const r = await db.query<{ name: string; allow_profiles_outside_organization: boolean | null }>(
+      `select name, allow_profiles_outside_organization from workos.organizations where id = $1`,
+      [org['id']],
     )
-    expect(r.rows[0]).toEqual({ first_name: 'Grace', external_id: user['external_id'], metadata: { plan: 'pro' } })
+    expect(r.rows[0]).toEqual({ name: 'Both Corp', allow_profiles_outside_organization: false })
   })
 
-  it('leaves event-only fields empty when hydration is off', async () => {
-    const engine = makeEngine(db, fake, TIER1, { hydrate: 'off' })
+  it('leaves the field the event omits empty when hydration is off', async () => {
+    const engine = makeEngine(db, fake)
     await engine.backfill()
 
-    fake.createUser({ email: 'raw@example.com' })
+    fake.createOrganization({ name: 'Raw' })
     await engine.tick()
-    const r = await db.query<{ external_id: string | null }>(
-      `select external_id from workos.users where email = 'raw@example.com'`,
+    const r = await db.query<{ allow_profiles_outside_organization: boolean | null }>(
+      `select allow_profiles_outside_organization from workos.organizations where name = 'Raw'`,
     )
-    // user.created does not carry external_id; without hydration it stays
+    // organization.created does not carry it; without hydration it stays
     // null until backfill or refresh.
-    expect(r.rows[0]!.external_id).toBeNull()
+    expect(r.rows[0]!.allow_profiles_outside_organization).toBeNull()
   })
 
-  it('hydrates on create so a new user has its full payload immediately', async () => {
-    const engine = makeEngine(db, fake, TIER1, { hydrate: { users: 'on_create' } })
+  it('hydrates on create so a new organization has its full payload immediately', async () => {
+    const engine = makeEngine(db, fake, TIER1, { hydrate: { organizations: 'on_create' } })
     await engine.backfill()
 
-    fake.createUser({ email: 'fresh@example.com' })
+    fake.createOrganization({ name: 'Fresh' })
     await engine.tick()
 
-    const r = await db.query<{ external_id: string; metadata: unknown }>(
-      `select external_id, metadata from workos.users where email = 'fresh@example.com'`,
+    const r = await db.query<{ allow_profiles_outside_organization: boolean | null }>(
+      `select allow_profiles_outside_organization from workos.organizations where name = 'Fresh'`,
     )
-    // Without hydration these would be null until the next reconcile, because
-    // user.created does not carry them.
-    expect(r.rows[0]!.external_id).toMatch(/^ext_/)
-    expect(r.rows[0]!.metadata).toEqual({ plan: 'pro' })
+    // Without hydration this would be null until the next refresh, because
+    // organization.created does not carry it.
+    expect(r.rows[0]!.allow_profiles_outside_organization).toBe(false)
+    // The re-fetch is the last request of the tick, and says it is one.
+    expect(fake.userAgents.at(-1)).toMatch(/\(phase=hydrate\)$/)
   })
 
   it('joins mirrored identity data with application tables', async () => {
@@ -1043,18 +1054,22 @@ describe('reconciliation', () => {
   })
 
   it('refreshes fields that event payloads omit', async () => {
-    const user = fake.createUser()
-    const engine = makeEngine(db, fake, TIER1, { hydrate: 'off' })
+    const org = fake.createOrganization()
+    const engine = makeEngine(db, fake)
     await engine.tick()
 
-    // Event-only: the row exists but the omitted columns are empty.
-    let row = await db.query<{ external_id: string | null }>(`select external_id from workos.users`)
-    expect(row.rows[0]!.external_id).toBeNull()
+    // Event-only: the row exists but the omitted column is empty.
+    let row = await db.query<{ allow_profiles_outside_organization: boolean | null }>(
+      `select allow_profiles_outside_organization from workos.organizations`,
+    )
+    expect(row.rows[0]!.allow_profiles_outside_organization).toBeNull()
 
     await engine.refresh()
-    row = await db.query<{ external_id: string | null }>(`select external_id from workos.users`)
-    expect(row.rows[0]!.external_id).toMatch(/^ext_/)
-    expect(user['id']).toBeTruthy()
+    row = await db.query<{ allow_profiles_outside_organization: boolean | null }>(
+      `select allow_profiles_outside_organization from workos.organizations`,
+    )
+    expect(row.rows[0]!.allow_profiles_outside_organization).toBe(false)
+    expect(org['id']).toBeTruthy()
   })
 })
 
@@ -1523,34 +1538,34 @@ describe('poison events', () => {
     expect(await emails()).toEqual(['bad@example.com', 'good@example.com'])
   })
 
-  it('replays a quarantined create after a later update, restoring the fields only hydration carries', async () => {
-    const user = fake.createUser({ email: 'late@example.com' })
+  it('replays a quarantined create after a later update, restoring the field only hydration carries', async () => {
+    const org = fake.createOrganization({ name: 'Late' })
     const { engine, destination } = makeFaulty({ hydrate: 'on_create' })
-    destination.poison = user['id'] as string
+    destination.poison = org['id'] as string
     await engine.tick()
     await engine.tick()
     expect((await engine.status())['prod']!.rejected).toBe(1)
 
     // The cause is gone, and the object moves on before anyone replays: the
-    // update creates the row from the event payload alone, which carries
-    // neither external_id nor metadata.
+    // update creates the row from the event payload alone, which omits
+    // allow_profiles_outside_organization.
     destination.poison = null
-    fake.updateUser(user['id'] as string, { first_name: 'Late' })
+    fake.updateOrganization(org['id'] as string, { name: 'Late Inc' })
     await engine.tick()
-    const before = await db.query<{ external_id: string | null; metadata: unknown }>(
-      `select external_id, metadata from workos.users where id = $1`,
-      [user['id']],
+    const before = await db.query<{ allow_profiles_outside_organization: boolean | null }>(
+      `select allow_profiles_outside_organization from workos.organizations where id = $1`,
+      [org['id']],
     )
-    expect(before.rows[0]).toEqual({ external_id: null, metadata: null })
+    expect(before.rows[0]).toEqual({ allow_profiles_outside_organization: null })
 
     // The replayed create hydrates, and the snapshot it writes must win over
     // the row the update made, or clearing the rejection would be a lie.
     expect(await engine.replayRejected()).toEqual({ replayed: 1, stillRejected: [] })
-    const after = await db.query<{ first_name: string; external_id: string | null; metadata: unknown }>(
-      `select first_name, external_id, metadata from workos.users where id = $1`,
-      [user['id']],
+    const after = await db.query<{ name: string; allow_profiles_outside_organization: boolean | null }>(
+      `select name, allow_profiles_outside_organization from workos.organizations where id = $1`,
+      [org['id']],
     )
-    expect(after.rows[0]).toEqual({ first_name: 'Late', external_id: user['external_id'], metadata: { plan: 'pro' } })
+    expect(after.rows[0]).toEqual({ name: 'Late Inc', allow_profiles_outside_organization: false })
   })
 
   it('never quarantines on an error the destination classifies as transient', async () => {

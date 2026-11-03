@@ -135,17 +135,14 @@ export interface EnvironmentConfig {
 export type HydrateMode = 'off' | 'on_create' | 'always'
 
 /**
- * Default hydration: re-fetch users and organizations when their create event
- * arrives. These are the only streams with a get-by-id endpoint, creates are
- * low-volume, and `user.created` / `organization.created` omit the fields
- * people join on (`external_id`, `metadata`), so the row would otherwise be
- * incomplete until the next backfill or refresh. Pass `hydrate: 'off'` to
- * disable.
+ * Default hydration: none. Event payloads carry the full REST object apart
+ * from deprecated fields, so a re-fetch on create would cost a request per
+ * create and change next to nothing. Hydration stays available for a fresh
+ * snapshot after a replay, or for a stream whose events turn out narrower
+ * than its REST object: `hydrate: { organizations: 'on_create' }`, or
+ * `'always'`. Only users and organizations have a get-by-id endpoint.
  */
-export const DEFAULT_HYDRATE: Readonly<Record<string, HydrateMode>> = Object.freeze({
-  users: 'on_create',
-  organizations: 'on_create',
-})
+export const DEFAULT_HYDRATE: Readonly<Record<string, HydrateMode>> = Object.freeze({})
 
 export interface SyncEngineConfig {
   /** Where the mirror is written, e.g. `new PostgresDestination(...)` from `@workos/sync-postgres`. */
@@ -177,8 +174,9 @@ export interface SyncEngineConfig {
   eventTypes?: string[]
   /**
    * Re-fetch objects from the API on event receipt, globally or per stream.
-   * Defaults to `DEFAULT_HYDRATE` (users and organizations on create). Only
-   * streams with a get-by-id endpoint can be hydrated; others ignore it.
+   * Off by default (`DEFAULT_HYDRATE` is empty): event payloads already carry
+   * the full object apart from deprecated fields. Only streams with a
+   * get-by-id endpoint can be hydrated; others ignore it.
    */
   hydrate?: HydrateMode | Record<string, HydrateMode>
   /** Poll interval for the events tail, in ms. */
