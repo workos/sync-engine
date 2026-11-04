@@ -1,14 +1,13 @@
 name: Release Please
 
-# Parked: not ready to publish. Before restoring the `push` trigger, the
-# repo needs to be public (npm generates no provenance for internal repos),
-# both packages need trusted publishers on npmjs.com pointing at
-# release.yml, and PUBLIC_SOCKET_FIREWALL_TOKEN needs to reach this repo.
-#
-#   push:
-#     branches:
-#       - main
+# Both packages have npm trusted publishers that name THIS file, not
+# release.yml: when a publish runs inside a workflow_call, npm validates the
+# calling workflow's filename. Provenance is attached automatically once the
+# repo is public; nothing here changes for that.
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 # id-token: write and packages: write are not used by this workflow directly,
@@ -37,10 +36,24 @@ jobs:
       sync-postgres--release_created: ${{ steps.release.outputs['packages/sync-postgres--release_created'] }}
       sync-postgres--tag_name: ${{ steps.release.outputs['packages/sync-postgres--tag_name'] }}
     steps:
+      # Release PRs and tags come from the SDK Automation Bot, as in workos-node.
+      # Events raised with GITHUB_TOKEN start no workflow runs, so a release PR
+      # opened with it would never get the checks main requires; the bot's PRs
+      # get them like any other. SDK_BOT_APP_ID is an org variable and
+      # SDK_BOT_PRIVATE_KEY an org secret, both already visible to this repo.
+      - name: Generate token
+        id: generate-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.SDK_BOT_APP_ID }}
+          private-key: ${{ secrets.SDK_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.generate-token.outputs.token }}
 
   publish-sync-engine:
     needs: release-please

@@ -119,9 +119,12 @@ jobs:
       #   uses: workos/setup-socket-firewall/teardown@ca93dd8aa351f54f4729fe3377a9be23c631c25d
 
       # `pnpm pack` rewrites `workspace:*` to the dependency's version in this
-      # checkout, which a plain `npm publish` of the directory would not, and
-      # `npm publish` of the tarball handles trusted publishing (OIDC
-      # provenance).
+      # checkout, which a plain `npm publish` of the directory would not.
+      # `npm publish` of the tarball authenticates with the job's OIDC token
+      # (trusted publishing) and attaches provenance on its own once the repo
+      # is public. No `--provenance` flag: npm refuses it on an internal or
+      # private repo. A direct workflow_dispatch of this file needs its own
+      # trusted-publisher entry on npmjs.com naming release.yml.
       - name: Publish
         env:
           DIR: ${{ steps.pkg.outputs.dir }}
@@ -135,7 +138,7 @@ jobs:
           fi
           TARBALL="$(pnpm --filter "./$DIR" pack --json --pack-destination "$RUNNER_TEMP" \
             | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).filename")"
-          npm publish "$TARBALL" --tag "$NPM_TAG" --access public --provenance
+          npm publish "$TARBALL" --tag "$NPM_TAG" --access public
 
   # A multi-arch image for each destination package, after its npm package is
   # out so the two never sit at different versions. The image name is the npm
