@@ -379,6 +379,9 @@ export async function deleteRows(
       // re-added and removed again must carry the last removal, because that
       // is what `relinkRows` compares a re-add against. `_updated_at` stays,
       // so the version is a tie and the tombstone, inserted later, wins it.
+      // "Later" is certain: the batch holds the stream's write lock from its
+      // read to its write, so no other writer's row — a refresh re-listing
+      // the same snapshot, say — can land between the two and take the tie.
       return {
         key: row.key,
         raw: merge(stored.raw, row.data),
