@@ -1,0 +1,55 @@
+{
+  "name": "@workos/sync-mongodb",
+  "version": "0.0.0",
+  "description": "Mirror your WorkOS data into MongoDB. Backfill, tail the Events API, and reconcile drift.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/workos/sync-engine.git",
+    "directory": "packages/sync-mongodb"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "workos-sync-mongodb": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@workos/sync-engine": "workspace:*",
+    "mongodb": "^6.17.0"
+  },
+  "optionalDependencies": {
+    "@opentelemetry/sdk-node": "^0.300.0"
+  },
+  "devDependencies": {
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/sdk-metrics": "^3.0.0",
+    "@types/node": "^26.6.5",
+    "mongodb-memory-server": "^10.1.4",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "config": {
+    "mongodbMemoryServer": {
+      "version": "8.0.4"
+    }
+  }
+}

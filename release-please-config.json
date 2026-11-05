@@ -15,6 +15,10 @@
     "packages/sync-postgres": {
       "release-type": "node",
       "component": "sync-postgres"
+    },
+    "packages/sync-mongodb": {
+      "release-type": "node",
+      "component": "sync-mongodb"
     }
   }
 }

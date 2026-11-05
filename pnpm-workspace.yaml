@@ -5,5 +5,9 @@ allowBuilds:
   esbuild: true
   # Pulled in by @opentelemetry/sdk-node; its postinstall only prints a notice.
   protobufjs: false
+  # Its postinstall downloads a mongod binary. Skipped here so that `pnpm
+  # install` (and the Docker build) stays network-light; the test helper
+  # downloads it on first use instead.
+  mongodb-memory-server: false
 minimumReleaseAgeExclude:
   - '@workos/openapi-spec@0.143.0'
