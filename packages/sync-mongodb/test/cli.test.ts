@@ -392,14 +392,16 @@ describe('commands', () => {
           diffs: Record<string, { stream: string; pages: number; complete: boolean; localOnly: string[] }[]>
         }
       ).diffs['prod']!
-    // A slice that stops short is the outcome asked for, not an error, but drift is.
-    expect(await main(['reconcile', '--max-pages', '2'], { engine })).toBe(2)
+    // The diff is checked before the exit code, so a failure shows the whole result.
+    const code = await main(['reconcile', '--max-pages', '2'], { engine })
     expect(diffs().find((d) => d.stream === 'users')).toMatchObject({
       pages: 3,
       complete: true,
       localOnly: [gone['id']],
     })
     expect(diffs().find((d) => d.stream === 'invitations')).toMatchObject({ pages: 0, complete: false })
+    // A slice that stops short is the outcome asked for, not an error, but drift is.
+    expect(code).toBe(2)
 
     expect(await main(['reconcile', '--repair'], { engine })).toBe(0)
     expect(await main(['reconcile'], { engine })).toBe(0)
