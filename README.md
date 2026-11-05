@@ -26,6 +26,19 @@ SELECT o.name AS organization, u.email, m.role_slug
 The `_live` views are generated next to the tables and hide deleted rows; the
 base tables keep them as tombstones for when you want to ask who left.
 
+## Destinations
+
+One engine, one package per database. Each ships a CLI with the same
+commands and a container image under the same name:
+
+| Destination | Package                                           | Mirror                                                                 |
+| ----------- | ------------------------------------------------- | ---------------------------------------------------------------------- |
+| Postgres    | [`@workos/sync-postgres`](packages/sync-postgres) | A `workos` schema of tables with generated columns and `_live` views   |
+| MySQL       | [`@workos/sync-mysql`](packages/sync-mysql)       | A `workos` database of tables with generated columns and `_live` views |
+
+The rest of this page shows Postgres; every command and option below has a
+MySQL counterpart, and each package's README is the reference for it.
+
 ## Try it in 30 seconds
 
 No credentials, no Docker, no network. Runs the whole lifecycle against a
