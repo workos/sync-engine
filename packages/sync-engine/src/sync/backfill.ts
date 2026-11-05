@@ -137,7 +137,16 @@ export async function backfillStream(
     }
   }
 
-  const doneParents = new Set(prior?.doneParents ?? [])
+  // Parents already fully listed: one watermark in id order, plus whatever an
+  // older release recorded parent by parent, each carried until the
+  // watermark passes it. See `BackfillState.doneThrough`.
+  let doneThrough = prior?.doneThrough ?? null
+  const recorded = new Set(prior?.doneParents ?? [])
+  const parentDone = (pid: string) => (doneThrough !== null && pid <= doneThrough) || recorded.has(pid)
+  const parentProgress = (): Pick<BackfillState, 'doneThrough' | 'doneParents'> => {
+    const carried = [...recorded].filter((pid) => doneThrough === null || pid > doneThrough)
+    return carried.length > 0 ? { doneThrough, doneParents: carried } : { doneThrough }
+  }
 
   const write = async (rows: Record<string, unknown>[]) => {
     // REST is the authoritative full object, so it replaces `_raw` rather than
@@ -182,13 +191,15 @@ export async function backfillStream(
 
   if (stream.list.parent) {
     const parentDef = streamByName(stream.list.parent.stream)
-    const parents = parentDef ? await destination.liveIds(parentDef, opts.env) : []
+    // Sorted here, not by the destination: the watermark compares ids the
+    // way this sort orders them, and a database collation need not.
+    const parents = (parentDef ? await destination.liveIds(parentDef, opts.env) : []).sort()
     opts.logger?.info(`${label} starting (per-parent)`, {
       stream: stream.name,
       parents: parents.length,
     })
     for (const pid of parents) {
-      if (doneParents.has(pid)) continue
+      if (parentDone(pid)) continue
       // The previous parent's checkpoint is already written, so stopping here
       // leaves nothing to redo.
       if (spent()) return paused({ parent: pid })
@@ -214,18 +225,20 @@ export async function backfillStream(
         await state.set(opts.env, stream.name, {
           kind: 'backfill',
           status: 'running',
-          doneParents: [...doneParents],
+          ...parentProgress(),
           parent: pid,
           after: page.after,
           count: stats.created + stats.updated,
         } satisfies BackfillState)
         if (spent()) return paused({ parent: pid, after: page.after })
       }
-      doneParents.add(pid)
+      // Every parent before this one in id order was either skipped as done
+      // or listed just now, so the watermark can move to it.
+      doneThrough = pid
       await state.set(opts.env, stream.name, {
         kind: 'backfill',
         status: 'running',
-        doneParents: [...doneParents],
+        ...parentProgress(),
         count: stats.created + stats.updated,
       } satisfies BackfillState)
     }
