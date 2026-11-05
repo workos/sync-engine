@@ -50,6 +50,12 @@ describe('key extraction', () => {
       { data: userPayload({ email: 'newer@example.com' }), updatedAt: '2026-01-01T00:30:00Z' },
     ])
     expect(rows.map((r) => r.data['email'])).toEqual(['newer@example.com'])
+    // The database keeps six fractional digits, so two rows a microsecond apart stay ordered.
+    const fine = dedupeByKey(users, [
+      { data: userPayload({ email: 'newer@example.com' }), updatedAt: '2026-01-01T00:00:00.000900Z' },
+      { data: userPayload({ email: 'older@example.com' }), updatedAt: '2026-01-01T00:00:00.000100Z' },
+    ])
+    expect(fine.rows.map((r) => r.data['email'])).toEqual(['newer@example.com'])
     // What is not a date is ordered as text, and the database refuses it on the write.
     const junk = dedupeByKey(users, [
       { data: userPayload({ email: 'a@example.com' }), updatedAt: 'later' },
