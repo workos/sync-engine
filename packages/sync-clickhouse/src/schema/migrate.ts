@@ -84,6 +84,16 @@ export interface MigrateResult {
 const names = async (db: ChClient, sql: string, params: Record<string, unknown>) =>
   new Set((await db.query<{ name: string }>(sql, params)).map((r) => r.name))
 
+const typedColumns = async (db: ChClient, schema: string, table: string) =>
+  new Map(
+    (
+      await db.query<{ name: string; type: string }>(
+        `SELECT name, type FROM system.columns WHERE database = {schema:String} AND table = {table:String}`,
+        { schema, table },
+      )
+    ).map((r) => [r.name, r.type]),
+  )
+
 export async function migrate(
   db: ChClient,
   streams: TableDef[],
@@ -156,17 +166,11 @@ export async function migrate(
         { schema, name: liveViewName(stream) },
       )
       if (view?.engine === 'View' && isGeneratedDefinition(view.as_select, schema, table)) {
-        const viewColumns = await names(
-          db,
-          `SELECT name FROM system.columns WHERE database = {schema:String} AND table = {table:String}`,
-          { schema, table: liveViewName(stream) },
-        )
-        const tableColumns = await names(
-          db,
-          `SELECT name FROM system.columns WHERE database = {schema:String} AND table = {table:String}`,
-          { schema, table },
-        )
-        if ([...tableColumns].every((c) => viewColumns.has(c))) continue
+        // Name and type both: a view fixes its columns' types when it is
+        // created, so a column redefined since declares the old one there.
+        const viewColumns = await typedColumns(db, schema, liveViewName(stream))
+        const tableColumns = await typedColumns(db, schema, table)
+        if ([...tableColumns].every(([c, t]) => viewColumns.get(c) === t)) continue
       }
     }
     if (await applyLiveView(db, stream, schema, logger, options)) statements++
@@ -192,6 +196,13 @@ export async function migrate(
     repaired = r.repaired
     for (const f of r.failed) failures.set(f.drift, f.error)
     drift = drift.filter((d) => !repaired.includes(d))
+    // A redefined column changes the type its view declares for it, and the
+    // view fixed that when it was created: the views of the streams touched
+    // are re-created now, after the repair rather than before it.
+    for (const name of new Set(repaired.map((d) => d.stream))) {
+      const stream = streams.find((st) => st.name === name)
+      if (stream && stream.mode !== 'append' && (await applyLiveView(db, stream, schema, logger, options))) statements++
+    }
   }
 
   for (const d of drift) {

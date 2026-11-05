@@ -18,9 +18,10 @@
  * stream's write lock (`lock.ts`) across both: two writers on one key — the
  * tail and a backfill, or a poll outliving its lease — then see each
  * other's rows instead of each judging against the state before the other
- * wrote. Append-only streams are plain `MergeTree`: under the same lock the
- * batch reads which ids are already there and inserts the rest, which is
- * what makes re-delivery a no-op.
+ * wrote. For an append-only stream, under the same lock, the batch reads
+ * which ids are already there and inserts the rest, which is what makes
+ * re-delivery a no-op; the table, a `ReplacingMergeTree` keyed by the id,
+ * collapses a copy that got past that anyway.
  */
 import { emptyStats, type Row, type TableDef, type WriteMode, type WriteStats } from '@workos/sync-engine'
 import { hostname } from 'node:os'

@@ -16,8 +16,11 @@
  *   the newest source timestamp wins at merge time and under `FINAL`. That
  *   is the staleness gate, enforced by the table itself whatever order the
  *   writes land in. The `_live` views read with `FINAL`. Append-only
- *   streams are plain `MergeTree`, the shape analytics wants, with
- *   re-delivery filtered by the write path.
+ *   streams are a `ReplacingMergeTree` keyed by the event id with no
+ *   version column: one row per event, never updated, and a second copy
+ *   of one — which only a poll that outlived its lease can write, past
+ *   the write path's own check — collapses at the next merge, or under
+ *   `FINAL` before then.
  * - **A projection that cannot be cast is NULL, not an error.** `JSONExtract`
  *   with a `Nullable` return type gives NULL for a missing key, a JSON null
  *   and a value of the wrong shape alike, and the value stays in `_raw`.
@@ -251,7 +254,7 @@ export function createTableSql(stream: TableDef, schema: string): string {
   for (const c of stream.columns) cols.push(generatedColumnSql(c, stream))
   for (const idx of indexSpecs(stream)) cols.push(indexClause(idx))
   const order = [ENV, ...stream.key].map((k) => quoteIdent(safeIdentifier(k))).join(', ')
-  const engine = stream.mode === 'append' ? 'MergeTree' : 'ReplacingMergeTree(`_updated_at`)'
+  const engine = stream.mode === 'append' ? 'ReplacingMergeTree' : 'ReplacingMergeTree(`_updated_at`)'
   return `CREATE TABLE IF NOT EXISTS ${s}.${table} (\n  ${cols.join(',\n  ')}\n) ENGINE = ${engine} ORDER BY (${order})`
 }
 

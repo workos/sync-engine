@@ -30,7 +30,7 @@ describe('DDL generation', () => {
     )
     expect(createTableSql(users, 'workos')).toContain('`_deleted_at`')
     const events = createTableSql(streamByName('events')!, 'workos')
-    expect(events).toContain('ENGINE = MergeTree ORDER BY (`_env`, `id`)')
+    expect(events).toContain('ENGINE = ReplacingMergeTree ORDER BY (`_env`, `id`)')
     expect(events).not.toContain('`_deleted_at`')
     const memberships = createTableSql(streamByName('directory_group_memberships')!, 'workos')
     expect(memberships).toContain('ORDER BY (`_env`, `directory_group_id`, `directory_user_id`)')
@@ -359,6 +359,20 @@ describeDb('live views against real ClickHouse', () => {
       { s: db.schema },
     )
     expect(isGeneratedDefinition(r[0]!.as_select, db.schema, 'users')).toBe(true)
+  })
+
+  it('collapses a second copy of an append-only row under FINAL', async () => {
+    const events = streamByName('events')!
+    await migrate(db, [events], db.schema)
+    const row = {
+      _env: 'prod',
+      _raw: JSON.stringify({ id: 'event_1', event: 'user.created' }),
+      _updated_at: '2026-01-01 00:00:00.000',
+    }
+    await db.insert(`\`${db.schema}\`.events`, [row])
+    await db.insert(`\`${db.schema}\`.events`, [row])
+    const n = await db.query<{ n: string }>(`SELECT toString(count()) AS n FROM \`${db.schema}\`.events FINAL`)
+    expect(Number(n[0]!.n)).toBe(1)
   })
 
   it('refuses a table standing where its view would go', async () => {

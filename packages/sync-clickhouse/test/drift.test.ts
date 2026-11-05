@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTestDb, describeDb, type TestDb } from './helpers/clickhouse.js'
+import { columnType } from '../src/schema/ddl.js'
 import { migrate, fingerprint } from '../src/schema/migrate.js'
 import { detectColumnDrift, unrepairableReason } from '../src/schema/drift.js'
 import { main } from '../src/cli.js'
@@ -133,6 +134,23 @@ describeDb('column drift detection', () => {
     expect(idx.map((i) => i.name)).toContain('users_email_idx')
     expect(await detectColumnDrift(db, [changed], db.schema)).toEqual([])
     expect(await recorded([changed])).toBe(true)
+  })
+
+  it('re-creates the live view after a repair changes a column type, so the view declares the new one', async () => {
+    await migrate(db, [users], db.schema)
+    const typeOf = async (table: string) =>
+      (
+        await db.query<{ type: string }>(
+          `SELECT type FROM system.columns WHERE database = {s:String} AND table = {t:String} AND name = 'first_name'`,
+          { s: db.schema, t: table },
+        )
+      )[0]?.type
+    expect(await typeOf('users_live')).toBe(await typeOf('users'))
+    const column = { name: 'first_name', type: 'boolean' as const, path: 'first_name' }
+    const r = await migrate(db, [withColumn(users, column)], db.schema, undefined, { repair: true })
+    expect(r.repaired.map((d) => d.column)).toEqual(['first_name'])
+    expect(await typeOf('users')).toBe(columnType(column, false))
+    expect(await typeOf('users_live')).toBe(await typeOf('users'))
   })
 
   it('refuses to repair a key column', async () => {

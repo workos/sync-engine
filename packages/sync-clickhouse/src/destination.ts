@@ -137,9 +137,9 @@ export class ClickHouseDestination implements Destination {
     return unlinkRows(this.client, this.writeOpts, stream, env, rows)
   }
 
-  /** `FINAL` for the mirror tables, where a key may have several versions; append tables have one row per key. */
-  private final(stream: TableDef): string {
-    return stream.mode === 'append' ? '' : ' FINAL'
+  /** `FINAL`: a key may have several versions in a mirror table, and a second copy in an append table. */
+  private final(_stream: TableDef): string {
+    return ' FINAL'
   }
 
   async liveIds(stream: TableDef, env: string): Promise<string[]> {

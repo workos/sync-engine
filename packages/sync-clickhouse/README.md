@@ -180,11 +180,14 @@ CREATE TABLE workos.auth_attempts (
                 parseDateTime64BestEffortOrNull(upper(JSONExtractString(_raw, 'created_at')), 3, 'UTC'), NULL),
   INDEX auth_attempts_user_id_idx user_id TYPE bloom_filter GRANULARITY 4,
   INDEX auth_attempts_created_at_idx created_at TYPE minmax GRANULARITY 1
-) ENGINE = MergeTree ORDER BY (_env, event_id);
+) ENGINE = ReplacingMergeTree ORDER BY (_env, event_id);
 ```
 
-Append-only streams (`auth_attempts`, `events`) are plain `MergeTree`: one row
-per event, never updated, the shape every ClickHouse query expects.
+Append-only streams (`auth_attempts`, `events`) are a `ReplacingMergeTree`
+keyed by the event id, with no version column: one row per event, never
+updated. A second copy of an event, which only a poll that outlived its lease
+could write, collapses at the next merge; add `FINAL` where an exact count
+matters before then.
 
 Mirror streams are `ReplacingMergeTree` versioned by `_updated_at`. Every
 write inserts the row's next state, and the newest source timestamp wins at
