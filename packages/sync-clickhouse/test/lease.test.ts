@@ -39,6 +39,49 @@ describeDb('events tail lease', () => {
       { async_insert: 0, keeper_map_strict_mode: 0 },
     )
 
+  it('retries a checkpoint that lost a Keeper version race, and still refuses a cursor that moved', async () => {
+    await dest.acquireLease('prod', 'a', 60_000)
+    await dest.setState('prod', '__tail__', { cursor: 1 })
+    // Refuses the first checkpoint write the way Keeper does when the row's
+    // version moved under it — the holder's own renewal is enough — then
+    // passes everything through.
+    let refused = 0
+    const racing: TestDb = {
+      ...db,
+      async command(sql, params, settings) {
+        if (refused === 0 && /UPDATE states =/.test(sql)) {
+          refused++
+          throw Object.assign(new Error('Code: 999. DB::Exception: Bad version. (KEEPER_EXCEPTION)'), { code: '999' })
+        }
+        return db.command(sql, params, settings)
+      },
+    }
+    const viaRace = new ClickHouseDestination({ db: racing, schema: db.schema })
+    expect(await viaRace.setStateIfHeld('prod', '__tail__', { cursor: 2 }, 'a', { cursor: 1 })).toBe(true)
+    expect(refused).toBe(1)
+    expect(await dest.getState('prod', '__tail__')).toEqual({ cursor: 2 })
+
+    refused = 0
+    await dest.setState('prod', '__tail__', { cursor: 5 })
+    expect(await viaRace.setStateIfHeld('prod', '__tail__', { cursor: 3 }, 'a', { cursor: 2 })).toBe(false)
+    expect(await dest.getState('prod', '__tail__')).toEqual({ cursor: 5 })
+  })
+
+  it('checkpoints while the holder renews, without a refusal', async () => {
+    await dest.acquireLease('prod', 'a', 60_000)
+    let cursor = 0
+    await dest.setState('prod', '__tail__', { cursor })
+    for (let i = 0; i < 10; i++) {
+      const [, ok] = await Promise.all([
+        dest.acquireLease('prod', 'a', 60_000),
+        dest.setStateIfHeld('prod', '__tail__', { cursor: cursor + 1 }, 'a', { cursor }),
+      ])
+      expect(ok).toBe(true)
+      cursor++
+    }
+    expect(await dest.getState('prod', '__tail__')).toEqual({ cursor: 10 })
+  })
+
   it('is taken by the first process to ask', async () => {
     const r = await dest.acquireLease('prod', 'a', 60_000)
     expect(r.acquired).toBe(true)

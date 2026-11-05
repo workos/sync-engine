@@ -31,9 +31,11 @@ the mirror streams when you want to join against them.
 - ClickHouse 23.3 or later, self-hosted or ClickHouse Cloud. Tested against
   26.x in CI and against ClickHouse Cloud.
 - A ClickHouse Keeper (or ZooKeeper) reachable by the server, with
-  `keeper_map_path_prefix` set. The single-writer lease and the cursors live
-  in a [KeeperMap](https://clickhouse.com/docs/engines/table-engines/special/keeper-map)
-  table: it is the one place ClickHouse offers an atomic compare-and-swap.
+  `keeper_map_path_prefix` set. The single-writer lease, the cursors, and
+  the per-stream write lock that keeps two processes from writing one row
+  at once live in
+  [KeeperMap](https://clickhouse.com/docs/engines/table-engines/special/keeper-map)
+  tables: it is the one place ClickHouse offers an atomic compare-and-swap.
   Cloud and any replicated cluster have this already. A single self-hosted
   node needs the embedded Keeper enabled; the few lines are in
   [`test/clickhouse/config.xml`](test/clickhouse/config.xml).

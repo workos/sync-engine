@@ -13,14 +13,19 @@
  * — the gate, the shallow merge, whether anything changed, which tombstone
  * to carry forward — and inserts only the rows that passed. The table then
  * keeps, for each key, the version with the newest `_updated_at`, and the
- * last inserted among equals; so even two writers racing resolve the way
- * the gate would have, and a refused row, never inserted, changes nothing.
- * Append-only streams are plain `MergeTree`: the batch reads which ids are
- * already there and inserts the rest, which is what makes re-delivery a
- * no-op.
+ * last inserted among equals; a refused row, never inserted, changes
+ * nothing. Reading and writing are two statements, so each batch holds the
+ * stream's write lock (`lock.ts`) across both: two writers on one key — the
+ * tail and a backfill, or a poll outliving its lease — then see each
+ * other's rows instead of each judging against the state before the other
+ * wrote. Append-only streams are plain `MergeTree`: under the same lock the
+ * batch reads which ids are already there and inserts the rest, which is
+ * what makes re-delivery a no-op.
  */
 import { emptyStats, type Row, type TableDef, type WriteMode, type WriteStats } from '@workos/sync-engine'
+import { hostname } from 'node:os'
 import { fromCh, toCh, type ChClient } from './client.js'
+import { lockKey, withStreamLock, type LockOptions } from './lock.js'
 import { quoteIdent, safeIdentifier, ENV, RAW } from '../schema/ddl.js'
 
 /** Joins the components of a composite key, on both sides of every lookup. */
@@ -145,9 +150,25 @@ const later = (a: Date | null, b: Date): Date => (a !== null && a.getTime() > b.
 export interface WriteOptions {
   schema: string
   batchSize?: number
+  /** Names this writer in `_locks`. One per process by default. */
+  lockHolder?: string
+  lockTtlMs?: number
+  lockWaitMs?: number
 }
 
 const DEFAULT_BATCH_SIZE = 500
+const PROCESS_ID = `${hostname()}:${process.pid}`
+
+const lockOptions = (opts: WriteOptions): LockOptions => ({
+  schema: opts.schema,
+  holder: opts.lockHolder ?? PROCESS_ID,
+  ttlMs: opts.lockTtlMs,
+  waitMs: opts.lockWaitMs,
+})
+
+/** Run `fn` holding the write lock for `stream` in `env`. */
+const locked = <T>(db: ChClient, opts: WriteOptions, stream: TableDef, env: string, fn: () => Promise<T>) =>
+  withStreamLock(db, lockOptions(opts), lockKey(safeIdentifier(stream.name), env), fn)
 
 export const tableRef = (schema: string, stream: TableDef) =>
   `${quoteIdent(schema)}.${quoteIdent(safeIdentifier(stream.name))}`
@@ -244,9 +265,9 @@ const keyed = (stream: TableDef, rows: Row[]): Keyed[] =>
   rows.map((r) => ({ key: keyValues(stream, r.data)!, data: r.data, updatedAt: parseUpdatedAt(r.updatedAt) }))
 
 /**
- * Read, decide, write: the shape of every mirror write. `decide` is handed
- * each row with what is stored for it and returns what to write, or null to
- * leave the row alone.
+ * Read, decide, write: the shape of every mirror write, under the stream's
+ * lock. `decide` is handed each row with what is stored for it and returns
+ * what to write, or null to leave the row alone.
  */
 async function applyBatch(
   db: ChClient,
@@ -256,19 +277,21 @@ async function applyBatch(
   batch: Keyed[],
   decide: (row: Keyed, stored: StoredRow | undefined) => Pending | null,
 ): Promise<void> {
-  const stored = await readRows(
-    db,
-    opts,
-    stream,
-    env,
-    batch.map((r) => r.key),
-  )
-  const pending: Pending[] = []
-  for (const row of batch) {
-    const out = decide(row, stored.get(row.key.join(KEY_SEPARATOR)))
-    if (out) pending.push(out)
-  }
-  await writeRows(db, opts, stream, env, pending)
+  await locked(db, opts, stream, env, async () => {
+    const stored = await readRows(
+      db,
+      opts,
+      stream,
+      env,
+      batch.map((r) => r.key),
+    )
+    const pending: Pending[] = []
+    for (const row of batch) {
+      const out = decide(row, stored.get(row.key.join(KEY_SEPARATOR)))
+      if (out) pending.push(out)
+    }
+    await writeRows(db, opts, stream, env, pending)
+  })
 }
 
 export async function upsertRows(
@@ -288,24 +311,28 @@ export async function upsertRows(
   for (const wave of waves) {
     for (const batch of chunk(keyed(stream, wave), opts.batchSize ?? DEFAULT_BATCH_SIZE)) {
       if (stream.mode === 'append') {
-        // Immutable log. Re-delivery is a no-op, which is the whole idempotency story.
-        const present = await existingKeys(
-          db,
-          opts,
-          stream,
-          env,
-          batch.map((r) => r.key),
-        )
-        const fresh = batch.filter((r) => !present.has(r.key.join(KEY_SEPARATOR)))
-        await writeRows(
-          db,
-          opts,
-          stream,
-          env,
-          fresh.map((r) => ({ key: r.key, raw: r.data, updatedAt: r.updatedAt, deletedAt: null })),
-        )
-        stats.created += fresh.length
-        stats.skipped += batch.length - fresh.length
+        // Immutable log. Re-delivery is a no-op, which is the whole
+        // idempotency story; the lock is what makes it hold for two polls
+        // delivering the same page at once.
+        await locked(db, opts, stream, env, async () => {
+          const present = await existingKeys(
+            db,
+            opts,
+            stream,
+            env,
+            batch.map((r) => r.key),
+          )
+          const fresh = batch.filter((r) => !present.has(r.key.join(KEY_SEPARATOR)))
+          await writeRows(
+            db,
+            opts,
+            stream,
+            env,
+            fresh.map((r) => ({ key: r.key, raw: r.data, updatedAt: r.updatedAt, deletedAt: null })),
+          )
+          stats.created += fresh.length
+          stats.skipped += batch.length - fresh.length
+        })
         continue
       }
       await applyBatch(db, opts, stream, env, batch, (row, stored) => {

@@ -186,7 +186,13 @@ export async function getState<T>(
   return stored === undefined ? null : (JSON.parse(stored) as T)
 }
 
-/** Replace `states` with `next` only if it still reads `previous`. Whether it did. */
+/**
+ * Replace `states` with `next` only if it still reads `previous`. `swapped`
+ * when it did; `unchanged` when the `WHERE` matched nothing; `conflict`
+ * when Keeper refused the write because the row's version moved between the
+ * mutation's read and its write — which any write to the row does, a lease
+ * renewal included, whether or not it touched `states`.
+ */
 async function swapStates(
   db: ChClient,
   schema: string,
@@ -196,7 +202,7 @@ async function swapStates(
   next: string,
   guard = '',
   params: Record<string, unknown> = {},
-): Promise<boolean> {
+): Promise<'swapped' | 'unchanged' | 'conflict'> {
   try {
     await db.command(
       `ALTER TABLE ${table(schema)} UPDATE states = {next:String}
@@ -206,10 +212,10 @@ async function swapStates(
     )
   } catch (err) {
     if (!isKeeperConflict(err)) throw err
-    return false
+    return 'conflict'
   }
   const after = await readSync(db, schema, syncId, env)
-  return after !== null && after.states === next
+  return after !== null && after.states === next ? 'swapped' : 'unchanged'
 }
 
 export async function setState(
@@ -230,7 +236,7 @@ export async function setState(
     const states = parseStates(row)
     if (states[stream] === value) return
     const next = JSON.stringify({ ...states, [stream]: value })
-    if (await swapStates(db, schema, syncId, env, row.states, next)) return
+    if ((await swapStates(db, schema, syncId, env, row.states, next)) === 'swapped') return
     await backoff()
   }
   throw new Error(`could not save the ${stream} state for ${env}: the row kept changing under ${ATTEMPTS} attempts`)
@@ -240,6 +246,15 @@ export async function setState(
  * One read, one conditional write: the holder, the unexpired lease and the
  * cursor as it was expected to be are all judged on the row as read, and
  * the write names that exact row, so it lands only if nothing changed.
+ *
+ * A write Keeper refused over the row's version, or a `WHERE` that matched
+ * nothing, is not yet a refusal: the holder's own renewal moves the version
+ * without touching a cursor, and a backfill checkpoint for another stream
+ * changes `states` without touching this one. So the row is read again and
+ * judged again, and only a lease that is no longer held or a cursor that
+ * is no longer where it was expected refuses the checkpoint. The engine
+ * treats a refusal as "someone else moved the cursor" and replays the
+ * poll, which must not happen over a race nobody lost.
  */
 export async function setStateIfHeld(
   db: ChClient,
@@ -251,22 +266,31 @@ export async function setStateIfHeld(
   holder: string,
   expected: unknown,
 ): Promise<boolean> {
-  const row = await readSync(db, schema, syncId, env)
-  if (!isHeld(row, holder)) return false
-  const states = parseStates(row)
-  const stored = states[stream]
-  if (expected == null ? stored !== undefined : stored !== canonicalJson(expected)) return false
-  const next = JSON.stringify({ ...states, [stream]: canonicalJson(state) })
-  // Expiry is judged again by the server, in the write itself: the read
-  // above may have waited, and a lease that ran out meanwhile must refuse.
-  return swapStates(
-    db,
-    schema,
-    syncId,
-    env,
-    row!.states,
-    next,
-    ` AND holder = {holder:String} AND expires_at > now64(3, 'UTC')`,
-    { holder },
-  )
+  const value = canonicalJson(state)
+  const wanted = expected == null ? undefined : canonicalJson(expected)
+  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+    if (attempt > 0) await backoff()
+    const row = await readSync(db, schema, syncId, env)
+    if (!isHeld(row, holder)) return false
+    const states = parseStates(row)
+    const stored = states[stream]
+    // A write of ours on an earlier attempt may have landed while its
+    // verdict was lost to a race; the row then already says what we meant.
+    if (stored !== wanted) return attempt > 0 && stored === value
+    const next = JSON.stringify({ ...states, [stream]: value })
+    // Expiry is judged again by the server, in the write itself: the read
+    // above may have waited, and a lease that ran out meanwhile must refuse.
+    const outcome = await swapStates(
+      db,
+      schema,
+      syncId,
+      env,
+      row!.states,
+      next,
+      ` AND holder = {holder:String} AND expires_at > now64(3, 'UTC')`,
+      { holder },
+    )
+    if (outcome === 'swapped') return true
+  }
+  throw new Error(`could not checkpoint ${stream} for ${env}: the row kept changing under ${ATTEMPTS} attempts`)
 }

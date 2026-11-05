@@ -29,7 +29,7 @@ import {
   quoteIdent,
   safeIdentifier,
 } from './ddl.js'
-import { applyLiveView, liveViewName, type ApplyViewOptions } from './views.js'
+import { applyLiveView, isGeneratedDefinition, liveViewName, type ApplyViewOptions } from './views.js'
 import { detectColumnDrift, recordColumn, repairColumnDrift, unrepairableReason, type ColumnDrift } from './drift.js'
 
 /**
@@ -145,19 +145,29 @@ export async function migrate(
       }
     }
     // Last, so the view carries every column, including any added above. A
-    // view that already does is left alone: `init` runs no DDL it does not need.
+    // view that is the generated shape and already does is left alone:
+    // `init` runs no DDL it does not need. Anything else under the name —
+    // a column short, or a definition that is not ours, however many
+    // columns it has — goes through `applyLiveView`, which refuses a
+    // foreign definition unless `repairViews` says to replace it.
     if (stream.mode !== 'append' && live.size > 0) {
-      const viewColumns = await names(
-        db,
-        `SELECT name FROM system.columns WHERE database = {schema:String} AND table = {table:String}`,
-        { schema, table: liveViewName(stream) },
+      const [view] = await db.query<{ engine: string; as_select: string }>(
+        `SELECT engine, as_select FROM system.tables WHERE database = {schema:String} AND name = {name:String}`,
+        { schema, name: liveViewName(stream) },
       )
-      const tableColumns = await names(
-        db,
-        `SELECT name FROM system.columns WHERE database = {schema:String} AND table = {table:String}`,
-        { schema, table },
-      )
-      if (viewColumns.size > 0 && [...tableColumns].every((c) => viewColumns.has(c))) continue
+      if (view?.engine === 'View' && isGeneratedDefinition(view.as_select, schema, table)) {
+        const viewColumns = await names(
+          db,
+          `SELECT name FROM system.columns WHERE database = {schema:String} AND table = {table:String}`,
+          { schema, table: liveViewName(stream) },
+        )
+        const tableColumns = await names(
+          db,
+          `SELECT name FROM system.columns WHERE database = {schema:String} AND table = {table:String}`,
+          { schema, table },
+        )
+        if ([...tableColumns].every((c) => viewColumns.has(c))) continue
+      }
     }
     if (await applyLiveView(db, stream, schema, logger, options)) statements++
   }

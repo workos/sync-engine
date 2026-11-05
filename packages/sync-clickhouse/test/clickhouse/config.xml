@@ -2,11 +2,9 @@
   Server configuration for the test container: an embedded ClickHouse Keeper
   (KeeperMap needs one), the `keeper_map_path_prefix` that enables the
   engine, and seccomp off for Docker Desktop's VM, which refuses the filter.
-
-    docker run -d --name clickhouse -p 127.0.0.1:8123:8123 \
-      -v "$PWD/packages/sync-clickhouse/test/clickhouse/config.xml:/etc/clickhouse-server/config.d/sync.xml:ro" \
-      -v "$PWD/packages/sync-clickhouse/test/clickhouse/users.xml:/etc/clickhouse-server/users.d/sync.xml:ro" \
-      -e CLICKHOUSE_SKIP_USER_SETUP=1 clickhouse/clickhouse-server:latest
+  The README's Testing section has the docker run command that mounts this
+  file and users.xml. (No double hyphens in here: XML forbids them in a
+  comment, and the server refuses the whole file.)
 -->
 <clickhouse>
   <keeper_server>

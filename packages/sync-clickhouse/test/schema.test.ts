@@ -145,7 +145,7 @@ describeDb('migrations against real ClickHouse', () => {
     await migrate(db, STREAMS, db.schema)
     const names = await tables()
     for (const s of STREAMS) expect(names).toContain(s.name)
-    for (const t of ['_sync', '_migrations', '_rejected', '_columns']) expect(names).toContain(t)
+    for (const t of ['_sync', '_locks', '_migrations', '_rejected', '_columns']) expect(names).toContain(t)
     const recorded = await db.query<{ n: string }>(`SELECT toString(count()) AS n FROM \`${db.schema}\`.\`_columns\``)
     expect(Number(recorded[0]!.n)).toBe(STREAMS.reduce((n, s) => n + s.columns.length, 0))
   })
@@ -332,6 +332,21 @@ describeDb('live views against real ClickHouse', () => {
       {
         s: db.schema,
       },
+    )
+    expect(isGeneratedDefinition(r[0]!.as_select, db.schema, 'users')).toBe(true)
+  })
+
+  it('refuses a foreign view that happens to have every column, rather than mistaking it for its own', async () => {
+    await migrate(db, [users], db.schema)
+    await db.command(
+      `CREATE OR REPLACE VIEW \`${db.schema}\`.users_live AS SELECT * FROM \`${db.schema}\`.users WHERE email LIKE '%@acme.com'`,
+    )
+    await forget()
+    await expect(migrate(db, [users], db.schema)).rejects.toThrow(/did not generate/)
+    await migrate(db, [users], db.schema, undefined, { repairViews: true })
+    const r = await db.query<{ as_select: string }>(
+      `SELECT as_select FROM system.tables WHERE database = {s:String} AND name = 'users_live'`,
+      { s: db.schema },
     )
     expect(isGeneratedDefinition(r[0]!.as_select, db.schema, 'users')).toBe(true)
   })

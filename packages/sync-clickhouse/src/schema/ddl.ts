@@ -115,7 +115,8 @@ export function createSchemaSql(schema: string): string {
  * swap, which is what the lease and the fenced checkpoint need. See
  * `db/lease.ts`. The applied-schema fingerprints and the record of generated
  * columns live there too: an `INSERT` of an existing key is refused, which
- * makes "record once" a single statement.
+ * makes "record once" a single statement — and "take the lock" one as well,
+ * for the per-stream write lock in `_locks` (see `db/lock.ts`).
  *
  * `_rejected` holds events the tail set aside after they failed
  * deterministically on two consecutive polls (see the engine's
@@ -138,6 +139,14 @@ export function bookkeepingSql(schema: string): [name: string, sql: string][] {
   expires_at  ${TIMESTAMP},
   states      String
 ) ENGINE = KeeperMap(${keeperPath(schema, '_sync')}) PRIMARY KEY k`,
+    ],
+    [
+      '_locks',
+      `CREATE TABLE IF NOT EXISTS ${s}.\`_locks\` (
+  k          String,
+  holder     String,
+  expires_at ${TIMESTAMP}
+) ENGINE = KeeperMap(${keeperPath(schema, '_locks')}) PRIMARY KEY k`,
     ],
     [
       '_migrations',
