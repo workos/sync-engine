@@ -631,8 +631,11 @@ export class SyncEngine {
 
   /** The listen loop: take the lease, poll, idle, until `stop()`. */
   private async run(): Promise<void> {
-    await this.init()
+    // Reset before `init()`, not after: a `stop()` that arrives while the
+    // schema is still being applied — a SIGTERM during a slow first deploy —
+    // must end the loop before it polls once, not be forgotten by the reset.
     this.stopping = false
+    await this.init()
     const interval = this.config.pollIntervalMs ?? 5_000
     const ttl = this.leaseTtlMs
     this.logger.info('listening', {
