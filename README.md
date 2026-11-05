@@ -113,6 +113,12 @@ ships with the package and so always describes the version you installed. The
 `pageSize`, `logger`) are in the
 [`@workos/sync-engine` README](packages/sync-engine/README.md).
 
+## Integration
+
+Although any accessible database is supported, we also have guides for integrating with the following platforms:
+
+- [Neon](integrations/neon.md)
+
 ## How it works
 
 |               | What it does                               | Why it exists                                                                                                                      |
