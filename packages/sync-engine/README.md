@@ -77,7 +77,7 @@ and the staleness gate decides which version wins.
 | `logger`           | JSON to stdout         | `{ debug, info, warn, error }`.                                                                                                                         |
 
 Methods: `init()`, `backfill({ resume, maxPages })`, `tick()`, `listen()`,
-`stop()`, `reconcile({ repair, streams, resume, maxPages })`,
+`stop()`, `reconcile({ repair, streams, excludeStreams, resume, maxPages })`,
 `refresh({ resume, maxPages })`, `status()`,
 `health()`, `redact(userId)`, `rejected({ ids })`, `replayRejected({ ids })`,
 `processWebhook()`, `close()`. Every method except `health()` applies the
@@ -101,11 +101,17 @@ cannot stop partway: every object on the pages a budget cut off would read as
 a missed delete, and `repair` would tombstone objects that exist upstream. The
 budget therefore decides whether the next stream starts, not where a listing
 stops; a stream that starts runs to its last page, and a call overshoots by at
-most one stream's listing. Each `DiffResult` carries `pages` and `complete`,
-a stream that fails is reported with `complete: false` rather than left out,
-and `resume` skips the streams already diffed. A stream whose own listing does
-not fit the host's limit has to run, selected with `streams`, somewhere
-without one.
+most `maxPages`. That bound holds because a stream whose own listing passes
+`maxPages` could never finish inside a slot that size: it is abandoned on the
+page after the budget, its diff is rolled back with nothing repaired, and it
+is recorded as oversized. A call with `resume` skips it, and `status()` lists
+it under `oversized`, until a call with a larger `maxPages`, or none, diffs
+it; a call without `resume` tries it again. Each `DiffResult` carries `pages`,
+`complete` and, for such a stream, `oversized: true`; a stream that fails is
+reported with `complete: false` rather than left out, and `resume` skips the
+streams already diffed. Give an oversized stream a run of its own somewhere
+without a limit, selected with `streams`, and leave it out of the bounded
+calls with `excludeStreams`.
 
 `refresh()` takes the same `maxPages` and `resume` and shares backfill's
 checkpoints, since re-listing a top-level stream is the same work whichever
@@ -136,8 +142,9 @@ a tail.
 the last successful poll; alert on this), `cursorAgeDays` (age of the newest
 event applied; distance from the 90-day retention cliff, not liveness),
 `lease` (who is tailing it now, or `null`), `rejected` (events quarantined by
-the tail; alert on this too), and per-stream row counts, tombstones,
-staleness and lag.
+the tail; alert on this too), `oversized` (streams the last `reconcile()`
+abandoned because their listing alone passes its `maxPages`), and per-stream
+row counts, tombstones, staleness and lag.
 
 `health()` is the same liveness picture without the database: a synchronous
 snapshot of in-memory state (`starting` / `listening` / `stopped`, any fatal

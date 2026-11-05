@@ -34,6 +34,13 @@ import { redacting } from '../redact.js'
  */
 export interface PageBudget {
   remaining: number
+  /**
+   * The budget the call started with. A reconcile abandons a stream whose
+   * own listing needs more pages than this, since it could never finish
+   * inside a slot of that size; see `diffStream`. Absent, no stream is
+   * ever abandoned.
+   */
+  max?: number
 }
 
 /** The budget for `maxPages`, or none. Refuses anything but a positive integer. */
@@ -42,7 +49,7 @@ export function pageBudget(maxPages: number | undefined): PageBudget | undefined
   if (!Number.isInteger(maxPages) || maxPages < 1) {
     throw new Error(`maxPages must be a positive integer, got ${String(maxPages)}`)
   }
-  return { remaining: maxPages }
+  return { remaining: maxPages, max: maxPages }
 }
 
 export interface BackfillOptions {

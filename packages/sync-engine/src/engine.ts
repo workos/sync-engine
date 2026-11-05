@@ -33,7 +33,7 @@ import {
 import { applyEvents, HydrationError } from './sync/apply.js'
 import { applyWithQuarantine, eventObjectId, isTransientError, type SuspectMap } from './sync/quarantine.js'
 import { backfillStream, pageBudget, type BackfillStreamResult } from './sync/backfill.js'
-import { diffable, diffStream, freshness, type DiffResult } from './sync/reconcile.js'
+import { diffable, diffStream, freshness, OversizedStreamError, type DiffResult } from './sync/reconcile.js'
 import { createLogger } from './logger.js'
 import { redacting } from './redact.js'
 import { HealthTracker, type EngineHealth } from './health.js'
@@ -74,6 +74,13 @@ export interface EnvironmentStatus {
    * in the mirror until `replayRejected` succeeds. Alert on this being non-zero.
    */
   rejected: number
+  /**
+   * Streams the last `reconcile` abandoned because their listing alone
+   * needs more pages than its `maxPages`. They stay unreconciled until a
+   * call without `maxPages`, or with a larger one, diffs them; see
+   * `reconcile`.
+   */
+  oversized: string[]
   streams: FreshnessRow[]
 }
 
@@ -803,19 +810,35 @@ export class SyncEngine {
    * stream starts rather than where a listing stops. Once the pages are
    * spent, the streams not yet started are left for a later call with
    * `resume`, which skips the ones already diffed. A call therefore fits a
-   * host's time limit to within one stream's listing; a stream whose own
-   * listing does not fit has to run, selected with `streams`, somewhere
-   * without one.
+   * host's time limit to within `maxPages` pages: a stream whose own listing
+   * passes that many is abandoned, recorded as oversized, and skipped by
+   * `resume` until a call with a larger `maxPages`, or none, or a call
+   * without `resume`. Leave such a stream out with `excludeStreams` and
+   * reconcile it, selected with `streams`, somewhere without a limit.
    */
   async reconcile(
-    options: { repair?: boolean; streams?: string[]; resume?: boolean; maxPages?: number } = {},
+    options: {
+      repair?: boolean
+      streams?: string[]
+      /** Streams to leave out. Every name must be in the catalog. */
+      excludeStreams?: string[]
+      resume?: boolean
+      maxPages?: number
+    } = {},
   ): Promise<{
     freshness: Record<string, FreshnessRow[]>
     diffs: Record<string, DiffResult[]>
   }> {
     const budget = pageBudget(options.maxPages)
+    // A misspelt exclusion would leave the stream in, which is the one
+    // mistake the option exists to prevent, so the names are checked.
+    const excluded = new Set(options.excludeStreams ?? [])
+    for (const name of excluded) {
+      if (!streamByName(name)) throw new Error(`unknown stream: ${name}`)
+    }
     await this.init()
-    const chosen = options.streams ? this.streams.filter((s) => options.streams!.includes(s.name)) : this.streams
+    const selected = options.streams ? this.streams.filter((s) => options.streams!.includes(s.name)) : this.streams
+    const chosen = selected.filter((s) => !excluded.has(s.name))
     const out = {
       freshness: {} as Record<string, FreshnessRow[]>,
       diffs: {} as Record<string, DiffResult[]>,
@@ -855,10 +878,53 @@ export class SyncEngine {
             })
             continue
           }
+          // Abandoned by an earlier slice. The same budget would only be
+          // spent on it again; a larger one, or none, is the signal that the
+          // stream might now fit, and a call without `resume` tries regardless.
+          const limit = budget?.max
+          if (
+            prior?.status === 'oversized' &&
+            limit !== undefined &&
+            prior.maxPages !== undefined &&
+            limit <= prior.maxPages
+          ) {
+            this.logger.info('reconcile skipping an oversized stream; run it without maxPages, or with a larger one', {
+              env: env.name,
+              stream: stream.name,
+              pages: prior.pages,
+              maxPages: prior.maxPages,
+            })
+            diffs.push({
+              stream: stream.name,
+              matched: 0,
+              localOnly: [],
+              remoteOnly: [],
+              pages: 0,
+              complete: false,
+              oversized: true,
+              skippedReason: `listing needs more than ${prior.maxPages} pages — reconcile it without maxPages, or with a larger one`,
+            })
+            continue
+          }
         }
         // Kept outside the call so a stream that fails partway can still say
         // how many pages it drew on the shared budget before it did.
         const progress = { pages: 0 }
+        // Stream-scoped failure: other streams continue. The result says so
+        // rather than leaving the stream out, so a loop that resumes until
+        // every stream is complete does not stop short of it.
+        const failed = (cause: unknown): DiffResult => {
+          this.logger.error('reconcile failed', { env: env.name, stream: stream.name, error: String(cause) })
+          return {
+            stream: stream.name,
+            matched: 0,
+            localOnly: [],
+            remoteOnly: [],
+            pages: progress.pages,
+            complete: false,
+            skippedReason: `failed: ${String(cause)}`,
+          }
+        }
         try {
           const r = await diffStream(this.destination, api, env.name, stream, {
             repair: options.repair,
@@ -879,27 +945,53 @@ export class SyncEngine {
           }
           diffs.push(r)
         } catch (err) {
+          if (err instanceof OversizedStreamError) {
+            // Recorded so the later slices skip it instead of each spending
+            // the budget on it again. A fresh run resets it: the stream may
+            // have shrunk, or the budget grown. A write that fails is the
+            // stream's failure, as a completion the diff could not record is
+            // above: the verdict is not stored, so the next slice tries the
+            // stream again, and the results already collected still return.
+            try {
+              await this.state.setReconcile(env.name, stream.name, {
+                kind: 'reconcile',
+                status: 'oversized',
+                pages: err.pages,
+                maxPages: err.maxPages,
+                oversizedAt: new Date().toISOString(),
+              })
+            } catch (writeErr) {
+              if (isFatal(writeErr)) throw writeErr
+              diffs.push(failed(writeErr))
+              continue
+            }
+            this.logger.warn('reconcile abandoned a stream whose listing exceeds maxPages; it stays unreconciled', {
+              env: env.name,
+              stream: stream.name,
+              pages: err.pages,
+              maxPages: err.maxPages,
+            })
+            diffs.push({
+              stream: stream.name,
+              matched: 0,
+              localOnly: [],
+              remoteOnly: [],
+              pages: progress.pages,
+              complete: false,
+              oversized: true,
+              skippedReason: err.message,
+            })
+            continue
+          }
           if (isFatal(err)) throw err
-          // Stream-scoped failure: other streams continue. The result says
-          // so rather than leaving the stream out, so a loop that resumes
-          // until every stream is complete does not stop short of it.
-          this.logger.error('reconcile failed', { env: env.name, stream: stream.name, error: String(err) })
-          diffs.push({
-            stream: stream.name,
-            matched: 0,
-            localOnly: [],
-            remoteOnly: [],
-            pages: progress.pages,
-            complete: false,
-            skippedReason: `failed: ${String(err)}`,
-          })
+          diffs.push(failed(err))
         }
       }
       out.diffs[env.name] = diffs
     }
     const incomplete = Object.values(out.diffs)
       .flat()
-      .filter((d) => !d.complete)
+      .filter((d) => !d.complete && !d.oversized)
       .map((d) => d.stream)
     if (budget && budget.remaining <= 0 && incomplete.length > 0) {
       this.logger.info('reconcile paused: page budget spent; resume to continue', {
@@ -995,8 +1087,20 @@ export class SyncEngine {
         // A count, not a listing: `status` runs on every monitoring poll, and
         // each rejected row carries a whole event payload.
         rejected: await this.destination.rejectedCount(env.name),
+        oversized: await this.oversizedStreams(env.name),
         streams: await freshness(this.destination, env.name, this.streams),
       }
+    }
+    return out
+  }
+
+  /** The streams whose last reconcile was abandoned as oversized; see `reconcile`. */
+  private async oversizedStreams(env: string): Promise<string[]> {
+    const out: string[] = []
+    for (const stream of this.streams) {
+      if (!diffable(stream)) continue
+      const prior = await this.state.getReconcile(env, stream.name)
+      if (prior?.status === 'oversized') out.push(stream.name)
     }
     return out
   }
