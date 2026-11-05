@@ -14,7 +14,8 @@
  * own normal form, which differs between versions, so text written by the
  * catalog and text read back from the server never compare equal. A
  * generated column that has no record (a table made by hand to the right
- * shape) is recorded as current if its type is right, and reported if not.
+ * shape) is recorded as current. The live type is always compared with the
+ * catalog's, record or no record.
  *
  * Never touched, only reported: key columns (a rebuild would drop the
  * primary key under live rows), columns that are not generated (they are
@@ -122,25 +123,21 @@ export async function detectColumnDrift(db: SqlClient, streams: TableDef[], sche
         })
         continue
       }
+      // The live type is checked on its own, before the record is consulted:
+      // a column retyped by hand leaves `_columns` saying what the engine
+      // created, and that must not hide what is actually there.
       const typeMatches = actual.column_type.toLowerCase() === informationSchemaType(columnType(col, key))
+      if (!typeMatches) {
+        out.push({ stream: stream.name, column: name, kind: 'type', expected, actual: actual.column_type, key })
+        continue
+      }
       const record = recorded.get(name)
       if (record === undefined) {
-        if (typeMatches) {
-          await recordColumn(db, schema, table, name, expected)
-        } else {
-          out.push({ stream: stream.name, column: name, kind: 'type', expected, actual: actual.column_type, key })
-        }
+        await recordColumn(db, schema, table, name, expected)
         continue
       }
       if (record !== expected) {
-        out.push({
-          stream: stream.name,
-          column: name,
-          kind: typeMatches ? 'expression' : 'type',
-          expected,
-          actual: record,
-          key,
-        })
+        out.push({ stream: stream.name, column: name, kind: 'expression', expected, actual: record, key })
       }
     }
     for (const [name, ddl] of recorded) {

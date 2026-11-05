@@ -182,19 +182,20 @@ async function applySchema(
   let drift = await detectColumnDrift(db, streams, schema)
   let repaired: ColumnDrift[] = []
   const failures = new Map<ColumnDrift, string>()
-  if (options.repair && drift.length > 0) {
+  if (options.repair && drift.some((d) => unrepairableReason(d) === null)) {
+    // A recorded fingerprint means "the live columns were checked against
+    // this catalog". Rebuilding a column breaks that promise for every
+    // catalog recorded before now, so every other fingerprint is forgotten
+    // and a rollback re-runs detection. Forgotten *before* the first DDL,
+    // not after the last: MySQL commits each statement on its own, so a
+    // repair that dies between dropping a column and adding it back has
+    // already changed the table, and an older fingerprint must not vouch
+    // for what is left.
+    await db.query(`delete from ${quoteIdent(schema)}.\`_migrations\` where fingerprint <> ?`, [fp])
     const r = await repairColumnDrift(db, drift, streams, schema, logger)
     repaired = r.repaired
     for (const f of r.failed) failures.set(f.drift, f.error)
     drift = drift.filter((d) => !repaired.includes(d))
-  }
-
-  // A recorded fingerprint means "the live columns were checked against this
-  // catalog". Rebuilding a column breaks that promise for every catalog
-  // recorded before now, so the moment columns change, every other
-  // fingerprint is forgotten and a rollback re-runs detection.
-  if (repaired.length > 0) {
-    await db.query(`delete from ${quoteIdent(schema)}.\`_migrations\` where fingerprint <> ?`, [fp])
   }
 
   for (const d of drift) {

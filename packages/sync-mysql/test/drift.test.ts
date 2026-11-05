@@ -92,7 +92,7 @@ describeDb('column drift detection', () => {
     expect(r.drift).toHaveLength(1)
     expect(r.drift[0]).toMatchObject({ column: 'first_name', kind: 'type' })
     expect(r.drift[0]!.expected).toContain('`first_name` boolean')
-    expect(r.drift[0]!.actual).toContain('`first_name` text')
+    expect(r.drift[0]!.actual).toBe('text')
   })
 
   it('withholds the fingerprint while drift is unrepaired, and records it once repaired', async () => {
@@ -222,6 +222,37 @@ describeDb('column drift detection', () => {
     expect(drift.map((d) => [d.column, d.kind])).toEqual([['first_name', 'type']])
     const back = await db.query(`select 1 from \`${db.schema}\`.\`_columns\` where column_name = 'email'`)
     expect(back.rows).toHaveLength(1)
+  })
+
+  it('reports a live type changed by hand, whatever the record says', async () => {
+    await migrate(db, [users], db.schema)
+    // The record still describes the column the engine created.
+    await db.exec(
+      `alter table \`${db.schema}\`.users modify column locale varchar(8) generated always as (json_value(\`_raw\`, '$."locale"' returning char(8) null on error)) stored`,
+    )
+    const drift = await detectColumnDrift(db, [users], db.schema)
+    expect(drift).toHaveLength(1)
+    expect(drift[0]).toMatchObject({ column: 'locale', kind: 'type', actual: 'varchar(8)' })
+    // And a repair puts the catalog's type back.
+    await db.query(`delete from \`${db.schema}\`.\`_migrations\``)
+    const r = await migrate(db, [users], db.schema, undefined, { repair: true })
+    expect(r.repaired.map((d) => [d.column, d.kind])).toEqual([['locale', 'type']])
+    expect(await detectColumnDrift(db, [users], db.schema)).toEqual([])
+    expect(await recorded([users])).toBe(true)
+  })
+
+  it('forgets earlier fingerprints before a repair runs any DDL, even one that then fails', async () => {
+    // MySQL commits each DDL statement on its own, so a repair that dies
+    // halfway has already changed the table. The older fingerprints must be
+    // gone before the first statement, not after the last.
+    await migrate(db, [users], db.schema)
+    await db.exec(`alter table \`${db.schema}\`.users add index my_first_name_idx (first_name(50))`)
+    const changed = withColumn(users, { name: 'first_name', type: 'text', path: 'given_name' })
+    const r = await migrate(db, [changed], db.schema, undefined, { repair: true })
+    expect(r.repaired).toEqual([])
+    expect(r.drift).toHaveLength(1)
+    expect(await recorded([users])).toBe(false)
+    expect(await recorded([changed])).toBe(false)
   })
 
   it('forgets earlier fingerprints when a repair changes columns, so a rollback re-checks', async () => {

@@ -1,16 +1,36 @@
 import { describe, it, expect } from 'vitest'
-import { poolConfig, fromPool, APPLICATION_NAME, SESSION_SQL, type PoolLike } from '../src/db/client.js'
+import {
+  poolConfig,
+  fromPool,
+  withoutDatabase,
+  connect,
+  APPLICATION_NAME,
+  SESSION_SQL,
+  type PoolLike,
+} from '../src/db/client.js'
+import { describeDb, TEST_MYSQL_URL } from './helpers/mysql.js'
 
 describe('poolConfig', () => {
   it('hands the connection string to mysql2 with the driver reading and writing UTC', () => {
     const cfg = poolConfig('mysql://u:p@h:3307/db')
     expect(cfg).toMatchObject({
-      uri: 'mysql://u:p@h:3307/db',
+      uri: 'mysql://u:p@h:3307',
       timezone: 'Z',
       multipleStatements: false,
       supportBigNumbers: true,
     })
     expect(cfg['ssl']).toBeUndefined()
+  })
+
+  it('selects no default database, keeping everything else the URL says', () => {
+    // A database named in the URL would be selected during the handshake,
+    // and one `init` has yet to create would fail the connection.
+    expect(withoutDatabase('mysql://u:p%40ss@h:3307/app?ssl=true&charset=utf8mb4')).toBe(
+      'mysql://u:p%40ss@h:3307?ssl=true&charset=utf8mb4',
+    )
+    expect(withoutDatabase('mysql://h/')).toBe('mysql://h')
+    expect(withoutDatabase('mysql://h')).toBe('mysql://h')
+    expect(() => withoutDatabase('not a url')).toThrow()
   })
 
   it('introduces its connections by name', () => {
@@ -24,6 +44,22 @@ describe('poolConfig', () => {
 
   it('puts every new session in UTC', () => {
     expect(SESSION_SQL[0]).toBe(`set time_zone = '+00:00'`)
+  })
+})
+
+describeDb('connect', () => {
+  it('connects when the URL names a database that does not exist yet', async () => {
+    const url = new URL(TEST_MYSQL_URL!)
+    url.pathname = '/does_not_exist_' + Date.now()
+    const db = await connect(url.toString())
+    try {
+      const r = await db.query<{ one: number }>('select 1 as one')
+      expect(r.rows).toEqual([{ one: 1 }])
+      const tz = await db.query<{ tz: string }>('select @@session.time_zone as tz')
+      expect(tz.rows[0]!.tz).toBe('+00:00')
+    } finally {
+      await db.close()
+    }
   })
 })
 

@@ -92,7 +92,8 @@ export async function releaseLease(
 /**
  * Write provisionally before locking the lease: even an invisible competing
  * insert must finish before this writer can block takeover. Validate
- * ownership and expiry after all waits, rolling back a refused write to its
+ * ownership and expiry after all waits — and after the lock, in a statement
+ * started once the lock is held — rolling back a refused write to its
  * savepoint. The savepoint also protects callers already inside a
  * transaction.
  *
@@ -127,10 +128,15 @@ export async function setStateIfHeld(
           )
     let held = false
     if (written.affectedRows > 0) {
+      // Lock the lease row first, whoever holds it, so a takeover in flight
+      // finishes before the verdict. Then judge expiry in a statement of its
+      // own: `NOW(6)` is fixed when a statement starts, so a check folded
+      // into the locking read would use the clock from before the wait, and
+      // a lease that expired during the wait would pass.
+      await tx.query(`select 1 from ${s}.\`_sync_lease\` where sync_id = ? and env = ? for update`, [syncId, env])
       const lease = await tx.query(
         `select 1 as held from ${s}.\`_sync_lease\`
-         where sync_id = ? and env = ? and holder = ? and expires_at > now(6)
-         for update`,
+         where sync_id = ? and env = ? and holder = ? and expires_at > now(6)`,
         [syncId, env, holder],
       )
       held = lease.rows.length > 0

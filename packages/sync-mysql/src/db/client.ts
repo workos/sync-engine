@@ -179,13 +179,25 @@ export interface ConnectOptions {
 export const SESSION_SQL = [`set time_zone = '+00:00'`, `set session transaction_isolation = 'REPEATABLE-READ'`]
 
 /**
+ * `databaseUrl` without its path. Every statement the engine runs qualifies
+ * its tables with the configured schema, so no default database is needed;
+ * and one named in the URL would be selected during the handshake, where a
+ * database that `init` has yet to create fails the connection outright.
+ */
+export function withoutDatabase(databaseUrl: string): string {
+  const url = new URL(databaseUrl)
+  url.pathname = ''
+  return url.toString()
+}
+
+/**
  * What `mysql.createPool(...)` is given. `timezone: 'Z'` makes the driver
  * read and write `DATETIME` as UTC, matching the session zone set above, so
  * a `Date` round-trips unchanged.
  */
 export function poolConfig(databaseUrl: string, options: ConnectOptions = {}): Record<string, unknown> {
   const config: Record<string, unknown> = {
-    uri: databaseUrl,
+    uri: withoutDatabase(databaseUrl),
     timezone: 'Z',
     connectAttributes: { program_name: APPLICATION_NAME },
     // A BIGINT beyond 2^53 comes back as a string rather than a rounded

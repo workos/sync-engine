@@ -104,6 +104,66 @@ describeDb('events tail lease', () => {
   describe('fences the state write', () => {
     const stored = () => dest.getState<Record<string, unknown>>('prod', '__tail__')
 
+    /**
+     * Poll until a transaction is waiting on a lock, so a blocked checkpoint
+     * is known to be blocked. Polled gently: a tight loop of pool queries
+     * keeps grabbing the free connection and the checkpoint never gets one.
+     */
+    const waitForLockWait = async () => {
+      const deadline = Date.now() + 5_000
+      for (;;) {
+        const r = await db.query<{ n: number }>(
+          `select count(*) as n from information_schema.innodb_trx where trx_state = 'LOCK WAIT'`,
+        )
+        if (Number(r.rows[0]!.n) > 0) return
+        if (Date.now() > deadline) throw new Error('no transaction is waiting on a lock')
+        await new Promise((r) => setTimeout(r, 100))
+      }
+    }
+
+    it('checks the current clock after waiting on the lease row', async () => {
+      // The lease is valid when the checkpoint starts and expired by the time
+      // its row lock is granted. `NOW(6)` is fixed per statement, so a check
+      // folded into the locking read would see the clock from before the
+      // wait and let an expired holder save its cursor.
+      await dest.acquireLease('prod', 'a', 1_000)
+      let release!: () => void
+      const released = new Promise<void>((r) => (release = r))
+      const blocker = db.pinned(async (conn) => {
+        await conn.exec('begin')
+        await conn.query(`select 1 from \`${db.schema}\`.\`_sync_lease\` for update`)
+        await released
+        await conn.exec('commit')
+      })
+      const checkpoint = dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
+      await waitForLockWait()
+      await new Promise((r) => setTimeout(r, 1_200))
+      release()
+      await blocker
+      expect(await checkpoint).toBe(false)
+      expect(await stored()).toBeNull()
+    })
+
+    it('rechecks a lease changed while its row lock was unavailable', async () => {
+      await dest.acquireLease('prod', 'a', 60_000)
+      let release!: () => void
+      const released = new Promise<void>((r) => (release = r))
+      const blocker = db.pinned(async (conn) => {
+        await conn.exec('begin')
+        await conn.query(`update \`${db.schema}\`.\`_sync_lease\` set holder = 'b'`)
+        await released
+        await conn.exec('commit')
+      })
+      const checkpoint = dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)
+      await waitForLockWait()
+      release()
+      await blocker
+      // The takeover committed first; the former holder is judged against it.
+      expect(await checkpoint).toBe(false)
+      expect(await stored()).toBeNull()
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'b', null)).toBe(true)
+    })
+
     it('writes for the holder, and refuses anyone else', async () => {
       await dest.acquireLease('prod', 'a', 60_000)
       expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'b', null)).toBe(false)
