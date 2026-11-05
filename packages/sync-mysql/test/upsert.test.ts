@@ -50,6 +50,27 @@ describe('key extraction', () => {
     expect(dropped).toBe(1)
   })
 
+  it('judges the newest row by its instant, not by the text of its timestamp', () => {
+    // "01:00:00+01:00" sorts after "00:30:00Z" as text and is half an hour earlier as a time.
+    const { rows } = dedupeByKey(users, [
+      { data: userPayload({ email: 'older@example.com' }), updatedAt: '2026-01-01T01:00:00+01:00' },
+      { data: userPayload({ email: 'newer@example.com' }), updatedAt: '2026-01-01T00:30:00Z' },
+    ])
+    expect(rows.map((r) => r.data['email'])).toEqual(['newer@example.com'])
+    // The database keeps six fractional digits, so two rows a microsecond apart stay ordered.
+    const fine = dedupeByKey(users, [
+      { data: userPayload({ email: 'newer@example.com' }), updatedAt: '2026-01-01T00:00:00.000900Z' },
+      { data: userPayload({ email: 'older@example.com' }), updatedAt: '2026-01-01T00:00:00.000100Z' },
+    ])
+    expect(fine.rows.map((r) => r.data['email'])).toEqual(['newer@example.com'])
+    // What is not a date is ordered as text, and the database refuses it on the write.
+    const junk = dedupeByKey(users, [
+      { data: userPayload({ email: 'a@example.com' }), updatedAt: 'later' },
+      { data: userPayload({ email: 'b@example.com' }), updatedAt: 'yesterday' },
+    ])
+    expect(junk.rows.map((r) => r.data['email'])).toEqual(['b@example.com'])
+  })
+
   it('splits repeated keys into ordered waves and leaves distinct keys in one', () => {
     const first = { data: userPayload({ external_id: 'ext_1' }), updatedAt: '2026-01-01T00:00:00.000Z' }
     const other = { data: userPayload({ id: 'user_2' }), updatedAt: '2026-01-01T00:00:00.000Z' }

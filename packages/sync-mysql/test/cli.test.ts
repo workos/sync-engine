@@ -1,8 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { SyncEngine, WorkOSClient, selectStreams, silentLogger } from '@workos/sync-engine'
 import {
+  invokedDirectly,
   main,
   parseHydrate,
+  parseExcludeStreams,
   parseLeaseTtl,
   parseMaxPages,
   parseSslCa,
@@ -14,6 +20,42 @@ import { createTestDb, describeDb, type TestDb } from './helpers/mysql.js'
 import { FaultyDestination } from './helpers/faulty.js'
 import { TEST_CA_PEM } from './helpers/ca.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
+
+describe('entrypoint', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'workos-sync-mysql-bin-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('recognises the script itself and the symlink npm installs as the command', () => {
+    const script = join(dir, 'cli.js')
+    writeFileSync(script, '')
+    const url = pathToFileURL(script).href
+    expect(invokedDirectly(script, url)).toBe(true)
+
+    // `npm install` links `node_modules/.bin/workos-sync-mysql` at dist/cli.js,
+    // so argv[1] is the link, not the file.
+    const link = join(dir, 'workos-sync-mysql')
+    symlinkSync(script, link)
+    expect(invokedDirectly(link, url)).toBe(true)
+  })
+
+  it('is false for an import, a missing path, or another script', () => {
+    const script = join(dir, 'cli.js')
+    writeFileSync(script, '')
+    const url = pathToFileURL(script).href
+    expect(invokedDirectly(undefined, url)).toBe(false)
+    expect(invokedDirectly(join(dir, 'missing'), url)).toBe(false)
+    const other = join(dir, 'vitest.mjs')
+    writeFileSync(other, '')
+    expect(invokedDirectly(other, url)).toBe(false)
+    // This test file was started by the test runner, not by the CLI.
+    expect(invokedDirectly(process.argv[1], url)).toBe(false)
+  })
+})
 
 describe('WORKOS_SYNC_HYDRATE', () => {
   it('leaves the engine default in place when unset', () => {
@@ -54,6 +96,18 @@ describe('backfill --max-pages', () => {
   })
 })
 
+describe('reconcile --exclude-streams', () => {
+  it('means nothing excluded when absent and splits a list', () => {
+    expect(parseExcludeStreams(undefined)).toBeUndefined()
+    expect(parseExcludeStreams('users, invitations')).toEqual(['users', 'invitations'])
+  })
+
+  it('refuses a bare flag: an exclusion of nothing is the mistake it exists to prevent', () => {
+    expect(() => parseExcludeStreams(true)).toThrow(/invalid --exclude-streams/)
+    expect(() => parseExcludeStreams(' , ')).toThrow(/invalid --exclude-streams/)
+  })
+})
+
 describe('init --repair', () => {
   it('asks for repair on init and nothing else', () => {
     expect(repairRequested('init', { repair: true })).toBe(true)
@@ -75,6 +129,7 @@ describe('init --repair', () => {
     const help = out.join('')
     expect(help).toContain('workos-sync-mysql')
     expect(help).toContain('init [--repair] [--print-sql]')
+    expect(help).toContain('reconcile [--repair] [--resume] [--max-pages <n>] [--exclude-streams <a,b>]')
     expect(help).toContain('WORKOS_SYNC_MYSQL_SSL_CA')
     expect(help).not.toContain('Postgres')
   })
@@ -312,5 +367,37 @@ describeDb('commands against a database', () => {
     expect(await main(['streams'])).toBe(0)
     const streams = JSON.parse(out.join('')) as { stream: string }[]
     expect(streams.some((s) => s.stream === 'users')).toBe(true)
+  })
+
+  it('leaves out --exclude-streams on reconcile, and refuses a name the catalog does not know', async () => {
+    fake.createUser()
+    const engine = makeEngine(new FaultyDestination({ db, schema: db.schema }), ['users', 'organizations'])
+    await engine.backfill()
+
+    expect(await main(['reconcile', '--exclude-streams', 'users'], { engine })).toBe(0)
+    const names = (lastJson() as { diffs: Record<string, { stream: string }[]> }).diffs['prod']!.map((d) => d.stream)
+    expect(names).not.toContain('users')
+    expect(names).toContain('organizations')
+
+    await expect(main(['reconcile', '--exclude-streams', 'customers'], { engine })).rejects.toThrow(
+      /unknown stream: customers/,
+    )
+  })
+
+  it('reports a stream reconcile abandoned as oversized, in the diff and in status', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = makeEngine(new FaultyDestination({ db, schema: db.schema }))
+    await engine.backfill()
+
+    // Three pages upstream, two budgeted: abandoned on the third, exit 0.
+    expect(await main(['reconcile', '--max-pages', '2'], { engine })).toBe(0)
+    const users = (
+      lastJson() as {
+        diffs: Record<string, { stream: string; pages: number; complete: boolean; oversized?: boolean }[]>
+      }
+    ).diffs['prod']!.find((d) => d.stream === 'users')
+    expect(users).toMatchObject({ pages: 3, complete: false, oversized: true })
+    expect(await main(['status'], { engine })).toBe(0)
+    expect(lastJson()).toMatchObject({ prod: { oversized: ['users'] } })
   })
 })

@@ -210,6 +210,10 @@ describeDb('migrations against real MySQL', () => {
       ['2026-01-01T23:60:00Z', null],
       ['2026-01-01T23:59:60Z', null],
       ['0000-01-01T00:00:00Z', null],
+      // The offset's fields are checked like the clock's.
+      ['2026-01-01T00:00:00+00:99', null],
+      ['2026-01-01T00:00:00-24:00', null],
+      ['2026-01-01T00:00:00+23:59', '2025-12-31T00:01:00.000Z'],
     ]
     for (const [input, expected] of cases) {
       const id = `user_${String(input)}`

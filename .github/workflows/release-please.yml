@@ -35,6 +35,8 @@ jobs:
       sync-engine--tag_name: ${{ steps.release.outputs['packages/sync-engine--tag_name'] }}
       sync-postgres--release_created: ${{ steps.release.outputs['packages/sync-postgres--release_created'] }}
       sync-postgres--tag_name: ${{ steps.release.outputs['packages/sync-postgres--tag_name'] }}
+      sync-mysql--release_created: ${{ steps.release.outputs['packages/sync-mysql--release_created'] }}
+      sync-mysql--tag_name: ${{ steps.release.outputs['packages/sync-mysql--tag_name'] }}
       sync-clickhouse--release_created: ${{ steps.release.outputs['packages/sync-clickhouse--release_created'] }}
       sync-clickhouse--tag_name: ${{ steps.release.outputs['packages/sync-clickhouse--tag_name'] }}
     steps:
@@ -80,6 +82,18 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag_name: ${{ needs.release-please.outputs.sync-postgres--tag_name }}
+    secrets:
+      PUBLIC_SOCKET_FIREWALL_TOKEN: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
+
+  publish-sync-mysql:
+    needs: [release-please, publish-sync-engine]
+    if: >-
+      ${{ !cancelled()
+          && needs.publish-sync-engine.result != 'failure'
+          && needs.release-please.outputs.sync-mysql--release_created == 'true' }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.sync-mysql--tag_name }}
     secrets:
       PUBLIC_SOCKET_FIREWALL_TOKEN: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
 

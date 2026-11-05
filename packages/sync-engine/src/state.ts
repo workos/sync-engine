@@ -40,7 +40,21 @@ export interface BackfillState {
   status: 'pending' | 'running' | 'complete'
   /** Pagination cursor within the current listing. */
   after?: string | null
-  /** For N+1 streams: parents already fully listed. */
+  /**
+   * For N+1 streams: every parent whose id sorts at or before this one is
+   * fully listed. Parents are listed in id order, and WorkOS ids are
+   * time-ordered, so a parent created after a slice sorts past the watermark
+   * and the next slice lists it. One id however many parents the stream has:
+   * a list of every finished parent grew with the parent stream and was
+   * rewritten at every parent boundary, which a document store's size limit
+   * does not survive.
+   */
+  doneThrough?: string | null
+  /**
+   * For N+1 streams: parents fully listed by a release that recorded each one
+   * by id. Honored on resume and carried until `doneThrough` passes them;
+   * never written afresh.
+   */
   doneParents?: string[]
   /**
    * For N+1 streams: the parent whose listing `after` belongs to, when a page
