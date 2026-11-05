@@ -9,7 +9,7 @@
  *                                             page the list endpoints, optionally n pages at a time
  *   workos-sync-mysql listen               tail the Events API
  *   workos-sync-mysql tick                 one poll, then exit (for cron)
- *   workos-sync-mysql reconcile [--repair] detect (and optionally fix) drift
+ *   workos-sync-mysql reconcile [--repair] [--exclude-streams <a,b>] detect (and optionally fix) drift
  *   workos-sync-mysql refresh              re-list to refresh partial event fields
  *   workos-sync-mysql status               cursor age and per-stream freshness
  *   workos-sync-mysql redact --user <id>   erase one subject
@@ -244,6 +244,27 @@ export function parseMaxPages(value: string | boolean | undefined): number | und
   return n
 }
 
+/**
+ * `--exclude-streams <a,b>` names streams `reconcile` leaves out, for one
+ * whose listing has to run somewhere without a time limit. A bare flag is
+ * refused here: excluding nothing by accident is the mistake the flag exists
+ * to prevent. The names themselves are checked by the engine.
+ */
+export function parseExcludeStreams(value: string | boolean | undefined): string[] | undefined {
+  if (value === undefined || value === false) return undefined
+  const names =
+    typeof value === 'string'
+      ? value
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : []
+  if (names.length === 0) {
+    throw new Error(`invalid --exclude-streams "${String(value)}": expected a comma-separated list of stream names`)
+  }
+  return names
+}
+
 function configFromEnv(
   flags: Record<string, string | boolean>,
   destination: MysqlDestination,
@@ -289,12 +310,16 @@ Commands
                        with a port, serve GET /healthz and /metrics on it
   tick                 One poll of the Events API, then exit (for a cron job);
                        exits 3 if a listener holds the lease
-  reconcile [--repair] [--resume] [--max-pages <n>]
+  reconcile [--repair] [--resume] [--max-pages <n>] [--exclude-streams <a,b>]
                        Compare the mirror against the API; --repair fixes drift.
                        --max-pages stops starting streams once n pages have been
                        fetched (a stream that starts runs to its last page, since
-                       a diff needs the whole listing); run again with --resume
-                       until every stream reports complete
+                       a diff needs the whole listing, unless it alone needs more
+                       than n: it is then abandoned and reported oversized until
+                       a run with a larger budget or none); run again with
+                       --resume until every stream reports complete.
+                       --exclude-streams leaves streams out, for one that has to
+                       run somewhere without a time limit
   refresh [--resume] [--max-pages <n>]
                        Re-list top-level streams, replacing each row;
                        --max-pages and --resume slice it like backfill, with
@@ -459,6 +484,7 @@ async function runCommand(command: string, flags: Record<string, string | boolea
           repair: Boolean(flags['repair']),
           resume: Boolean(flags['resume']),
           maxPages: parseMaxPages(flags['max-pages']),
+          excludeStreams: parseExcludeStreams(flags['exclude-streams']),
         })
         process.stdout.write(JSON.stringify(r, null, 2) + '\n')
         // A non-zero exit makes this usable as a scheduled check.
