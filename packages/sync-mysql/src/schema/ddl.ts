@@ -86,6 +86,8 @@ export function iso8601Expression(v: string): string {
   // `+05:30` means the wall time is 5h30 ahead of UTC, so UTC is that much earlier.
   // `signed`, not `unsigned`: MySQL refuses to multiply an unsigned value by -1.
   const offsetMinutes = `(case when ${offset} is null then 0 else (case when left(${offset}, 1) = '-' then 1 else -1 end) * (cast(substring(${offset}, 2, 2) as signed) * 60 + cast(right(${offset}, 2) as signed)) end)`
+  // An offset is hours and minutes too; `+00:99` names no zone.
+  const offsetOutOfRange = `(${offset} is not null and (cast(substring(${offset}, 2, 2) as unsigned) > 23 or cast(right(${offset}, 2) as unsigned) > 59))`
   const fraction = `coalesce(regexp_substr(${v}, '\\\\.[0-9]{1,6}'), '.0')`
   const wall = `concat(substring(${v}, 1, 10), ' ', substring(${v}, 12, 8), ${fraction})`
   return `(case
@@ -93,6 +95,7 @@ export function iso8601Expression(v: string): string {
     when ${year} < 1 or ${month} < 1 or ${month} > 12 then null
     when ${day} < 1 or ${day} > ${daysInMonth} then null
     when ${field(12)} > 23 or ${field(15)} > 59 or ${field(18)} > 59 then null
+    when ${offsetOutOfRange} then null
     else timestampadd(minute, ${offsetMinutes}, str_to_date(${wall}, '%Y-%m-%d %H:%i:%s.%f'))
   end)`
     .replace(/\s+/g, ' ')
