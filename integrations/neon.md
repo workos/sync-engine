@@ -133,14 +133,14 @@ is injected; you supply three variables. The
 [template source](https://github.com/neondatabase/examples/tree/main/registry/workos-sync)
 is the full walkthrough; this is the shape of it.
 
-| Route                   | Called by                         | Purpose                                                              |
-| ----------------------- | --------------------------------- | -------------------------------------------------------------------- |
-| `POST /tick`            | schedule trigger, every minute    | Poll the Events API once                                             |
-| `POST /backfill`        | schedule trigger, every 5 minutes | One slice of the initial load; a no-op once every stream is complete |
-| `POST /reconcile`       | schedule trigger, hourly          | Continue the reconcile pass in progress and repair drift             |
-| `POST /reconcile/fresh` | schedule trigger, weekly          | Start a new reconcile pass                                           |
-| `POST /webhook`         | WorkOS                            | Verify the signature, then poll now                                  |
-| `GET /status`           | you, with a bearer token          | Per-stream counts, poll age and lag                                  |
+| Route                   | Called by                         | Purpose                                                                           |
+| ----------------------- | --------------------------------- | --------------------------------------------------------------------------------- |
+| `POST /tick`            | schedule trigger, every minute    | Poll the Events API once                                                          |
+| `POST /backfill`        | schedule trigger, every 5 minutes | One slice of the initial load; a no-op once every stream is complete              |
+| `POST /reconcile`       | schedule trigger, hourly          | Continue the reconcile pass in progress and repair drift                          |
+| `POST /reconcile/fresh` | schedule trigger, weekly          | Start a new reconcile pass                                                        |
+| `POST /webhook`         | WorkOS                            | Verify the signature, then poll now                                               |
+| `GET /status`           | you, with a bearer token          | Per-stream counts, poll age, lag, and any stream reconcile abandoned as oversized |
 
 ### Scaffold and configure
 
@@ -221,24 +221,23 @@ curl -H "Authorization: Bearer $WORKOS_SYNC_STATUS_TOKEN" <invocation_url>/statu
   are the budgets, and each response reports `pages` so you can size them
   against the 15-minute limit.
 - **A reconcile cannot pause inside a stream.** A stream whose listing alone
-  outlasts the slot runs to its last page, so the invocation hits the time
-  limit with nothing recorded, and every hourly slice starts that stream
-  over without reaching the streams after it. A one-off run elsewhere lasts
-  only until the next `/reconcile/fresh`, which marks every stream pending
-  again. Leave that stream out of both scheduled routes instead, and
-  reconcile it on its own schedule from a host without a time limit:
+  needs more than `MAX_PAGES` pages could never finish in a slot that size,
+  so the engine abandons it on the page after the budget, rolls back its
+  diff with nothing repaired, and reports it `oversized`, in that response
+  and under `oversized` in `GET /status`. The hourly slices skip it from
+  then on, and the weekly `/reconcile/fresh` tries it again, so left alone
+  it costs one budget of pages a week and is never reconciled. Leave it out
+  of both reconcile routes, and reconcile it on its own schedule from a host
+  without a time limit:
 
   ```ts
   // In both reconcile routes of functions/workossync/index.ts.
-  const streams = getEngine()
-    .streams.map((s) => s.name)
-    .filter((name) => name !== "directory_users");
   return Response.json(
     await getEngine().reconcile({
       repair: true,
       resume,
       maxPages: MAX_PAGES,
-      streams,
+      excludeStreams: ["directory_users"],
     }),
   );
   ```
@@ -250,7 +249,9 @@ curl -H "Authorization: Bearer $WORKOS_SYNC_STATUS_TOKEN" <invocation_url>/statu
 
   `directory_users` is the usual case, at four requests per second per
   directory. The `pages` field in each response shows a stream approaching
-  the limit before it crosses it.
+  the budget before it crosses it, and
+  [Serverless hosts](../docs/serverless.md#a-stream-larger-than-the-slot)
+  has the same recipe for the CLI.
 
 - **The function is branch-scoped.** Each branch that deploys it polls WorkOS
   separately into its own database, all within the one key's rate limit.
