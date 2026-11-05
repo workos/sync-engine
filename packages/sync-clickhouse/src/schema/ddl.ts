@@ -85,11 +85,27 @@ export function columnExpression(col: ColumnDef, isKey: boolean): string {
     case 'jsonb':
       // The subtree as JSON text; `JSONExtractRaw` alone reads '' for a missing key.
       return `if(JSONHas(${raw}, ${path}), JSONExtractRaw(${raw}, ${path}), NULL)`
-    case 'timestamptz':
-      // Reads every ISO-8601 shape WorkOS emits, offsets included; NULL for anything else.
-      return `parseDateTime64BestEffortOrNull(JSONExtractString(${raw}, ${path}), 3, 'UTC')`
+    case 'timestamptz': {
+      // Every ISO-8601 shape WorkOS emits, offsets included, with the clock
+      // and the offset range-checked ahead of the parser; NULL for anything
+      // else. Upper-cased for the parser, which reads `T` and `Z` only.
+      const s = `JSONExtractString(${raw}, ${path})`
+      return `if(match(${s}, ${sqlString(ISO_8601)}), parseDateTime64BestEffortOrNull(upper(${s}), 3, 'UTC'), NULL)`
+    }
   }
 }
+
+/**
+ * The timestamps the projection accepts: the Postgres destination's grammar,
+ * every field range-checked in the pattern. The best-effort parser alone
+ * reads `24:00` as the next midnight, `23:60` as the next hour and `+00:99`
+ * as a zone, where the other destinations project NULL. The day of the
+ * month is left to the parser, which refuses `02-30` and `04-31` itself.
+ */
+const ISO_8601 = String.raw`^(?:[1-9]\d{3}|0[1-9]\d{2}|00[1-9]\d|000[1-9])-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt ](?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?\s*(?:[Zz]|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$`
+
+/** A single-quoted ClickHouse string literal; backslashes are escapes there, so each is doubled. */
+const sqlString = (text: string) => `'${text.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
 
 /**
  * One `` `name` type DEFAULT expr `` clause. Every path that creates a

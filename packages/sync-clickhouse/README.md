@@ -176,7 +176,8 @@ CREATE TABLE workos.auth_attempts (
   event_id    String DEFAULT JSONExtractString(_raw, 'event_id'),
   status      Nullable(String) DEFAULT JSONExtract(_raw, 'status', 'Nullable(String)'),
   user_id     Nullable(String) DEFAULT JSONExtract(_raw, 'user_id', 'Nullable(String)'),
-  created_at  Nullable(DateTime64(3, 'UTC')) DEFAULT parseDateTime64BestEffortOrNull(JSONExtractString(_raw, 'created_at'), 3, 'UTC'),
+  created_at  Nullable(DateTime64(3, 'UTC')) DEFAULT if(match(JSONExtractString(_raw, 'created_at'), '<strict ISO-8601>'),
+                parseDateTime64BestEffortOrNull(upper(JSONExtractString(_raw, 'created_at')), 3, 'UTC'), NULL),
   INDEX auth_attempts_user_id_idx user_id TYPE bloom_filter GRANULARITY 4,
   INDEX auth_attempts_created_at_idx created_at TYPE minmax GRANULARITY 1
 ) ENGINE = MergeTree ORDER BY (_env, event_id);

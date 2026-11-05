@@ -53,8 +53,8 @@ describe('DDL generation', () => {
     expect(columnExpression({ name: 'x', type: 'jsonb', path: ['a', 'b'] }, false)).toBe(
       "if(JSONHas(`_raw`, 'a', 'b'), JSONExtractRaw(`_raw`, 'a', 'b'), NULL)",
     )
-    expect(columnExpression({ name: 'x', type: 'timestamptz', path: 'created_at' }, false)).toBe(
-      "parseDateTime64BestEffortOrNull(JSONExtractString(`_raw`, 'created_at'), 3, 'UTC')",
+    expect(columnExpression({ name: 'x', type: 'timestamptz', path: 'created_at' }, false)).toMatch(
+      /^if\(match\(JSONExtractString\(`_raw`, 'created_at'\), '\^.*\$'\), parseDateTime64BestEffortOrNull\(upper\(JSONExtractString\(`_raw`, 'created_at'\)\), 3, 'UTC'\), NULL\)$/,
     )
   })
 
@@ -209,8 +209,18 @@ describeDb('migrations against real ClickHouse', () => {
       [null, null],
       ['2026-02-30T12:00:00Z', null],
       ['2026-13-01T00:00:00Z', null],
-      // Best-effort parsing reads 24:00 as the next midnight, where Postgres refuses it.
-      ['2026-01-01T24:00:00Z', '2026-01-02 00:00:00.000'],
+      // The clock and the offset are range-checked ahead of the parser, which
+      // would otherwise read 24:00 as the next midnight and +00:99 as a zone.
+      ['2026-01-01T24:00:00Z', null],
+      ['2026-01-01T23:60:00Z', null],
+      ['0000-01-01T00:00:00Z', null],
+      ['2026-01-01T00:00:00+00:99', null],
+      ['2026-01-01T00:00:00-24:00', null],
+      ['2026-01-01T00:00:00+23:59', '2025-12-31 00:01:00.000'],
+      ['2026-01-01T00:00:00+0530', '2025-12-31 18:30:00.000'],
+      ['2026-01-01 00:00:00', '2026-01-01 00:00:00.000'],
+      ['2026-01-01t00:00:00z', '2026-01-01 00:00:00.000'],
+      ['2026-01-01', null],
     ]
     for (const [input, expected] of cases) {
       const id = `user_${String(input)}`
