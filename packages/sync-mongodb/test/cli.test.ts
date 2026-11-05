@@ -386,19 +386,21 @@ describe('commands', () => {
     await engine.backfill()
     fake.users.delete(gone['id'] as string)
 
-    const diffs = () =>
-      (
-        lastJson() as {
-          diffs: Record<string, { stream: string; pages: number; complete: boolean; localOnly: string[] }[]>
-        }
-      ).diffs['prod']!
+    interface Diff {
+      stream: string
+      pages: number
+      complete: boolean
+      localOnly: string[]
+      remoteOnly: string[]
+      skippedReason?: string
+    }
+    const diffs = () => (lastJson() as { diffs: Record<string, Diff[]> }).diffs['prod']!
     // The diff is checked before the exit code, so a failure shows the whole result.
     const code = await main(['reconcile', '--max-pages', '2'], { engine })
-    expect(diffs().find((d) => d.stream === 'users')).toMatchObject({
-      pages: 3,
-      complete: true,
-      localOnly: [gone['id']],
-    })
+    const users = diffs().find((d) => d.stream === 'users')!
+    // A stream whose diff threw is reported with the error here, not thrown.
+    expect(users.skippedReason).toBeUndefined()
+    expect(users).toMatchObject({ pages: 3, complete: true, localOnly: [gone['id']], remoteOnly: [] })
     expect(diffs().find((d) => d.stream === 'invitations')).toMatchObject({ pages: 0, complete: false })
     // A slice that stops short is the outcome asked for, not an error, but drift is.
     expect(code).toBe(2)
