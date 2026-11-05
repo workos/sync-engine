@@ -105,6 +105,7 @@ as $fn$
     when p[3]::int not between 1 and
       extract(day from (make_date(p[1]::int, p[2]::int, 1) + interval '1 month' - interval '1 day')) then null
     when p[4]::int > 23 or p[5]::int > 59 or p[6]::double precision > 60 then null
+    when p[9]::int > 23 or p[10]::int > 59 then null
     else
     timezone('UTC', make_timestamp(
       p[1]::int, p[2]::int, p[3]::int, p[4]::int, p[5]::int, p[6]::double precision))

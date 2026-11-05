@@ -179,6 +179,10 @@ describe('migrations against real Postgres', () => {
       ['2026-01-01T24:00:00Z', null],
       ['2026-01-01T23:60:00Z', null],
       ['0000-01-01T00:00:00Z', null],
+      // The offset's fields are checked like the clock's.
+      ['2026-01-01T00:00:00+00:99', null],
+      ['2026-01-01T00:00:00-24:00', null],
+      ['2026-01-01T00:00:00+23:59', '2025-12-31T00:01:00.000Z'],
     ]
     for (const [input, expected] of cases) {
       await db.query(`insert into workos.users ("_env","_raw","_updated_at") values ('prod', $1::jsonb, now())`, [
