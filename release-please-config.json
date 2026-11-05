@@ -19,6 +19,10 @@
     "packages/sync-mysql": {
       "release-type": "node",
       "component": "sync-mysql"
+    },
+    "packages/sync-clickhouse": {
+      "release-type": "node",
+      "component": "sync-clickhouse"
     }
   }
 }

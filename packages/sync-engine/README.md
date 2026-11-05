@@ -8,10 +8,11 @@ particular database. Writes go through a small `Destination` interface.
 **You probably want a destination package instead.** Each one depends on this
 package and re-exports it, so it is the only thing to install:
 
-| Destination | Package                                                                        |
-| ----------- | ------------------------------------------------------------------------------ |
-| Postgres    | [`@workos/sync-postgres`](https://www.npmjs.com/package/@workos/sync-postgres) |
-| MySQL       | [`@workos/sync-mysql`](https://www.npmjs.com/package/@workos/sync-mysql)       |
+| Destination | Package                                                                            |
+| ----------- | ---------------------------------------------------------------------------------- |
+| Postgres    | [`@workos/sync-postgres`](https://www.npmjs.com/package/@workos/sync-postgres)     |
+| MySQL       | [`@workos/sync-mysql`](https://www.npmjs.com/package/@workos/sync-mysql)           |
+| ClickHouse  | [`@workos/sync-clickhouse`](https://www.npmjs.com/package/@workos/sync-clickhouse) |
 
 Install this package directly only to write a new destination.
 

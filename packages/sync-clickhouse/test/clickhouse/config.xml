@@ -1,0 +1,30 @@
+<!--
+  Server configuration for the test container: an embedded ClickHouse Keeper
+  (KeeperMap needs one), the `keeper_map_path_prefix` that enables the
+  engine, and seccomp off for Docker Desktop's VM, which refuses the filter.
+
+    docker run -d --name clickhouse -p 127.0.0.1:8123:8123 \
+      -v "$PWD/packages/sync-clickhouse/test/clickhouse/config.xml:/etc/clickhouse-server/config.d/sync.xml:ro" \
+      -v "$PWD/packages/sync-clickhouse/test/clickhouse/users.xml:/etc/clickhouse-server/users.d/sync.xml:ro" \
+      -e CLICKHOUSE_SKIP_USER_SETUP=1 clickhouse/clickhouse-server:latest
+-->
+<clickhouse>
+  <keeper_server>
+    <tcp_port>9181</tcp_port>
+    <server_id>1</server_id>
+    <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+    <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+    <coordination_settings>
+      <operation_timeout_ms>10000</operation_timeout_ms>
+      <session_timeout_ms>30000</session_timeout_ms>
+    </coordination_settings>
+    <raft_configuration>
+      <server><id>1</id><hostname>localhost</hostname><port>9234</port></server>
+    </raft_configuration>
+  </keeper_server>
+  <zookeeper>
+    <node><host>localhost</host><port>9181</port></node>
+  </zookeeper>
+  <keeper_map_path_prefix>/keeper_map_tables</keeper_map_path_prefix>
+  <seccomp>disabled</seccomp>
+</clickhouse>

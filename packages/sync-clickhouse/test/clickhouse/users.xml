@@ -1,0 +1,8 @@
+<!-- simdjson reports UNSUPPORTED_ARCHITECTURE under some virtual machines; rapidjson is fine for tests. -->
+<clickhouse>
+  <profiles>
+    <default>
+      <allow_simdjson>0</allow_simdjson>
+    </default>
+  </profiles>
+</clickhouse>
