@@ -8,12 +8,12 @@ long-lived process.
 
 ## What fits in a slot
 
-| Command                     | Bounded by                             | Continues with                            |
-| --------------------------- | -------------------------------------- | ----------------------------------------- |
-| `tick`                      | `maxEventsPerTick` events, one poll    | the cursor, automatically                 |
-| `backfill --max-pages <n>`  | `n` pages across every stream          | `--resume`                                |
-| `refresh --max-pages <n>`   | `n` pages across the top-level streams | `--resume`; shares backfill's checkpoints |
-| `reconcile --max-pages <n>` | `n` pages, stopping between streams    | `--resume`                                |
+| Command                     | Bounded by                                                                                          | Continues with                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `tick`                      | `maxEventsPerTick` events, one poll                                                                 | the cursor, automatically                 |
+| `backfill --max-pages <n>`  | `n` pages across every stream                                                                       | `--resume`                                |
+| `refresh --max-pages <n>`   | `n` pages across the top-level streams                                                              | `--resume`; shares backfill's checkpoints |
+| `reconcile --max-pages <n>` | `n` pages, stopping between streams; a stream needing more than `n` alone is abandoned as oversized | `--resume`                                |
 
 `tick` takes the writer lease and renews it while it runs. A second invocation
 that overlaps it exits 3, or throws `LeaseHeldError` in the library, and should
@@ -46,7 +46,9 @@ resumed ones stay scheduled and cost a few state reads.
 - **`reconcile`** starts fresh once a week and is finished by the hourly
   resumed slices, which do nothing once every stream is complete. Give both
   the same flags; `--repair` is applied per stream inside each slice. Without
-  `--repair`, drift exits 2, which is the signal to alert on.
+  `--repair`, drift exits 2, which is the signal to alert on. A stream too
+  large for the slot needs a schedule of its own; see
+  [A stream larger than the slot](#a-stream-larger-than-the-slot).
 - **`refresh`** fits the same shape as `reconcile` when you use it.
 
 Size the budget from the output. A slice's run time is its `pages` times the
@@ -140,19 +142,37 @@ changes nothing. Verify on the raw bytes, before any JSON parsing.
 There is no `listen`, so there is no health server. `status` reads the
 database and works from any invocation: `pollAgeSeconds` is the number to
 alert on for a stalled sync, `rejected` for events the tail has quarantined,
-and the per-stream rows give counts, tombstones, staleness and lag. Serve it
-from a probe route, or run it on a schedule and alert on the result.
+`oversized` for streams a reconcile abandoned as too large for the slot, and
+the per-stream rows give counts, tombstones, staleness and lag. Serve it from
+a probe route, or run it on a schedule and alert on the result.
 
 ## A stream larger than the slot
 
 `reconcile` cannot pause inside a stream, because a diff is taken against the
-stream's whole listing. A stream whose listing alone outlasts the slot runs to
-its last page regardless of the budget, and the slice overshoots. The `pages`
-field shows it coming: when one stream's pages times the time per page
-approaches the slot, run that stream's reconcile somewhere without a limit,
-`engine.reconcile({ streams: [...] })` from the library or a one-off
-`reconcile` from a container, and let the scheduled slices cover the rest.
-`backfill` and `refresh` have no such floor; they checkpoint after every page.
+stream's whole listing. A stream whose listing alone needs more than
+`--max-pages` pages could never finish in a slot that size, so the slice
+abandons it on the page after the budget, rolls back what it staged with
+nothing repaired, and reports it `oversized`. Later slices with `--resume`
+skip it rather than spend the budget on it again, `status` lists it under
+`oversized`, and it stays unreconciled until a run with a larger budget, or
+none, diffs it. A fresh slice tries it again, so left in the schedule it
+costs one budget's worth of pages a week and is never reconciled.
+
+Give it a schedule of its own somewhere without a limit, and leave it out of
+both scheduled slices with `--exclude-streams`:
+
+```cron
+30 * * * *    workos-sync-postgres reconcile --resume --repair --max-pages 50 --exclude-streams directory_users
+0 3 * * 0     workos-sync-postgres reconcile --repair --max-pages 50 --exclude-streams directory_users
+0 4 * * 0     workos-sync-postgres reconcile --repair --streams directory_users   # a host without a limit
+```
+
+From the library, pass `excludeStreams` to the bounded calls and
+`engine.reconcile({ repair: true, streams: ['directory_users'] })` to the
+unbounded one. `directory_users` is the usual case, at four requests per
+second per directory; the `pages` field shows any stream approaching the
+budget before it crosses it. `backfill` and `refresh` have no such floor;
+they checkpoint after every page.
 
 ## Connections
 

@@ -54,14 +54,22 @@ export interface BackfillState {
 
 /**
  * Reconcile progress for one stream, resumable at stream granularity: a
- * stream is either still to diff or done. There is no page checkpoint,
+ * stream is still to diff, done, or oversized. There is no page checkpoint,
  * because a diff is taken against the whole listing; see `diffStream`.
  */
 export interface ReconcileState {
   kind: 'reconcile'
-  status: 'pending' | 'complete'
+  /**
+   * `oversized`: the listing passed the call's `maxPages`, so the diff was
+   * abandoned. A resumed call skips the stream unless its `maxPages` is
+   * larger than the one recorded here, or absent; a fresh call tries again.
+   */
+  status: 'pending' | 'complete' | 'oversized'
   pages?: number
   completedAt?: string
+  /** The `maxPages` an oversized stream was abandoned under. */
+  maxPages?: number
+  oversizedAt?: string
 }
 
 export type StreamState = TailState | BackfillState | ReconcileState | Record<string, unknown>

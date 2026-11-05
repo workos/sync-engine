@@ -22,8 +22,11 @@
  * budget cut off would read as a missed delete, and `repair` would tombstone
  * objects that exist upstream. The budget therefore decides whether the next
  * stream starts, never where a listing stops. A stream that starts runs to
- * its last page, a call overshoots by at most one stream's listing, and the
- * streams not started are left for a later call with `resume`.
+ * its last page, unless its own listing passes the budget's `max`: a stream
+ * that size could never finish inside a slot of that size, so it is
+ * abandoned there, nothing staged is kept, and `OversizedStreamError` says
+ * so. A call therefore overshoots by at most `max` pages, and the streams
+ * not started are left for a later call with `resume`.
  */
 import type { Destination, FreshnessRow } from '../destination.js'
 import type { PageBudget } from './backfill.js'
@@ -60,12 +63,37 @@ export interface DiffResult {
    * `resume` comes back to it.
    */
   complete: boolean
+  /**
+   * True when the stream's own listing needs more pages than `maxPages`, so
+   * it was abandoned, or skipped on `resume` because an earlier call
+   * abandoned it. `complete` is false. A call with `resume` comes back to it
+   * only with a larger `maxPages` or none; a call without `resume` tries it
+   * again.
+   */
+  oversized?: boolean
   skippedReason?: string
 }
 
 /** Whether a stream has a listing to diff against. */
 export function diffable(stream: StreamDef): boolean {
   return Boolean(stream.list) && stream.mode !== 'append'
+}
+
+/**
+ * Thrown by `diffStream` when a stream's listing passes the budget's `max`.
+ * The diff is abandoned where it stands: the destination's transaction
+ * rolls back, so nothing is staged or repaired, and the engine records the
+ * stream as oversized rather than trying it again in every later slice.
+ */
+export class OversizedStreamError extends Error {
+  constructor(
+    readonly stream: string,
+    readonly pages: number,
+    readonly maxPages: number,
+  ) {
+    super(`stream ${stream} needs more than ${maxPages} pages — reconcile it without maxPages, or with a larger one`)
+    this.name = 'OversizedStreamError'
+  }
 }
 
 /**
@@ -111,8 +139,9 @@ export async function diffStream(
     }
   }
 
-  // The budget is consulted once, here. A stream that starts runs to its
-  // last page, for the reason in the module comment.
+  // The shared budget is consulted once, here. A stream that starts runs
+  // to its last page, for the reason in the module comment, unless it alone
+  // passes the budget's `max`; see `charge` below.
   const budget = opts.budget
   if (budget !== undefined && budget.remaining <= 0) {
     return {
@@ -152,10 +181,20 @@ export async function diffStream(
   // a backfill charges a page before its write. The count lives in the
   // caller's `progress` when one is given, so a stream that fails partway
   // can still report the pages it drew on the budget.
+  //
+  // A listing that passes the budget's `max` could never finish inside a
+  // slot of that size. Run to its end it would be cut off by the host with
+  // nothing recorded, and every later slice would start it over; abandoned
+  // here, the throw unwinds the destination's transaction, so nothing staged
+  // survives, and the engine records the verdict.
   const progress = opts.progress ?? { pages: 0 }
+  const limit = budget?.max
   const charge = () => {
     progress.pages++
     if (budget) budget.remaining--
+    if (limit !== undefined && progress.pages > limit) {
+      throw new OversizedStreamError(stream.name, progress.pages, limit)
+    }
   }
 
   /**

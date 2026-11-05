@@ -8,6 +8,7 @@ import {
   parseSslCa,
   printSchemaSql,
   repairRequested,
+  parseExcludeStreams,
 } from '../src/cli.js'
 import { fingerprint, migrate } from '../src/schema/migrate.js'
 import { buildSchemaSql } from '../src/schema/ddl.js'
@@ -382,7 +383,7 @@ describe('reconcile command', () => {
   const lastDiffs = () =>
     (
       JSON.parse(out[out.length - 1]!) as {
-        diffs: Record<string, { stream: string; pages: number; complete: boolean }[]>
+        diffs: Record<string, { stream: string; pages: number; complete: boolean; oversized?: boolean }[]>
       }
     ).diffs['prod']!
 
@@ -410,7 +411,7 @@ describe('reconcile command', () => {
     await engine.backfill()
 
     // A slice that stops short is the outcome asked for, not an error.
-    expect(await main(['reconcile', '--max-pages', '2'], { engine })).toBe(0)
+    expect(await main(['reconcile', '--max-pages', '3'], { engine })).toBe(0)
     let diffs = lastDiffs()
     expect(diffs.find((d) => d.stream === 'users')).toMatchObject({ pages: 3, complete: true })
     expect(diffs.find((d) => d.stream === 'invitations')).toMatchObject({ pages: 0, complete: false })
@@ -419,6 +420,71 @@ describe('reconcile command', () => {
     diffs = lastDiffs()
     expect(diffs.find((d) => d.stream === 'users')).toMatchObject({ pages: 0, complete: true })
     expect(diffs.find((d) => d.stream === 'invitations')).toMatchObject({ pages: 1, complete: true })
+  })
+
+  it('abandons a stream whose listing passes --max-pages and reports it oversized, still exiting 0', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = new SyncEngine(
+      {
+        destination: new PostgresDestination({ db, schema: 'workos' }),
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: ['users'],
+        hydrate: 'off',
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({
+            apiKey: 'sk_test_1',
+            apiUrl: 'http://fake.workos.local',
+            fetchImpl: fake.fetchImpl,
+            pageSize: 100,
+          }),
+      },
+    )
+    await engine.backfill()
+
+    expect(await main(['reconcile', '--max-pages', '2'], { engine })).toBe(0)
+    expect(lastDiffs().find((d) => d.stream === 'users')).toMatchObject({ pages: 3, complete: false, oversized: true })
+    expect(await main(['status'], { engine })).toBe(0)
+    expect(JSON.parse(out[out.length - 1]!)).toMatchObject({ prod: { oversized: ['users'] } })
+  })
+
+  it('leaves out --exclude-streams, and refuses a bare flag or an unknown name', async () => {
+    fake.createUser()
+    const engine = new SyncEngine(
+      {
+        destination: new PostgresDestination({ db, schema: 'workos' }),
+        environments: [{ name: 'prod', apiKey: 'sk_test_1' }],
+        streams: ['users', 'invitations'],
+        hydrate: 'off',
+        logger: silentLogger,
+        lagWindowMs: 0,
+      },
+      {
+        clientFor: () =>
+          new WorkOSClient({
+            apiKey: 'sk_test_1',
+            apiUrl: 'http://fake.workos.local',
+            fetchImpl: fake.fetchImpl,
+            pageSize: 100,
+          }),
+      },
+    )
+    await engine.backfill()
+
+    expect(await main(['reconcile', '--exclude-streams', 'users'], { engine })).toBe(0)
+    const names = lastDiffs().map((d) => d.stream)
+    expect(names).not.toContain('users')
+    expect(names).toContain('invitations')
+
+    await expect(main(['reconcile', '--exclude-streams', 'customers'], { engine })).rejects.toThrow(
+      /unknown stream: customers/,
+    )
+    // A bare flag parses as `true`; it must not become an exclusion of nothing.
+    expect(() => parseExcludeStreams(true)).toThrow(/invalid --exclude-streams/)
+    expect(parseExcludeStreams('users, invitations')).toEqual(['users', 'invitations'])
   })
 })
 

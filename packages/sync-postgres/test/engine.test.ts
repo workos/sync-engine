@@ -1891,24 +1891,115 @@ describe('reconcile page budget', () => {
     r.diffs['prod']!.find((d) => d.stream === stream)!
 
   it('runs a started stream to its last page, then leaves the rest for a resume', async () => {
+    fake.createUser()
+    for (let i = 0; i < 250; i++) fake.createOrganization()
+    const engine = makeEngine(db, fake, ['users', 'organizations', 'invitations'])
+    await engine.backfill()
+
+    // Three pages are budgeted: users takes one, and organizations starts
+    // with two left but needs three. The diff is a set difference against
+    // the whole listing, so the stream finishes anyway and the call
+    // overshoots by the difference; the budget's job is to keep the next
+    // stream from starting.
+    const first = await engine.reconcile({ maxPages: 3 })
+    expect(diffFor(first, 'users')).toMatchObject({ pages: 1, complete: true, matched: 1 })
+    expect(diffFor(first, 'organizations')).toMatchObject({ pages: 3, complete: true, matched: 250 })
+    expect(diffFor(first, 'invitations')).toMatchObject({ pages: 0, complete: false })
+    expect(diffFor(first, 'invitations').skippedReason).toMatch(/resume/)
+
+    const orgsBefore = listings('/organizations')
+    const second = await engine.reconcile({ resume: true, maxPages: 3 })
+    expect(diffFor(second, 'organizations')).toMatchObject({ pages: 0, complete: true })
+    expect(diffFor(second, 'invitations')).toMatchObject({ pages: 1, complete: true })
+    // The resumed call did not list organizations again.
+    expect(listings('/organizations')).toBe(orgsBefore)
+  })
+
+  it('abandons a stream whose own listing passes maxPages, and resumes skip it until the budget grows', async () => {
     for (let i = 0; i < 250; i++) fake.createUser()
     const engine = makeEngine(db, fake, ['users', 'invitations'])
     await engine.backfill()
 
-    // Two pages are budgeted and users needs three. The diff is a set
-    // difference against the whole listing, so the stream finishes anyway;
-    // the budget's job is to keep the next stream from starting.
+    // Users needs three pages and the budget is two: a stream that size could
+    // never finish inside a slot that size, so it is abandoned on the third
+    // page rather than run to its end.
     const first = await engine.reconcile({ maxPages: 2 })
-    expect(diffFor(first, 'users')).toMatchObject({ pages: 3, complete: true, matched: 250 })
+    expect(diffFor(first, 'users')).toMatchObject({ pages: 3, complete: false, oversized: true })
+    expect(diffFor(first, 'users').skippedReason).toMatch(/more than 2 pages/)
+    // The abandoned pages spent the budget, so nothing else started.
     expect(diffFor(first, 'invitations')).toMatchObject({ pages: 0, complete: false })
-    expect(diffFor(first, 'invitations').skippedReason).toMatch(/resume/)
+    expect(diffFor(first, 'invitations').oversized).toBeUndefined()
+    expect(await engine.status()).toMatchObject({ prod: { oversized: ['users'] } })
 
+    // A resumed slice under the same budget leaves it alone and gets on with
+    // the rest, without listing it again.
     const usersBefore = listings('/user_management/users')
     const second = await engine.reconcile({ resume: true, maxPages: 2 })
-    expect(diffFor(second, 'users')).toMatchObject({ pages: 0, complete: true })
+    expect(diffFor(second, 'users')).toMatchObject({ pages: 0, complete: false, oversized: true })
     expect(diffFor(second, 'invitations')).toMatchObject({ pages: 1, complete: true })
-    // The resumed call did not list users again.
     expect(listings('/user_management/users')).toBe(usersBefore)
+
+    // A larger budget is the signal to try again.
+    const third = await engine.reconcile({ resume: true, maxPages: 3 })
+    expect(diffFor(third, 'users')).toMatchObject({ pages: 3, complete: true, matched: 250 })
+    expect(await engine.status()).toMatchObject({ prod: { oversized: [] } })
+  })
+
+  it('tries an oversized stream again on a fresh run, and on a resume without a budget', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = makeEngine(db, fake, ['users'])
+    await engine.backfill()
+    await engine.reconcile({ maxPages: 2 })
+    expect(await engine.status()).toMatchObject({ prod: { oversized: ['users'] } })
+
+    // No budget, no abandonment: the resumed call diffs it in full.
+    const unbounded = await engine.reconcile({ resume: true })
+    expect(diffFor(unbounded, 'users')).toMatchObject({ pages: 3, complete: true, matched: 250 })
+    expect(await engine.status()).toMatchObject({ prod: { oversized: [] } })
+
+    // A fresh bounded run forgets the earlier verdict and reaches it again.
+    const fresh = await engine.reconcile({ maxPages: 2 })
+    expect(diffFor(fresh, 'users')).toMatchObject({ pages: 3, complete: false, oversized: true })
+  })
+
+  it('repairs nothing in a stream it abandons', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = makeEngine(db, fake, ['users'])
+    await engine.backfill()
+    // Deleted upstream behind the mirror's back: the missed delete a
+    // completed repair would tombstone.
+    const gone = (await db.query<{ id: string }>(`select id from workos.users limit 1`)).rows[0]!.id
+    fake.deleteUser(gone)
+
+    const abandoned = await engine.reconcile({ repair: true, maxPages: 2 })
+    expect(diffFor(abandoned, 'users')).toMatchObject({ complete: false, oversized: true, localOnly: [] })
+    expect(diffFor(abandoned, 'users').repaired).toBeUndefined()
+    const live = await db.query<{ n: string }>(`select count(*)::text as n from workos.users where _deleted_at is null`)
+    expect(Number(live.rows[0]!.n)).toBe(250)
+
+    // Without a budget the same call finds it and fixes it.
+    const full = await engine.reconcile({ repair: true })
+    expect(diffFor(full, 'users')).toMatchObject({ complete: true, repaired: { deleted: 1, inserted: 0 } })
+    expect(diffFor(full, 'users').localOnly).toHaveLength(1)
+  })
+
+  it('leaves out the streams in excludeStreams, and refuses a name it does not know', async () => {
+    fake.createUser()
+    const engine = makeEngine(db, fake, ['users', 'invitations'])
+    await engine.backfill()
+    const usersBefore = listings('/user_management/users')
+
+    const r = await engine.reconcile({ excludeStreams: ['users'] })
+    expect(r.diffs['prod']!.map((d) => d.stream)).not.toContain('users')
+    expect(diffFor(r, 'invitations')).toMatchObject({ pages: 1, complete: true })
+    expect(listings('/user_management/users')).toBe(usersBefore)
+
+    // An excluded stream is left as it was, not marked complete: a resumed
+    // call that includes it again diffs it.
+    const back = await engine.reconcile({ resume: true })
+    expect(diffFor(back, 'users')).toMatchObject({ pages: 1, complete: true })
+
+    await expect(engine.reconcile({ excludeStreams: ['customers'] })).rejects.toThrow(/unknown stream: customers/)
   })
 
   it('forgets completion on a fresh run, so a resume diffs what the budget skipped', async () => {
