@@ -65,11 +65,24 @@ export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropp
       continue
     }
     const k = key.join('\0')
-    const at = Date.parse(row.updatedAt)
+    const at = micros(row.updatedAt)
     const existing = byKey.get(k)
     if (!existing || !isBefore(row.updatedAt, at, existing.row.updatedAt, existing.at)) byKey.set(k, { row, at })
   }
   return { rows: [...byKey.values()].map((e) => e.row), dropped }
+}
+
+/**
+ * The instant `iso` names, in microseconds since the epoch, or NaN.
+ * `Date.parse` reads three fractional digits; a `DATETIME(6)` keeps six, so
+ * the rest of the fraction is read here and two rows a microsecond apart
+ * stay ordered the way the staleness gate will order them.
+ */
+function micros(iso: string): number {
+  const frac = /\.(\d+)/.exec(iso)?.[1] ?? ''
+  const ms = Date.parse(frac.length > 3 ? iso.replace(`.${frac}`, `.${frac.slice(0, 3)}`) : iso)
+  if (Number.isNaN(ms)) return ms
+  return ms * 1000 + Number(frac.slice(3, 6).padEnd(3, '0'))
 }
 
 /**
