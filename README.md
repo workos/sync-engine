@@ -35,9 +35,11 @@ commands and a container image under the same name:
 | ----------- | ------------------------------------------------- | ----------------------------------------------------------------------- |
 | Postgres    | [`@workos/sync-postgres`](packages/sync-postgres) | A `workos` schema of tables with generated columns and `_live` views    |
 | MongoDB     | [`@workos/sync-mongodb`](packages/sync-mongodb)   | `workos_*` collections in your database, with indexes and `_live` views |
+| MySQL       | [`@workos/sync-mysql`](packages/sync-mysql)       | A `workos` database of tables with generated columns and `_live` views  |
 
 The rest of this page shows Postgres; every command and option below has a
-MongoDB counterpart, and each package's README is the reference for it.
+MongoDB and a MySQL counterpart, and each package's README is the reference
+for it.
 
 ## Try it in 30 seconds
 
