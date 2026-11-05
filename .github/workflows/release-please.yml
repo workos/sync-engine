@@ -1,6 +1,6 @@
 name: Release Please
 
-# Both packages have npm trusted publishers that name THIS file, not
+# Every package has an npm trusted publisher that names THIS file, not
 # release.yml: when a publish runs inside a workflow_call, npm validates the
 # calling workflow's filename. Provenance is attached automatically once the
 # repo is public; nothing here changes for that.
@@ -35,6 +35,8 @@ jobs:
       sync-engine--tag_name: ${{ steps.release.outputs['packages/sync-engine--tag_name'] }}
       sync-postgres--release_created: ${{ steps.release.outputs['packages/sync-postgres--release_created'] }}
       sync-postgres--tag_name: ${{ steps.release.outputs['packages/sync-postgres--tag_name'] }}
+      sync-mysql--release_created: ${{ steps.release.outputs['packages/sync-mysql--release_created'] }}
+      sync-mysql--tag_name: ${{ steps.release.outputs['packages/sync-mysql--tag_name'] }}
     steps:
       # Release PRs and tags come from the SDK Automation Bot, as in workos-node.
       # Events raised with GITHUB_TOKEN start no workflow runs, so a release PR
@@ -78,5 +80,17 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag_name: ${{ needs.release-please.outputs.sync-postgres--tag_name }}
+    secrets:
+      PUBLIC_SOCKET_FIREWALL_TOKEN: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}
+
+  publish-sync-mysql:
+    needs: [release-please, publish-sync-engine]
+    if: >-
+      ${{ !cancelled()
+          && needs.publish-sync-engine.result != 'failure'
+          && needs.release-please.outputs.sync-mysql--release_created == 'true' }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.sync-mysql--tag_name }}
     secrets:
       PUBLIC_SOCKET_FIREWALL_TOKEN: ${{ secrets.PUBLIC_SOCKET_FIREWALL_TOKEN }}

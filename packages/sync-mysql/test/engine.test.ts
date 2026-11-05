@@ -368,6 +368,32 @@ describeDb('reconciliation', () => {
     expect(again.diffs['prod']!.find((d) => d.stream === 'users')).toMatchObject({ localOnly: [], remoteOnly: [] })
   })
 
+  it('keeps an oversized verdict across runs, and forgets it once the stream completes', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = makeEngine(db, fake, ['users', 'invitations'])
+    await engine.backfill()
+
+    // Three pages upstream and two budgeted: abandoned on the third page,
+    // with the verdict written to the stream's state.
+    const first = await engine.reconcile({ maxPages: 2 })
+    expect(first.diffs['prod']!.find((d) => d.stream === 'users')).toMatchObject({
+      pages: 3,
+      complete: false,
+      oversized: true,
+    })
+    expect(await engine.status()).toMatchObject({ prod: { oversized: ['users'] } })
+
+    // A resumed slice under the same budget reads the verdict back and skips the stream.
+    const second = await engine.reconcile({ resume: true, maxPages: 2 })
+    expect(second.diffs['prod']!.find((d) => d.stream === 'users')).toMatchObject({ pages: 0, oversized: true })
+    expect(second.diffs['prod']!.find((d) => d.stream === 'invitations')).toMatchObject({ complete: true })
+
+    // A larger budget diffs it in full and clears the verdict.
+    const third = await engine.reconcile({ resume: true, maxPages: 3 })
+    expect(third.diffs['prod']!.find((d) => d.stream === 'users')).toMatchObject({ complete: true, matched: 250 })
+    expect(await engine.status()).toMatchObject({ prod: { oversized: [] } })
+  })
+
   it('reports freshness and lag per stream', async () => {
     fake.createUser()
     const engine = makeEngine(db, fake)
