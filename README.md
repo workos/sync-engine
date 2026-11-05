@@ -102,12 +102,9 @@ ships with the package and so always describes the version you installed. The
 
 ## Integration
 
-Guides for a specific platform, covering what it puts in front of you and
-any way of running the sync that only it offers:
+Although any accessible database is supported, we also have guides for integrating with the following platforms:
 
-- [Neon](integrations/neon.md): direct and pooled connections, TLS, endpoint
-  verification, branches, and running the sync on Neon as a Function from
-  the registry template.
+- [Neon](integrations/neon.md)
 
 ## How it works
 
