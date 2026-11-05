@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { SyncEngine, WorkOSClient, selectStreams, silentLogger } from '@workos/sync-engine'
 import {
+  invokedDirectly,
   main,
   parseHydrate,
   parseExcludeStreams,
@@ -15,6 +20,42 @@ import { createTestDb, describeDb, type TestDb } from './helpers/mysql.js'
 import { FaultyDestination } from './helpers/faulty.js'
 import { TEST_CA_PEM } from './helpers/ca.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
+
+describe('entrypoint', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'workos-sync-mysql-bin-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('recognises the script itself and the symlink npm installs as the command', () => {
+    const script = join(dir, 'cli.js')
+    writeFileSync(script, '')
+    const url = pathToFileURL(script).href
+    expect(invokedDirectly(script, url)).toBe(true)
+
+    // `npm install` links `node_modules/.bin/workos-sync-mysql` at dist/cli.js,
+    // so argv[1] is the link, not the file.
+    const link = join(dir, 'workos-sync-mysql')
+    symlinkSync(script, link)
+    expect(invokedDirectly(link, url)).toBe(true)
+  })
+
+  it('is false for an import, a missing path, or another script', () => {
+    const script = join(dir, 'cli.js')
+    writeFileSync(script, '')
+    const url = pathToFileURL(script).href
+    expect(invokedDirectly(undefined, url)).toBe(false)
+    expect(invokedDirectly(join(dir, 'missing'), url)).toBe(false)
+    const other = join(dir, 'vitest.mjs')
+    writeFileSync(other, '')
+    expect(invokedDirectly(other, url)).toBe(false)
+    // This test file was started by the test runner, not by the CLI.
+    expect(invokedDirectly(process.argv[1], url)).toBe(false)
+  })
+})
 
 describe('WORKOS_SYNC_HYDRATE', () => {
   it('leaves the engine default in place when unset', () => {

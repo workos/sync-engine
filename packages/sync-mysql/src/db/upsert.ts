@@ -56,7 +56,7 @@ export function keyValues(stream: TableDef, data: Record<string, unknown>): stri
  * are whole; upserts use `wavesByKey`.
  */
 export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropped: number } {
-  const byKey = new Map<string, Row>()
+  const byKey = new Map<string, { row: Row; at: number }>()
   let dropped = 0
   for (const row of rows) {
     const key = keyValues(stream, row.data)
@@ -65,10 +65,22 @@ export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropp
       continue
     }
     const k = key.join('\0')
+    const at = Date.parse(row.updatedAt)
     const existing = byKey.get(k)
-    if (!existing || row.updatedAt >= existing.updatedAt) byKey.set(k, row)
+    if (!existing || !isBefore(row.updatedAt, at, existing.row.updatedAt, existing.at)) byKey.set(k, { row, at })
   }
-  return { rows: [...byKey.values()], dropped }
+  return { rows: [...byKey.values()].map((e) => e.row), dropped }
+}
+
+/**
+ * Whether one timestamp is strictly earlier than another, by the instant
+ * each names: `01:00:00+01:00` sorts after `00:30:00Z` as text and is half an
+ * hour earlier as a time. A value that is not a date is ordered as text; the
+ * database refuses it on the write either way.
+ */
+function isBefore(a: string, atA: number, b: string, atB: number): boolean {
+  if (Number.isNaN(atA) || Number.isNaN(atB)) return a < b
+  return atA < atB
 }
 
 /**
