@@ -32,6 +32,8 @@ import {
   type SyncEngineConfig,
 } from '@workos/sync-engine'
 import { X509Certificate } from 'node:crypto'
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { PostgresDestination } from './destination.js'
 import { buildSchemaSql } from './schema/ddl.js'
 import { fingerprint } from './schema/migrate.js'
@@ -537,9 +539,23 @@ async function runCommand(command: string, flags: Record<string, string | boolea
   }
 }
 
-// Run when invoked directly, not when imported by a test.
-const invokedDirectly = process.argv[1] && (process.argv[1].endsWith('cli.js') || process.argv[1].endsWith('cli.ts'))
-if (invokedDirectly) {
+/**
+ * Whether this module is the script Node was started with, as opposed to an
+ * import by a test. npm installs a `bin` as a symlink named after the
+ * command, so `process.argv[1]` ends in `workos-sync-postgres` rather than
+ * `cli.js`; both sides are resolved to real paths so the installed command
+ * counts.
+ */
+export function invokedDirectly(argv1: string | undefined, moduleUrl: string): boolean {
+  if (!argv1) return false
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl))
+  } catch {
+    return false
+  }
+}
+
+if (invokedDirectly(process.argv[1], import.meta.url)) {
   main().then(
     (code) => process.exit(code),
     (err) => {
