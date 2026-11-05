@@ -221,10 +221,37 @@ curl -H "Authorization: Bearer $WORKOS_SYNC_STATUS_TOKEN" <invocation_url>/statu
   are the budgets, and each response reports `pages` so you can size them
   against the 15-minute limit.
 - **A reconcile cannot pause inside a stream.** A stream whose listing alone
-  outlasts the budget runs to its last page. Reconcile that stream once from
-  anywhere else with
-  `npx workos-sync-postgres reconcile --repair --streams <name>` against the
-  same `DATABASE_URL`, and let the scheduled slices cover the rest.
+  outlasts the slot runs to its last page, so the invocation hits the time
+  limit with nothing recorded, and every hourly slice starts that stream
+  over without reaching the streams after it. A one-off run elsewhere lasts
+  only until the next `/reconcile/fresh`, which marks every stream pending
+  again. Leave that stream out of both scheduled routes instead, and
+  reconcile it on its own schedule from a host without a time limit:
+
+  ```ts
+  // In both reconcile routes of functions/workossync/index.ts.
+  const streams = getEngine()
+    .streams.map((s) => s.name)
+    .filter((name) => name !== "directory_users");
+  return Response.json(
+    await getEngine().reconcile({
+      repair: true,
+      resume,
+      maxPages: MAX_PAGES,
+      streams,
+    }),
+  );
+  ```
+
+  ```sh
+  # Weekly, with the function's DATABASE_URL and WORKOS_ENVIRONMENT_NAME set to its ENVIRONMENT.
+  npx workos-sync-postgres reconcile --repair --streams directory_users
+  ```
+
+  `directory_users` is the usual case, at four requests per second per
+  directory. The `pages` field in each response shows a stream approaching
+  the limit before it crosses it.
+
 - **The function is branch-scoped.** Each branch that deploys it polls WorkOS
   separately into its own database, all within the one key's rate limit.
   Deploy it on the branches that need a live mirror; a branch for a preview
