@@ -1983,6 +1983,60 @@ describe('reconcile page budget', () => {
     expect(diffFor(full, 'users').localOnly).toHaveLength(1)
   })
 
+  it('stops listing on the page after the budget rather than reading the whole stream first', async () => {
+    for (let i = 0; i < 450; i++) fake.createUser()
+    const engine = makeEngine(db, fake, ['users'])
+    await engine.backfill()
+
+    // Five pages upstream, two budgeted: the third page is the verdict, and
+    // the fourth and fifth are never requested.
+    const before = listings('/user_management/users')
+    const r = await engine.reconcile({ maxPages: 2 })
+    expect(diffFor(r, 'users')).toMatchObject({ pages: 3, complete: false, oversized: true })
+    expect(listings('/user_management/users') - before).toBe(3)
+  })
+
+  it('counts a per-parent stream across its parents, and stops on the page after the budget there too', async () => {
+    for (let i = 0; i < 4; i++) {
+      const org = fake.createOrganization()
+      fake.createMembership(fake.createUser()['id'] as string, org['id'] as string)
+    }
+    const engine = makeEngine(db, fake, ['users', 'organizations', 'organization_memberships'])
+    await engine.backfill()
+
+    // One page per parent, four parents, two budgeted: the third parent's
+    // page is the verdict, and the fourth parent is never listed.
+    const before = listings('/user_management/organization_memberships')
+    const r = await engine.reconcile({ maxPages: 2, streams: ['organization_memberships'] })
+    expect(diffFor(r, 'organization_memberships')).toMatchObject({ pages: 3, complete: false, oversized: true })
+    expect(listings('/user_management/organization_memberships') - before).toBe(3)
+    expect(await engine.status()).toMatchObject({ prod: { oversized: ['organization_memberships'] } })
+  })
+
+  it('reports a stream whose oversized verdict could not be saved as failed, and keeps the other results', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    class Unsaveable extends PostgresDestination {
+      override async setState(env: string, stream: string, state: unknown): Promise<void> {
+        if ((state as { status?: string }).status === 'oversized') throw new Error('state table unavailable')
+        return super.setState(env, stream, state)
+      }
+    }
+    const engine = makeEngine(db, fake, ['users', 'invitations'], {
+      destination: new Unsaveable({ db, schema: 'workos' }),
+    })
+    await engine.backfill()
+
+    // The verdict was not stored, so the stream reports a failure rather
+    // than an oversized skip, the call still returns, and a resumed slice
+    // tries the stream again.
+    const r = await engine.reconcile({ maxPages: 2 })
+    expect(diffFor(r, 'users')).toMatchObject({ pages: 3, complete: false })
+    expect(diffFor(r, 'users').oversized).toBeUndefined()
+    expect(diffFor(r, 'users').skippedReason).toMatch(/failed: .*state table unavailable/)
+    expect(diffFor(r, 'invitations')).toMatchObject({ pages: 0, complete: false })
+    expect(await engine.status()).toMatchObject({ prod: { oversized: [] } })
+  })
+
   it('leaves out the streams in excludeStreams, and refuses a name it does not know', async () => {
     fake.createUser()
     const engine = makeEngine(db, fake, ['users', 'invitations'])

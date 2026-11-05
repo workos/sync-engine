@@ -910,6 +910,21 @@ export class SyncEngine {
         // Kept outside the call so a stream that fails partway can still say
         // how many pages it drew on the shared budget before it did.
         const progress = { pages: 0 }
+        // Stream-scoped failure: other streams continue. The result says so
+        // rather than leaving the stream out, so a loop that resumes until
+        // every stream is complete does not stop short of it.
+        const failed = (cause: unknown): DiffResult => {
+          this.logger.error('reconcile failed', { env: env.name, stream: stream.name, error: String(cause) })
+          return {
+            stream: stream.name,
+            matched: 0,
+            localOnly: [],
+            remoteOnly: [],
+            pages: progress.pages,
+            complete: false,
+            skippedReason: `failed: ${String(cause)}`,
+          }
+        }
         try {
           const r = await diffStream(this.destination, api, env.name, stream, {
             repair: options.repair,
@@ -933,14 +948,23 @@ export class SyncEngine {
           if (err instanceof OversizedStreamError) {
             // Recorded so the later slices skip it instead of each spending
             // the budget on it again. A fresh run resets it: the stream may
-            // have shrunk, or the budget grown.
-            await this.state.setReconcile(env.name, stream.name, {
-              kind: 'reconcile',
-              status: 'oversized',
-              pages: err.pages,
-              maxPages: err.maxPages,
-              oversizedAt: new Date().toISOString(),
-            })
+            // have shrunk, or the budget grown. A write that fails is the
+            // stream's failure, as a completion the diff could not record is
+            // above: the verdict is not stored, so the next slice tries the
+            // stream again, and the results already collected still return.
+            try {
+              await this.state.setReconcile(env.name, stream.name, {
+                kind: 'reconcile',
+                status: 'oversized',
+                pages: err.pages,
+                maxPages: err.maxPages,
+                oversizedAt: new Date().toISOString(),
+              })
+            } catch (writeErr) {
+              if (isFatal(writeErr)) throw writeErr
+              diffs.push(failed(writeErr))
+              continue
+            }
             this.logger.warn('reconcile abandoned a stream whose listing exceeds maxPages; it stays unreconciled', {
               env: env.name,
               stream: stream.name,
@@ -960,19 +984,7 @@ export class SyncEngine {
             continue
           }
           if (isFatal(err)) throw err
-          // Stream-scoped failure: other streams continue. The result says
-          // so rather than leaving the stream out, so a loop that resumes
-          // until every stream is complete does not stop short of it.
-          this.logger.error('reconcile failed', { env: env.name, stream: stream.name, error: String(err) })
-          diffs.push({
-            stream: stream.name,
-            matched: 0,
-            localOnly: [],
-            remoteOnly: [],
-            pages: progress.pages,
-            complete: false,
-            skippedReason: `failed: ${String(err)}`,
-          })
+          diffs.push(failed(err))
         }
       }
       out.diffs[env.name] = diffs
