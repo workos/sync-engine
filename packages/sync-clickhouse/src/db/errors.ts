@@ -55,9 +55,10 @@ const TRANSIENT_MESSAGES = ['socket hang up', 'Timeout error', 'ECONNRESET', 'fe
 export function isTransientClickHouseError(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false
   const { code, message } = err as { code?: unknown; message?: unknown }
-  // Raised here, not by the server: a write lock (`lock.ts`) that stayed
-  // taken for the whole wait. Whoever holds it finishes or expires.
-  if (code === 'LOCK_TIMEOUT') return true
+  // Raised here, not by the server (`lock.ts`): a write lock that stayed
+  // taken for the whole wait, or one lost to a takeover while the batch
+  // stalled. Whoever holds it finishes or expires, and a retry reads afresh.
+  if (code === 'LOCK_TIMEOUT' || code === 'LOCK_LOST') return true
   if (typeof code === 'string' && (TRANSIENT_CODES.has(code) || TRANSIENT_SOCKET_CODES.has(code))) return true
   if (typeof message === 'string' && TRANSIENT_MESSAGES.some((m) => message.includes(m))) return true
   return false

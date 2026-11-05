@@ -20,8 +20,10 @@
  * lease uses — so a live holder is never displaced. Every acquisition has
  * its own token, so two batches in one process contend like two processes
  * do. A writer that cannot get the lock within `waitMs` fails with
- * `LOCK_TIMEOUT`, which the error classifier reports as transient: the
- * engine retries the poll rather than quarantining the event.
+ * `LOCK_TIMEOUT`, and a batch that stalled past the lock's TTL, lost it,
+ * and asks `held()` before writing fails with `LOCK_LOST`; the error
+ * classifier reports both as transient, so the engine retries the poll
+ * rather than quarantining the event, and the retry reads afresh.
  */
 import { randomUUID } from 'node:crypto'
 import { KEEPER_SETTINGS, type ChClient } from './client.js'
@@ -124,16 +126,34 @@ export async function releaseStreamLock(db: ChClient, opts: LockOptions, key: st
   // Still ours after every attempt: it expires on its own, and says so in the log the caller keeps.
 }
 
-/** Run `fn` holding the lock for `key`, releasing it however `fn` ends. */
+/** Throws `LOCK_LOST` unless the lock is still the caller's. */
+export type HeldCheck = () => Promise<void>
+
+/**
+ * Run `fn` holding the lock for `key`, releasing it however `fn` ends. `fn`
+ * is handed a check to call right before it writes: a batch that stalled
+ * past the TTL has lost the lock to a writer whose rows it never read.
+ */
 export async function withStreamLock<T>(
   db: ChClient,
   opts: LockOptions,
   key: string,
-  fn: () => Promise<T>,
+  fn: (held: HeldCheck) => Promise<T>,
 ): Promise<T> {
   const token = await acquireStreamLock(db, opts, key)
+  const held: HeldCheck = async () => {
+    const rows = await db.query<{ holder: string }>(`SELECT holder FROM ${table(opts.schema)} WHERE k = {k:String}`, {
+      k: key,
+    })
+    if (rows[0]?.holder !== token) {
+      throw Object.assign(
+        new Error(`the write lock for ${key.replace(SEP, ' in ')} was taken over: this batch stalled past its TTL`),
+        { code: 'LOCK_LOST' },
+      )
+    }
+  }
   try {
-    return await fn()
+    return await fn(held)
   } finally {
     await releaseStreamLock(db, opts, key, token)
   }

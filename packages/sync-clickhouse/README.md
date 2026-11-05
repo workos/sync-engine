@@ -171,7 +171,7 @@ The engine writes one column, `_raw`, and computes the rest from it with
 CREATE TABLE workos.auth_attempts (
   _env        String,
   _raw        String,                         -- the event payload, the only column the engine writes
-  _updated_at DateTime64(3, 'UTC'),           -- the event's own time
+  _updated_at DateTime64(3, 'UTC'),           -- the event's own time; a tombstone's is its deletion time
   _synced_at  DateTime64(6, 'UTC') DEFAULT now64(6),
   event_id    String DEFAULT JSONExtractString(_raw, 'event_id'),
   status      Nullable(String) DEFAULT JSONExtract(_raw, 'status', 'Nullable(String)'),
@@ -188,7 +188,7 @@ per event, never updated, the shape every ClickHouse query expects.
 Mirror streams are `ReplacingMergeTree` versioned by `_updated_at`. Every
 write inserts the row's next state, and the newest source timestamp wins at
 merge time and under `FINAL`; that is the staleness gate, enforced by the
-table whatever order writes land in. Each mirror table has a generated
+table whatever order writes land in. A deletion's tombstone carries the deletion time as its version, so it outranks every earlier version of the row. Each mirror table has a generated
 `<table>_live` view — `workos.users_live`, `workos.organizations_live`, and so
 on — that reads with `FINAL` and hides tombstoned rows. **Query the views.**
 The base table shows every version a row ever had, plus its tombstones

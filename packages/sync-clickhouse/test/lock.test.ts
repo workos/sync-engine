@@ -41,6 +41,17 @@ describeDb('per-stream write lock', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(300)
   })
 
+  it('refuses to write once a stalled batch has lost its lock', async () => {
+    const err = await withStreamLock(db, { schema: db.schema, holder: 'stalled', ttlMs: 300 }, key, async (held) => {
+      await new Promise((r) => setTimeout(r, 400))
+      // Someone else took the expired lock and finished; the stalled batch must not write.
+      await withStreamLock(db, { schema: db.schema, holder: 'next' }, key, async () => {})
+      await held()
+    }).catch((e: unknown) => e)
+    expect(err).toMatchObject({ code: 'LOCK_LOST' })
+    expect(isTransientClickHouseError(err)).toBe(true)
+  })
+
   it('is per table and per environment', async () => {
     const a = { schema: db.schema, holder: 'a', waitMs: 300 }
     await acquireStreamLock(db, a, key)
@@ -102,6 +113,20 @@ describeDb('per-stream write lock', () => {
         [{ data: { ...payload, last_sign_in_at: at }, updatedAt: at }],
         'replace',
       ),
+    ])
+    expect(await db.query(`SELECT id FROM \`${db.schema}\`.users_live`)).toEqual([])
+  })
+  it('versions a tombstone at the deletion time, so an older snapshot cannot outrank it however late it lands', async () => {
+    const at = '2026-01-01T00:00:00.000Z'
+    const payload = { object: 'user', id: 'user_1', email: 'ada@example.com', updated_at: at }
+    await upsertRows(db, { schema: db.schema }, users, 'prod', [{ data: payload, updatedAt: at }], 'replace')
+    await deleteRows(db, { schema: db.schema }, users, 'prod', [
+      { data: { id: 'user_1' }, updatedAt: '2026-01-01T00:00:01.000Z' },
+    ])
+    // The row as it was before the deletion, landing after the tombstone:
+    // what a writer that got past the lock would insert.
+    await db.insert(`\`${db.schema}\`.users`, [
+      { _env: 'prod', _raw: JSON.stringify(payload), _updated_at: '2026-01-01 00:00:00.000', _deleted_at: null },
     ])
     expect(await db.query(`SELECT id FROM \`${db.schema}\`.users_live`)).toEqual([])
   })

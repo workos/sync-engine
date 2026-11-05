@@ -374,9 +374,9 @@ describeDb('write path', () => {
     const row = (await readUser())!
     expect(row['_deleted_at']).toBe('2026-01-10 00:00:00.000')
     expect(row['email']).toBe('ada@example.com')
-    // A delete is not a staleness-gated write: the row's own time stays, and
-    // the tombstone wins the version tie by being the later insert.
-    expect(row['_updated_at']).toBe('2026-01-01 00:00:00.000')
+    // A delete is not a staleness-gated write, but the tombstone takes the
+    // deletion time as its version: the newest version of the row must be it.
+    expect(row['_updated_at']).toBe('2026-01-10 00:00:00.000')
   })
 
   it('records a delete for an object it never saw created', async () => {
@@ -588,7 +588,9 @@ describeDb('freshness reporting', () => {
     const fresh = await destination.freshness(users, 'prod', 24)
     expect(fresh.rows).toBe(2)
     expect(fresh.deleted).toBe(1)
-    expect(fresh.lagSampleSize).toBe(1)
+    // The deletion just now is a change inside the window too: a tombstone
+    // is versioned at its deletion time, so it joins the sample.
+    expect(fresh.lagSampleSize).toBe(2)
     expect(fresh.lagSeconds).not.toBeNull()
     expect(fresh.lagSeconds!).toBeLessThan(60)
     expect(fresh.lagSeconds!).toBeGreaterThan(0)

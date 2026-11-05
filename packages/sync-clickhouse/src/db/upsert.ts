@@ -25,7 +25,7 @@
 import { emptyStats, type Row, type TableDef, type WriteMode, type WriteStats } from '@workos/sync-engine'
 import { hostname } from 'node:os'
 import { fromCh, toCh, type ChClient } from './client.js'
-import { lockKey, withStreamLock, type LockOptions } from './lock.js'
+import { lockKey, withStreamLock, type HeldCheck, type LockOptions } from './lock.js'
 import { quoteIdent, safeIdentifier, ENV, RAW } from '../schema/ddl.js'
 
 /** Joins the components of a composite key, on both sides of every lookup. */
@@ -167,9 +167,13 @@ const lockOptions = (opts: WriteOptions): LockOptions => ({
 })
 
 /** Run `fn` holding the write lock for `stream` in `env`. */
-const locked = <T>(db: ChClient, opts: WriteOptions, stream: TableDef, env: string, fn: () => Promise<T>) =>
-  withStreamLock(db, lockOptions(opts), lockKey(safeIdentifier(stream.name), env), fn)
-
+const locked = <T>(
+  db: ChClient,
+  opts: WriteOptions,
+  stream: TableDef,
+  env: string,
+  fn: (held: HeldCheck) => Promise<T>,
+) => withStreamLock(db, lockOptions(opts), lockKey(safeIdentifier(stream.name), env), fn)
 export const tableRef = (schema: string, stream: TableDef) =>
   `${quoteIdent(schema)}.${quoteIdent(safeIdentifier(stream.name))}`
 
@@ -277,7 +281,7 @@ async function applyBatch(
   batch: Keyed[],
   decide: (row: Keyed, stored: StoredRow | undefined) => Pending | null,
 ): Promise<void> {
-  await locked(db, opts, stream, env, async () => {
+  await locked(db, opts, stream, env, async (held) => {
     const stored = await readRows(
       db,
       opts,
@@ -290,6 +294,8 @@ async function applyBatch(
       const out = decide(row, stored.get(row.key.join(KEY_SEPARATOR)))
       if (out) pending.push(out)
     }
+    // Decided against rows read under the lock; written only if it is still ours.
+    if (pending.length > 0) await held()
     await writeRows(db, opts, stream, env, pending)
   })
 }
@@ -314,7 +320,7 @@ export async function upsertRows(
         // Immutable log. Re-delivery is a no-op, which is the whole
         // idempotency story; the lock is what makes it hold for two polls
         // delivering the same page at once.
-        await locked(db, opts, stream, env, async () => {
+        await locked(db, opts, stream, env, async (held) => {
           const present = await existingKeys(
             db,
             opts,
@@ -323,6 +329,7 @@ export async function upsertRows(
             batch.map((r) => r.key),
           )
           const fresh = batch.filter((r) => !present.has(r.key.join(KEY_SEPARATOR)))
+          if (fresh.length > 0) await held()
           await writeRows(
             db,
             opts,
@@ -377,15 +384,16 @@ export async function deleteRows(
       if (!stored) return { key: row.key, raw: row.data, updatedAt: row.updatedAt, deletedAt: row.updatedAt }
       // The *latest* removal is kept, not the first: a membership removed,
       // re-added and removed again must carry the last removal, because that
-      // is what `relinkRows` compares a re-add against. `_updated_at` stays,
-      // so the version is a tie and the tombstone, inserted later, wins it.
-      // "Later" is certain: the batch holds the stream's write lock from its
-      // read to its write, so no other writer's row — a refresh re-listing
-      // the same snapshot, say — can land between the two and take the tie.
+      // is what `relinkRows` compares a re-add against. The version moves to
+      // the deletion time, where Postgres leaves `_updated_at` alone: here
+      // the tombstone has to be the newest version of the row, and the
+      // deletion came after anything a listing could still show of it, so
+      // it outranks any older snapshot on the version itself — not on which
+      // insert happened to land last.
       return {
         key: row.key,
         raw: merge(stored.raw, row.data),
-        updatedAt: stored.updatedAt,
+        updatedAt: later(stored.updatedAt, row.updatedAt),
         deletedAt: later(stored.deletedAt, row.updatedAt),
       }
     })
