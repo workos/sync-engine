@@ -64,7 +64,7 @@ postgresql://USER:PASSWORD@ep-<id>-pooler.<region>.aws.neon.tech/neondb?sslmode=
 Transaction pooling is enough because of how the engine uses the database:
 short transactions, transaction-scoped migration locks, row-based writer
 leases and temporary tables created `ON COMMIT DROP` inside a transaction.
-[Hosted Postgres](hosted-postgres.md#choose-a-connection) has the reasoning.
+[Hosted Postgres](../docs/hosted-postgres.md#choose-a-connection) has the reasoning.
 
 ## TLS
 
@@ -88,7 +88,7 @@ transactions, reconciliation, writer leases, checkpoints and tombstones
 against the real endpoint. WorkOS responses are local fixtures, so it makes
 no WorkOS calls and needs no key. Run it once for each URI you intend to use:
 it proves the credentials, network path, TLS and permissions that a local run
-cannot. [Hosted Postgres](hosted-postgres.md#verify-the-actual-endpoint) has
+cannot. [Hosted Postgres](../docs/hosted-postgres.md#verify-the-actual-endpoint) has
 more on what it covers.
 
 ## Run the sync from your own host
@@ -105,7 +105,7 @@ npx workos-sync-postgres listen
 ```
 
 The [container image](../README.md#against-a-real-environment) and the
-[library](getting-started.md#embed-it) take the same URL. Two things about
+[library](../docs/getting-started.md#embed-it) take the same URL. Two things about
 Neon's compute to plan for:
 
 - **The compute stays awake while the sync runs.** Neon suspends an idle
@@ -216,7 +216,7 @@ curl -H "Authorization: Bearer $WORKOS_SYNC_STATUS_TOKEN" <invocation_url>/statu
 
 - **There is no `listen`.** The mirror is kept current by a tick per minute,
   or within seconds of a change when the webhook nudges it. Every route is a
-  bounded, resumable slice of the kind [Serverless hosts](serverless.md)
+  bounded, resumable slice of the kind [Serverless hosts](../docs/serverless.md)
   describes. `MAX_PAGES` and `MAX_EVENTS_PER_TICK` at the top of the module
   are the budgets, and each response reports `pages` so you can size them
   against the 15-minute limit.
@@ -255,11 +255,11 @@ lease and the schema fingerprint. In practice:
   with nothing to re-run.
 - **Two branches syncing the same environment are two syncs on one key.**
   Each polls and backfills on its own; see
-  [rate limits](operations.md#rate-limits) for the budget they share.
+  [rate limits](../docs/operations.md#rate-limits) for the budget they share.
 
 ## Query it
 
-Everything in [Querying the mirror](queries.md) applies. Use the SQL editor
+Everything in [Querying the mirror](../docs/queries.md) applies. Use the SQL editor
 in the Neon console, or open `psql` on the same URI:
 
 ```sh

@@ -127,10 +127,6 @@ Keep the engine at module scope so a warm runtime reuses its connection pool,
 and size that pool as described under Connections below: a runtime that
 scales out runs several copies of it.
 
-Neon Functions has a ready-made version of this shape in its registry, with
-the triggers, a webhook route and a token-guarded status route; see
-[Neon](neon.md#run-the-sync-as-a-neon-function).
-
 ## Webhooks are a nudge, not a source
 
 A verified delivery makes the engine poll now instead of at the next tick, so

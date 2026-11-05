@@ -89,8 +89,7 @@ For a hosted Postgres, including connection selection, TLS, and endpoint
 verification, see [Hosted Postgres setup](docs/hosted-postgres.md). On a host
 with a time limit, such as a scheduled function, see
 [Serverless hosts](docs/serverless.md): every command but `listen` is bounded
-and resumable. For Neon in particular, including running the sync on Neon as
-a Function from the registry template, see [Neon](docs/neon.md).
+and resumable.
 
 The command reads its settings from the environment, and a flag overrides the
 variable where both exist. Every variable, command and flag is documented in
@@ -100,6 +99,15 @@ ships with the package and so always describes the version you installed. The
 `extraColumns`, `hydrate`, `pollIntervalMs`, `lagWindowMs`, `maxEventsPerTick`,
 `pageSize`, `logger`) are in the
 [`@workos/sync-engine` README](packages/sync-engine/README.md).
+
+## Integration
+
+Guides for a specific platform, covering what it puts in front of you and
+any way of running the sync that only it offers:
+
+- [Neon](integrations/neon.md): direct and pooled connections, TLS, endpoint
+  verification, branches, and running the sync on Neon as a Function from
+  the registry template.
 
 ## How it works
 

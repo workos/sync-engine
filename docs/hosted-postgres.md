@@ -10,9 +10,6 @@ Use a dedicated database or branch for evaluation. The engine creates its own
 `workos` schema and touches nothing else, including any schema the provider
 manages for its own features, such as authentication.
 
-Neon has a guide of its own, [Neon](neon.md), which also covers running the
-sync on Neon as a Function.
-
 ## Choose a connection
 
 Providers typically offer two or three URIs for the same database:
