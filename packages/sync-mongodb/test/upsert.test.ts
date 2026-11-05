@@ -13,6 +13,7 @@ import {
   wavesByKey,
   keyValues,
   keyFilter,
+  chunk,
   type MirrorDoc,
 } from '../src/db/upsert.js'
 import { InvalidTimestampError } from '../src/db/timestamps.js'
@@ -46,11 +47,26 @@ describe('key extraction', () => {
     expect(keyValues(orgRoles, { organization_id: 'org_1', slug: 'admin' })).toEqual(['org_1', 'admin'])
     expect(keyFilter(orgRoles, 'prod', { organization_id: 'org_1', slug: 'admin' })).toEqual({
       _env: 'prod',
-      '_raw.organization_id': 'org_1',
-      '_raw.slug': 'admin',
+      '_raw.organization_id': { $eq: 'org_1' },
+      '_raw.slug': { $eq: 'admin' },
     })
     // Nested paths are addressed through _raw too.
-    expect(keyFilter(users, 'prod', { id: 'user_1' })).toEqual({ _env: 'prod', '_raw.id': 'user_1' })
+    expect(keyFilter(users, 'prod', { id: 'user_1' })).toEqual({ _env: 'prod', '_raw.id': { $eq: 'user_1' } })
+  })
+
+  it('refuses an object where a key should be, and never lets one into a filter as an operator', () => {
+    expect(keyValues(users, { id: { $ne: null } })).toBeUndefined()
+    expect(keyValues(users, { id: ['user_1'] })).toBeUndefined()
+    // Were a row to reach the filter anyway, the object is a value to equal, not a query.
+    expect(keyFilter(users, 'prod', { id: { $ne: null } })).toEqual({ _env: 'prod', '_raw.id': { $eq: { $ne: null } } })
+  })
+
+  it('splits into batches of a positive whole size only', () => {
+    expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]])
+    expect(chunk([], 2)).toEqual([])
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => chunk([1], bad)).toThrow(/batchSize must be a positive integer/)
+    }
   })
 
   it('collapses duplicate keys within a batch, keeping the newest', () => {
@@ -385,6 +401,27 @@ describe('write path', () => {
     )
     expect(await coll.countDocuments()).toBe(2)
     expect((await coll.findOne({ _env: 'staging' }))!._raw['email']).toBe('staging@example.com')
+  })
+
+  it('leaves every other row alone when a key is an object', async () => {
+    await upsertRows(coll, opts, users, 'prod', [row(userPayload(), '2026-01-01T00:00:00.000Z')], 'replace')
+    const malformed = [row(userPayload({ id: { $ne: null } }), '2026-02-01T00:00:00.000Z')]
+    expect(await upsertRows(coll, opts, users, 'prod', malformed, 'replace')).toMatchObject({ skipped: 1 })
+    expect(await deleteRows(coll, opts, users, 'prod', malformed)).toMatchObject({ skipped: 1 })
+    expect(await coll.countDocuments()).toBe(1)
+    const stored = (await readUser())!
+    expect(stored._raw['updated_at']).toBe('2026-01-01T00:00:00.000Z')
+    expect(stored._deleted_at ?? null).toBeNull()
+    // And the filter itself, given such a row, matches nothing rather than everything.
+    expect(await coll.countDocuments(keyFilter(users, 'prod', { id: { $ne: null } }))).toBe(0)
+  })
+
+  it('stores an environment label that starts with "$" as text', async () => {
+    const ecoll = t.db.collection<MirrorDoc>(names.mirror(events))
+    await upsertRows(coll, opts, users, '$staging', [row(userPayload(), '2026-01-01T00:00:00.000Z')], 'merge')
+    await upsertRows(ecoll, opts, events, '$staging', [row({ id: 'event_1' }, '2026-01-01T00:00:00.000Z')], 'replace')
+    expect((await coll.findOne({ '_raw.id': 'user_1' }))!._env).toBe('$staging')
+    expect((await ecoll.findOne({ '_raw.id': 'event_1' }))!._env).toBe('$staging')
   })
 
   it('counts rows it cannot key as skipped, and refuses a timestamp that is not an instant', async () => {

@@ -98,6 +98,22 @@ describe('events tail lease', () => {
     expect(await dest.getLease('prod')).toMatchObject({ holder: 'a' })
   })
 
+  it('stores a sync id, an environment and a holder that start with "$" as text', async () => {
+    // Inside the update pipeline a bare "$reporting" would be read as a
+    // field path, and the document would be keyed by nothing.
+    const dollar = new MongoDestination({ client: t.client, database: t.name, syncId: '$reporting' })
+    await dollar.init([streamByName('users')!])
+    const r = await dollar.acquireLease('$production', '$host', 60_000)
+    expect(r).toMatchObject({ acquired: true, holder: '$host' })
+    expect(await dollar.getLease('$production')).toMatchObject({ holder: '$host' })
+    const doc = await sync().findOne({ sync_id: '$reporting', env: '$production' })
+    expect(doc?.lease?.holder).toBe('$host')
+    // A renewal still recognises the holder, and the fenced write finds the document.
+    expect((await dollar.acquireLease('$production', '$host', 60_000)).acquired).toBe(true)
+    expect(await dollar.setStateIfHeld('$production', '__tail__', { cursor: 'c1' }, '$host', null)).toBe(true)
+    expect(await dollar.getState('$production', '__tail__')).toEqual({ cursor: 'c1' })
+  })
+
   it('survives two processes racing to create the document', async () => {
     const results = await Promise.all(['a', 'b', 'c', 'd'].map((h) => dest.acquireLease('prod', h, 60_000)))
     expect(results.filter((r) => r.acquired)).toHaveLength(1)

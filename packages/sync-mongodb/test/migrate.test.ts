@@ -208,6 +208,23 @@ describe('migrate', () => {
       expect(await t.db.collection('workos_directory_group_memberships_live').countDocuments()).toBe(1)
     })
 
+    it('are redefined by a repair even though the fingerprint is already recorded', async () => {
+      const dest = new MongoDestination({ client: t.client, database: t.name })
+      await dest.init([users])
+      expect(await migrate(t.db, [users], names)).toMatchObject({ applied: false })
+
+      // Somebody changed the pipeline by hand after init recorded its fingerprint.
+      await t.db.command({ collMod: 'workos_users_live', viewOn: 'workos_users', pipeline: [] })
+      // Same streams, same prefix: the fingerprint matches, and a repair must not trust it.
+      const r = await migrate(t.db, [users], names, undefined, { repairViews: true })
+      expect(r).toMatchObject({ applied: true, views: ['workos_users_live'] })
+      const info = (await t.db.listCollections({ name: 'workos_users_live' }, { nameOnly: false }).toArray())[0]!
+      expect(info.options?.['pipeline']).toEqual(LIVE_PIPELINE)
+      // The fingerprint was recorded once; the repair did not duplicate it.
+      expect(await t.db.collection(names.migrations).countDocuments()).toBe(1)
+      expect(await migrate(t.db, [users], names)).toMatchObject({ applied: false })
+    })
+
     it('are kept when already right, redefined only on request, and never clobber a stranger', async () => {
       expect(await ensureLiveView(t.db, names, users)).toBe('created')
       expect(await ensureLiveView(t.db, names, users)).toBe('kept')

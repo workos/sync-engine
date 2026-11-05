@@ -16,6 +16,9 @@ db.workos_organization_memberships_live.aggregate([
       from: "workos_users_live",
       localField: "_raw.user_id",
       foreignField: "_raw.id",
+      // Ids repeat across environments, so the join is pinned to this one.
+      let: { env: "$_env" },
+      pipeline: [{ $match: { $expr: { $eq: ["$_env", "$$env"] } } }],
       as: "user",
     },
   },

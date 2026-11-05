@@ -22,6 +22,11 @@
  * expired. Expiry is judged by `$$NOW`, the server's clock, never the
  * client's, so two hosts with skewed clocks still agree on who holds it.
  *
+ * Inside that pipeline a string that starts with `$` is a field path, so the
+ * sync id, the environment and the holder — configured strings, any of which
+ * could start with one — are wrapped in `$literal` wherever the pipeline
+ * stores or compares them.
+ *
  * Cursor state is stored as canonical JSON — keys sorted, recursively —
  * because MongoDB compares embedded documents field by field *in order*, and
  * the engine compares cursors by value: `{a, b}` and `{b, a}` are the same
@@ -90,22 +95,24 @@ export async function acquireLease(
   const free = {
     $or: [
       { $in: [{ $type: '$lease' }, ['missing', 'null']] },
-      { $eq: ['$lease.holder', holder] },
+      { $eq: ['$lease.holder', { $literal: holder }] },
       { $lte: ['$lease.expires_at', '$$NOW'] },
     ],
   }
   const update: Document[] = [
     {
       $set: {
-        sync_id: syncId,
-        env,
+        sync_id: { $literal: syncId },
+        env: { $literal: env },
         lease: {
           $cond: [
             free,
             {
-              holder,
+              holder: { $literal: holder },
               // A renewal keeps the original takeover time; a takeover starts a new one.
-              acquired_at: { $cond: [{ $eq: ['$lease.holder', holder] }, '$lease.acquired_at', '$$NOW'] },
+              acquired_at: {
+                $cond: [{ $eq: ['$lease.holder', { $literal: holder }] }, '$lease.acquired_at', '$$NOW'],
+              },
               expires_at: { $add: ['$$NOW', ttl] },
             },
             '$lease',

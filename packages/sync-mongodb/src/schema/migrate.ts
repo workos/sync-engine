@@ -12,7 +12,9 @@
  * `createIndexes` is a no-op for an index that already exists with the same
  * specification, a view is compared before it is touched — so two processes
  * running `init` at once need no lock. A fingerprint of the catalog gates the
- * whole pass, so an unchanged catalog costs one query on every start.
+ * whole pass, so an unchanged catalog costs one query on every start — except
+ * when a repair is asked for, since what a repair fixes (a view changed by
+ * hand) is exactly what a hash of the catalog cannot see.
  *
  * There are no typed columns to drift, so there is no repair pass. What can
  * linger is an index for a column the catalog no longer indexes; it is
@@ -147,7 +149,10 @@ export async function migrate(
   await ensureBookkeeping(db, names)
 
   const migrations = db.collection<MigrationDoc>(names.migrations)
-  if (await migrations.findOne({ _id: fp }, { projection: { _id: 1 } })) {
+  // `init --repair` is run because something the fingerprint vouches for is
+  // wrong, so it always makes the full pass; every step is idempotent, and
+  // an unchanged database costs it only the queries.
+  if (!options.repairViews && (await migrations.findOne({ _id: fp }, { projection: { _id: 1 } }))) {
     logger?.debug('schema up to date', { fingerprint: fp })
     return { applied: false, fingerprint: fp, collections: 0, indexes: 0, views: [], orphans: [] }
   }

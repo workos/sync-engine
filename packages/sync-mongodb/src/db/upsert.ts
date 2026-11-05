@@ -65,12 +65,16 @@ export function readPath(data: Record<string, unknown>, path: string | string[])
   return cur
 }
 
-/** Key values for a row, in `stream.key` order. Undefined if any part is missing. */
+/**
+ * Key values for a row, in `stream.key` order. Undefined if any part is
+ * missing, or is not a scalar: an object where an id should be is a malformed
+ * row, not a key, and is never let near a filter.
+ */
 export function keyValues(stream: TableDef, data: Record<string, unknown>): string[] | undefined {
   const out: string[] = []
   for (const k of stream.key) {
     const v = readPath(data, keyPath(stream, k))
-    if (v == null || v === '') return undefined
+    if (v == null || v === '' || typeof v === 'object') return undefined
     out.push(String(v))
   }
   return out
@@ -138,6 +142,11 @@ export function wavesByKey(stream: TableDef, rows: Row[]): { waves: Row[][]; dro
 }
 
 export const chunk = <T>(items: T[], size: number): T[][] => {
+  // A size that never advances the loop would grow `out` until the process
+  // ran out of memory; a bad setting gets an error instead.
+  if (!Number.isInteger(size) || size < 1) {
+    throw new Error(`batchSize must be a positive integer, got ${String(size)}`)
+  }
   const out: T[][] = []
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
   return out
@@ -150,12 +159,17 @@ export interface WriteOptions {
 
 const DEFAULT_BATCH_SIZE = 500
 
-/** The filter that names one row: its environment and every key column at its catalog path. */
+/**
+ * The filter that names one row: its environment and every key column at its
+ * catalog path. Each value is an explicit `$eq`, so a payload whose key is an
+ * object — `{ $ne: null }`, say — is compared as a value rather than read as
+ * an operator that could match somebody else's row.
+ */
 export function keyFilter(stream: TableDef, env: string, data: Record<string, unknown>): Filter<MirrorDoc> {
   const filter: Record<string, unknown> = { _env: env }
   for (const k of stream.key) {
     const path = keyPath(stream, k)
-    filter[fieldPath(path)] = readPath(data, path)
+    filter[fieldPath(path)] = { $eq: readPath(data, path) }
   }
   return filter as Filter<MirrorDoc>
 }
@@ -186,7 +200,7 @@ function upsertOp(stream: TableDef, env: string, row: Row, mode: WriteMode): Op 
         update: [
           {
             $set: {
-              _env: env,
+              _env: { $literal: env },
               _raw: { $cond: [inserting, { $literal: row.data }, '$_raw'] },
               _updated_at: { $ifNull: ['$_updated_at', at] },
               _synced_at: { $ifNull: ['$_synced_at', '$$NOW'] },
@@ -211,7 +225,7 @@ function upsertOp(stream: TableDef, env: string, row: Row, mode: WriteMode): Op 
       update: [
         {
           $set: {
-            _env: env,
+            _env: { $literal: env },
             _raw: { $cond: [passes, newRaw, '$_raw'] },
             _updated_at: { $cond: [passes, at, '$_updated_at'] },
             _synced_at: synced(changed),
@@ -276,7 +290,7 @@ export async function deleteRows(
           update: [
             {
               $set: {
-                _env: env,
+                _env: { $literal: env },
                 _raw: merged(row.data),
                 _updated_at: { $ifNull: ['$_updated_at', at] },
                 _deleted_at: { $max: ['$_deleted_at', at] },
@@ -328,7 +342,7 @@ export async function relinkRows(
           update: [
             {
               $set: {
-                _env: env,
+                _env: { $literal: env },
                 _raw: { $cond: [passes, merged(row.data), '$_raw'] },
                 _updated_at: { $cond: [passes, at, '$_updated_at'] },
                 _deleted_at: { $cond: [passes, null, '$_deleted_at'] },
@@ -381,7 +395,7 @@ export async function unlinkRows(
           update: [
             {
               $set: {
-                _env: env,
+                _env: { $literal: env },
                 _raw: { $cond: [passes, merged(row.data), '$_raw'] },
                 _updated_at: { $cond: [passes, at, '$_updated_at'] },
                 _deleted_at: { $cond: [passes, { $max: ['$_deleted_at', at] }, '$_deleted_at'] },
