@@ -30,6 +30,7 @@ npx workos-sync-postgres status
       "expiresAt": "2026-10-22T18:05:11.902Z"
     },
     "rejected": 0,
+    "oversized": [],
     "streams": [
       {
         "stream": "users",
@@ -59,6 +60,10 @@ Two of these numbers look similar but mean different things:
   deterministically. The tail kept going, so poll age looks healthy, but the
   objects those events describe are missing or stale until you replay them.
   **Alert on this too.** See [Rejected events](#rejected-events).
+- **`oversized`** names the streams the last `reconcile` abandoned because
+  their listing alone needs more pages than its `--max-pages`. They stay
+  unreconciled until a run with a larger budget, or none, diffs them; see
+  [Backfill without a long-lived process](#backfill-without-a-long-lived-process).
 
 `lease` names the process currently tailing this environment, as
 `hostname:pid:suffix`, and when its claim lapses if it stops renewing. It is
@@ -484,11 +489,23 @@ A diff is taken against a stream's whole listing, so a listing cannot stop
 partway: the objects on the pages a budget cut off would all read as missed
 deletes, and `--repair` would tombstone them. The budget decides whether the
 next stream starts, not where a listing stops. A stream that starts runs to
-its last page, so a slice overshoots by at most one stream's listing; a stream
-whose own listing does not fit the host's limit has to run somewhere without
-one. Each result carries `pages` and `complete`, a stream that fails is
-reported with `complete: false` rather than left out, and `--resume` skips
-the streams already diffed.
+its last page, so a slice overshoots by at most `n` pages: a stream whose own
+listing passes `n` could never finish in a slot that size, so the slice
+abandons it on the page after the budget, rolls back its diff with nothing
+repaired, and reports it `oversized`. Later slices with `--resume` skip it,
+and `status` lists it under `oversized`, until a run with a larger budget or
+none diffs it; a run without `--resume` tries it again. Each result carries
+`pages` and `complete`, a stream that fails is reported with `complete: false`
+rather than left out, and `--resume` skips the streams already diffed.
+
+Give an oversized stream a run of its own somewhere without a limit, and leave
+it out of the bounded slices with `--exclude-streams`, so neither the resumed
+slices nor a fresh one spend their budget on it:
+
+```bash
+npx workos-sync-postgres reconcile --resume --max-pages 50 --exclude-streams directory_users
+npx workos-sync-postgres reconcile --repair --streams directory_users   # from a host without a limit
+```
 
 `refresh` takes the same two flags and shares backfill's checkpoints. For the
 schedules that tie these commands together on a host with a time limit, see
