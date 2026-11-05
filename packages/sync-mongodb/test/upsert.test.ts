@@ -80,6 +80,17 @@ describe('key extraction', () => {
     expect(dropped).toBe(1)
   })
 
+  it('judges the newest row by its instant, not by the text of its timestamp', () => {
+    // "01:00:00+01:00" sorts after "00:30:00Z" as text and is half an hour earlier as a time.
+    const { rows } = dedupeByKey(users, [
+      { data: userPayload({ email: 'older@example.com' }), updatedAt: '2026-01-01T01:00:00+01:00' },
+      { data: userPayload({ email: 'newer@example.com' }), updatedAt: '2026-01-01T00:30:00Z' },
+    ])
+    expect(rows.map((r) => r.data['email'])).toEqual(['newer@example.com'])
+    // A timestamp that is not an instant is refused here, as the write would refuse it.
+    expect(() => dedupeByKey(users, [{ data: userPayload(), updatedAt: 'yesterday' }])).toThrow(InvalidTimestampError)
+  })
+
   it('splits repeated keys into ordered waves and leaves distinct keys in one', () => {
     const first = { data: userPayload({ external_id: 'ext_1' }), updatedAt: '2026-01-01T00:00:00.000Z' }
     const other = { data: userPayload({ id: 'user_2' }), updatedAt: '2026-01-01T00:00:00.000Z' }

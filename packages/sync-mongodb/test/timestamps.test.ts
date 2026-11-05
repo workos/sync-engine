@@ -45,6 +45,10 @@ describe('parseIso8601', () => {
     expect(at('2024-02-29T00:00:00Z')).toBe('2024-02-29T00:00:00.000Z')
     expect(at('2100-02-29T00:00:00Z')).toBe('range')
     expect(at('2026-06-30T23:59:60Z')).toBe('2026-07-01T00:00:00.000Z')
+    // The offset's fields are checked like the clock's.
+    expect(at('2026-01-01T00:00:00+00:99')).toBe('range')
+    expect(at('2026-01-01T00:00:00-24:00')).toBe('range')
+    expect(at('2026-01-01T00:00:00+23:59')).toBe('2025-12-31T00:01:00.000Z')
   })
 
   it('keeps years below 100 as written', () => {

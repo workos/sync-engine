@@ -84,9 +84,14 @@ export function keyValues(stream: TableDef, data: Record<string, unknown>): stri
  * Collapse rows that share a primary key, keeping the newest. It serves the
  * delete, relink and unlink paths, whose rows are whole; upserts use
  * `wavesByKey`.
+ *
+ * "Newest" is judged by the instant, not the text: `01:00:00+01:00` sorts
+ * after `00:30:00Z` as a string and is half an hour older as a time. A
+ * timestamp that is not an instant fails here with the same error the write
+ * would have raised for it.
  */
 export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropped: number } {
-  const byKey = new Map<string, Row>()
+  const byKey = new Map<string, { row: Row; at: number }>()
   let dropped = 0
   for (const row of rows) {
     const key = keyValues(stream, row.data)
@@ -95,10 +100,11 @@ export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropp
       continue
     }
     const k = key.join('\0')
+    const at = parseInstant(row.updatedAt).getTime()
     const existing = byKey.get(k)
-    if (!existing || row.updatedAt >= existing.updatedAt) byKey.set(k, row)
+    if (!existing || at >= existing.at) byKey.set(k, { row, at })
   }
-  return { rows: [...byKey.values()], dropped }
+  return { rows: [...byKey.values()].map((e) => e.row), dropped }
 }
 
 /**

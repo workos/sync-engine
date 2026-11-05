@@ -34,6 +34,8 @@ export function parseIso8601(iso: string): { date: Date } | { failure: ParseFail
   if (year < 1 || month < 1 || month > 12) return { failure: 'range' }
   if (day < 1 || day > daysInMonth(year, month)) return { failure: 'range' }
   if (hour > 23 || minute > 59 || second > 60) return { failure: 'range' }
+  // An offset is hours and minutes too; `+00:99` names no zone.
+  if (sign && (Number(oh) > 23 || Number(om) > 59)) return { failure: 'range' }
   // Millisecond precision is what BSON dates carry; further digits are dropped.
   const ms = frac ? Number(frac.slice(0, 3).padEnd(3, '0')) : 0
   // Built in two steps so that years below 100 are not read as 19xx.
