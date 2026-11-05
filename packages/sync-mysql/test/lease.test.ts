@@ -206,6 +206,24 @@ describeDb('events tail lease', () => {
       expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', { cursor: 'c1' })).toBe(true)
     })
 
+    it('sees a takeover that happened after an earlier read in the same transaction', async () => {
+      // Under REPEATABLE READ a plain read comes from the snapshot the
+      // transaction's first read fixed. The ownership check must be a
+      // locking read, which sees what is committed now.
+      await dest.acquireLease('prod', 'a', 60_000)
+      await db.transaction(async (tx) => {
+        const inner = new MysqlDestination({ db: tx, schema: db.schema })
+        // Fixes the snapshot with `a` as the holder.
+        expect((await inner.getLease('prod'))?.holder).toBe('a')
+        // Meanwhile, outside the transaction, the lease changes hands.
+        await dest.releaseLease('prod', 'a')
+        expect((await dest.acquireLease('prod', 'b', 60_000)).acquired).toBe(true)
+        expect(await inner.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'a', null)).toBe(false)
+      })
+      expect(await stored()).toBeNull()
+      expect(await dest.setStateIfHeld('prod', '__tail__', { cursor: 'c1' }, 'b', null)).toBe(true)
+    })
+
     it('leaves a refused write out of an enclosing transaction', async () => {
       await dest.acquireLease('prod', 'a', 60_000)
       await dest.setState('prod', 'other', { n: 1 })

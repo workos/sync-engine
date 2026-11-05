@@ -129,14 +129,20 @@ export async function setStateIfHeld(
     let held = false
     if (written.affectedRows > 0) {
       // Lock the lease row first, whoever holds it, so a takeover in flight
-      // finishes before the verdict. Then judge expiry in a statement of its
-      // own: `NOW(6)` is fixed when a statement starts, so a check folded
-      // into the locking read would use the clock from before the wait, and
-      // a lease that expired during the wait would pass.
+      // finishes before the verdict. Then judge ownership and expiry in a
+      // statement of their own: `NOW(6)` is fixed when a statement starts,
+      // so a check folded into the waiting read would use the clock from
+      // before the wait, and a lease that expired meanwhile would pass. That
+      // second read locks too. A plain read under REPEATABLE READ comes from
+      // the transaction's snapshot, which a caller that read the lease
+      // earlier in the same transaction fixed before any takeover; a locking
+      // read sees what is committed now, and waits for nothing since the
+      // lock is already held.
       await tx.query(`select 1 from ${s}.\`_sync_lease\` where sync_id = ? and env = ? for update`, [syncId, env])
       const lease = await tx.query(
         `select 1 as held from ${s}.\`_sync_lease\`
-         where sync_id = ? and env = ? and holder = ? and expires_at > now(6)`,
+         where sync_id = ? and env = ? and holder = ? and expires_at > now(6)
+         for update`,
         [syncId, env, holder],
       )
       held = lease.rows.length > 0
