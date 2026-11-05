@@ -7,6 +7,7 @@ import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
 import {
   invokedDirectly,
   main,
+  parseExcludeStreams,
   parseHydrate,
   parseLeaseTtl,
   parseMaxPages,
@@ -204,6 +205,16 @@ describe('commands', () => {
   })
 
   const lastJson = () => JSON.parse(out[out.length - 1]!) as Record<string, unknown>
+  interface Diff {
+    stream: string
+    pages: number
+    complete: boolean
+    oversized?: boolean
+    localOnly: string[]
+    remoteOnly: string[]
+    skippedReason?: string
+  }
+  const diffs = () => (lastJson() as { diffs: Record<string, Diff[]> }).diffs['prod']!
   const engineOver = (destination: MongoDestination, streams: string[]) =>
     new SyncEngine(
       {
@@ -386,17 +397,9 @@ describe('commands', () => {
     await engine.backfill()
     fake.users.delete(gone['id'] as string)
 
-    interface Diff {
-      stream: string
-      pages: number
-      complete: boolean
-      localOnly: string[]
-      remoteOnly: string[]
-      skippedReason?: string
-    }
-    const diffs = () => (lastJson() as { diffs: Record<string, Diff[]> }).diffs['prod']!
-    // The diff is checked before the exit code, so a failure shows the whole result.
-    const code = await main(['reconcile', '--max-pages', '2'], { engine })
+    // Users needs exactly the three pages budgeted: the stream completes and
+    // spends the budget, so invitations is left for a resume.
+    const code = await main(['reconcile', '--max-pages', '3'], { engine })
     const users = diffs().find((d) => d.stream === 'users')!
     // A stream whose diff threw is reported with the error here, not thrown.
     expect(users.skippedReason).toBeUndefined()
@@ -408,6 +411,35 @@ describe('commands', () => {
     expect(await main(['reconcile', '--repair'], { engine })).toBe(0)
     expect(await main(['reconcile'], { engine })).toBe(0)
     expect(await t.db.collection('workos_users').countDocuments({ _deleted_at: { $type: 'date' } })).toBe(1)
+  })
+
+  it('abandons a stream whose listing passes --max-pages and reports it oversized, still exiting 0', async () => {
+    for (let i = 0; i < 250; i++) fake.createUser()
+    const engine = engineOver(new MongoDestination({ client: t.client, database: t.name }), ['users'])
+    await engine.backfill()
+
+    expect(await main(['reconcile', '--max-pages', '2'], { engine })).toBe(0)
+    expect(diffs().find((d) => d.stream === 'users')).toMatchObject({ pages: 3, complete: false, oversized: true })
+    expect(await main(['status'], { engine })).toBe(0)
+    expect(lastJson()).toMatchObject({ prod: { oversized: ['users'] } })
+  })
+
+  it('leaves out --exclude-streams, and refuses a bare flag or an unknown name', async () => {
+    fake.createUser()
+    const engine = engineOver(new MongoDestination({ client: t.client, database: t.name }), ['users', 'invitations'])
+    await engine.backfill()
+
+    expect(await main(['reconcile', '--exclude-streams', 'users'], { engine })).toBe(0)
+    const names = diffs().map((d) => d.stream)
+    expect(names).not.toContain('users')
+    expect(names).toContain('invitations')
+
+    await expect(main(['reconcile', '--exclude-streams', 'customers'], { engine })).rejects.toThrow(
+      /unknown stream: customers/,
+    )
+    // A bare flag parses as `true`; it must not become an exclusion of nothing.
+    expect(() => parseExcludeStreams(true)).toThrow(/invalid --exclude-streams/)
+    expect(parseExcludeStreams('users, invitations')).toEqual(['users', 'invitations'])
   })
 
   it('refresh slices with --max-pages and converges with --resume', async () => {
