@@ -98,7 +98,7 @@ describe('key extraction', () => {
 
   it("judges by a destination's own parser when given one, and fails as it would", () => {
     const strict = (iso: string) => {
-      if (!/Z$/.test(iso)) throw Object.assign(new Error(`invalid timestamp ${iso}`), { code: 'INVALID_TIMESTAMP' })
+      if (!iso.endsWith('Z')) throw Object.assign(new Error(`invalid timestamp ${iso}`), { code: 'INVALID_TIMESTAMP' })
       return Date.parse(iso)
     }
     const { rows } = dedupeByKey(
