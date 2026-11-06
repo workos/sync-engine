@@ -11,6 +11,7 @@ package and re-exports it, so it is the only thing to install:
 | Destination | Package                                                                            |
 | ----------- | ---------------------------------------------------------------------------------- |
 | Postgres    | [`@workos/sync-postgres`](https://www.npmjs.com/package/@workos/sync-postgres)     |
+| MongoDB     | [`@workos/sync-mongodb`](https://www.npmjs.com/package/@workos/sync-mongodb)       |
 | MySQL       | [`@workos/sync-mysql`](https://www.npmjs.com/package/@workos/sync-mysql)           |
 | ClickHouse  | [`@workos/sync-clickhouse`](https://www.npmjs.com/package/@workos/sync-clickhouse) |
 

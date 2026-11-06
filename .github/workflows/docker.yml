@@ -22,6 +22,7 @@ jobs:
         # One entry per destination package: packages/sync-<destination>.
         destination:
           - postgres
+          - mongodb
           - mysql
           - clickhouse
         runner: [ubuntu-latest, ubuntu-24.04-arm]
