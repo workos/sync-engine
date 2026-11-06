@@ -6,6 +6,10 @@ name: Release
 # package it released; re-run it by hand for an existing tag if a run failed —
 # a version already on npm is skipped and an image push is idempotent, so a
 # retry converges.
+#
+# Until npm accepts this repository's OIDC tokens (npm/cli#9969), the npm
+# step fails on every release; scripts/publish-release.sh publishes by hand
+# from the same tags and then reruns the failed run for the images.
 
 on:
   workflow_call:
