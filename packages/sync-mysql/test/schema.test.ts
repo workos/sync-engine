@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb, describeDb, type TestDb } from './helpers/mysql.js'
 import { migrate, fingerprint, DDL_VERSION, lockName } from '../src/schema/migrate.js'
+import type { QueryResult, SqlClient } from '../src/db/client.js'
 import {
+  bookkeepingSql,
   buildSchemaSql,
   safeIdentifier,
   columnExpression,
@@ -104,6 +106,66 @@ describe('DDL generation', () => {
     expect(isGeneratedDefinition(ours, 'workos', 'users')).toBe(true)
     expect(isGeneratedDefinition(ours.replace('is null', 'is not null'), 'workos', 'users')).toBe(false)
     expect(isGeneratedDefinition(ours, 'workos', 'organizations')).toBe(false)
+  })
+})
+
+describe('migration lock', () => {
+  /**
+   * A client that answers only what `migrate` asks before any DDL: the lock
+   * itself, then the "already applied" short-circuit of `applySchema`. So a
+   * granted lock ends in `applied: false` with nothing executed, and a
+   * refused one in a throw before the schema is touched.
+   */
+  function fakeClient(lockRow: Record<string, unknown> | undefined) {
+    const log: string[] = []
+    const client: SqlClient = {
+      async query<T>(sql: string): Promise<QueryResult<T>> {
+        log.push(sql)
+        const rows = (r: unknown[]): QueryResult<T> => ({ rows: r as T[], affectedRows: 0 })
+        if (sql.startsWith('select get_lock(')) return rows(lockRow ? [lockRow] : [])
+        if (sql.includes('information_schema.tables')) {
+          return rows(bookkeepingSql('workos').map(([table_name]) => ({ table_name })))
+        }
+        // The schema exists and this fingerprint is already recorded.
+        return rows([{ 1: 1 }])
+      },
+      async exec(sql) {
+        log.push(sql)
+      },
+      transaction: () => Promise.reject(new Error('migrate must not open a transaction')),
+      pinned: (fn) => fn(client),
+      close: async () => {},
+    }
+    return { client, log }
+  }
+
+  const granted: [label: string, row: Record<string, unknown>][] = [
+    ['MySQL honours the alias', { l: 1 }],
+    ['Vitess names the column after the expression', { 'get_lock(?, 60)': 1 }],
+    ['the driver hands the value back as a string', { 'get_lock(?, 60)': '1' }],
+  ]
+
+  it.each(granted)('proceeds when the lock is granted and %s', async (_label, row) => {
+    const { client, log } = fakeClient(row)
+    const result = await migrate(client, [users], 'workos')
+    expect(result.applied).toBe(false)
+    expect(log[0]).toMatch(/^select get_lock\(/)
+    expect(log[log.length - 1]).toMatch(/^select release_lock\(/)
+  })
+
+  const refused: [label: string, row: Record<string, unknown> | undefined][] = [
+    ['the lock timed out', { l: 0 }],
+    ['the server reports an error', { l: null }],
+    ['Vitess times out', { 'get_lock(?, 60)': 0 }],
+    ['no row comes back', undefined],
+  ]
+
+  it.each(refused)('stops before any DDL when %s', async (_label, row) => {
+    const { client, log } = fakeClient(row)
+    await expect(migrate(client, [users], 'workos')).rejects.toThrow('could not take the migration lock for workos')
+    // Nothing was held, so nothing is released, and the schema was never read.
+    expect(log).toHaveLength(1)
+    expect(log[0]).toMatch(/^select get_lock\(/)
   })
 })
 
