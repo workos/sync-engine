@@ -116,7 +116,7 @@ export const STREAMS: StreamDef[] = [
     prefixes: ['om_'],
     columns: [
       { name: 'id', type: 'text', path: 'id' },
-      { name: 'user_id', type: 'text', path: 'user_id', index: true },
+      { name: 'user_id', type: 'text', path: 'user_id', index: true, references: 'users' },
       { name: 'organization_id', type: 'text', path: 'organization_id', index: true },
       { name: 'status', type: 'text', path: 'status' },
       { name: 'role_slug', type: 'text', path: ['role', 'slug'] },
@@ -183,8 +183,8 @@ export const STREAMS: StreamDef[] = [
       { name: 'email', type: 'text', path: 'email', index: true },
       { name: 'state', type: 'text', path: 'state' },
       { name: 'organization_id', type: 'text', path: 'organization_id', index: true },
-      { name: 'inviter_user_id', type: 'text', path: 'inviter_user_id' },
-      { name: 'accepted_user_id', type: 'text', path: 'accepted_user_id' },
+      { name: 'inviter_user_id', type: 'text', path: 'inviter_user_id', references: 'users' },
+      { name: 'accepted_user_id', type: 'text', path: 'accepted_user_id', references: 'users' },
       { name: 'role_slug', type: 'text', path: ['role', 'slug'] },
       { name: 'expires_at', type: 'timestamptz', path: 'expires_at' },
       { name: 'accepted_at', type: 'timestamptz', path: 'accepted_at' },
@@ -251,7 +251,7 @@ export const STREAMS: StreamDef[] = [
       { name: 'event', type: 'text', path: 'event', index: true },
       { name: 'type', type: 'text', path: 'type' },
       { name: 'status', type: 'text', path: 'status' },
-      { name: 'user_id', type: 'text', path: 'user_id', index: true },
+      { name: 'user_id', type: 'text', path: 'user_id', index: true, references: 'users' },
       { name: 'email', type: 'text', path: 'email', index: true },
       { name: 'ip_address', type: 'text', path: 'ip_address' },
       { name: 'user_agent', type: 'text', path: 'user_agent' },
@@ -271,7 +271,7 @@ export const STREAMS: StreamDef[] = [
     prefixes: ['session_'],
     columns: [
       { name: 'id', type: 'text', path: 'id' },
-      { name: 'user_id', type: 'text', path: 'user_id', index: true },
+      { name: 'user_id', type: 'text', path: 'user_id', index: true, references: 'users' },
       { name: 'organization_id', type: 'text', path: 'organization_id', index: true },
       { name: 'status', type: 'text', path: 'status' },
       { name: 'auth_method', type: 'text', path: 'auth_method' },
@@ -590,6 +590,48 @@ export const STREAMS: StreamDef[] = [
     redact: ['secret'],
   },
 ] satisfies CatalogStreamDef[]
+
+/**
+ * Whether `col` holds a user id: declared with `references: 'users'`, or
+ * named `user_id`, which an `extraColumns` entry may be without declaring
+ * anything, and which always counted.
+ */
+const namesUser = (col: ColumnDef): boolean => col.references === 'users' || col.name === 'user_id'
+
+/**
+ * The columns of `stream` that name a user, and the `users` stream's own
+ * key: a membership's or sign-in's `user_id`, an invitation's inviter and
+ * the user who accepted it, an extra column declared as referencing
+ * `users`. `redact` erases a row that names the subject in any of them.
+ */
+export function userReferenceColumns(stream: StreamDef): ColumnDef[] {
+  return stream.columns.filter((c) => namesUser(c) || (stream.name === 'users' && stream.key.includes(c.name)))
+}
+
+/**
+ * The payload paths that name a user, each as its steps under the object:
+ * `['user_id']`, or `['metadata', 'owner_user_id']` for a nested extra
+ * column. Every stream of the catalog contributes, whether selected or
+ * not, because the archive keeps every event type the tail subscribed to;
+ * `streams` adds the extra columns of the selection. An event's `data`
+ * carries the object, so `redact` scrubs archived and quarantined events
+ * by `data` followed by each.
+ */
+export function userReferencePaths(streams: StreamDef[]): string[][] {
+  const seen = new Set<string>()
+  const out: string[][] = []
+  for (const stream of [...STREAMS, ...streams]) {
+    for (const col of stream.columns) {
+      if (!namesUser(col)) continue
+      const path = Array.isArray(col.path) ? col.path : [col.path]
+      const key = path.join('\u0000')
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(path)
+    }
+  }
+  return out
+}
 
 export const streamByName = (name: string): StreamDef | undefined => STREAMS.find((s) => s.name === name)
 

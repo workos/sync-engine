@@ -785,12 +785,20 @@ describe('redaction', () => {
   it('erases a subject from the mirror and the event archive', async () => {
     const user = fake.createUser({ email: 'forget@example.com' })
     fake.emitAuthAttempt(user['id'] as string, true)
+    // Invitations name a user as the one who accepted and as the inviter.
+    const org = fake.createOrganization()
+    const accepted = fake.createInvitation(org['id'] as string)
+    fake.acceptInvitation(accepted['id'] as string, user['id'] as string)
+    fake.createInvitation(org['id'] as string, { inviter_user_id: user['id'] })
+    fake.createInvitation(org['id'] as string)
     const engine = makeEngine(t, fake)
     await engine.backfill()
     await engine.tick()
 
     const removed = await engine.redact(user['id'] as string)
     expect(removed.length).toBeGreaterThan(0)
+    expect(removed).toContainEqual({ table: 'invitations', rows: 2 })
+    expect(await count(t, 'invitations')).toBe(1)
     expect(await count(t, 'users')).toBe(0)
     expect(await count(t, 'auth_attempts')).toBe(0)
     // The archived payloads carry the same personal data and must go too.

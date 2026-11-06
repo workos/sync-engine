@@ -13,8 +13,11 @@
  * `information_schema` shows: MySQL rewrites a generated expression into its
  * own normal form, which differs between versions, so text written by the
  * catalog and text read back from the server never compare equal. A
- * generated column that has no record (a table made by hand to the right
- * shape) is recorded as current. The live type is always compared with the
+ * generated column that has no record (a schema applied by hand from `init
+ * --print-sql`) is judged by the table itself: the catalog's clause goes
+ * onto a temporary table, and `SHOW CREATE TABLE` renders that and the
+ * live table with the same server, so the two compare as text. Only a
+ * match is recorded; anything else is drift. The live type is always compared with the
  * catalog's, record or no record.
  *
  * Never touched, only reported: key columns (a rebuild would drop the
@@ -24,6 +27,7 @@
  * names, which still compute from `_raw` with their old expression and are
  * harmless to leave.
  */
+import { randomBytes } from 'node:crypto'
 import type { Logger, TableDef } from '@workos/sync-engine'
 import type { SqlClient } from '../db/client.js'
 import {
@@ -97,12 +101,44 @@ export async function recordColumn(db: SqlClient, schema: string, table: string,
   )
 }
 
+/** The generated expressions of a table as `SHOW CREATE TABLE` prints them, by column. */
+async function createdExpressions(db: SqlClient, ref: string): Promise<Map<string, string>> {
+  const r = await db.query<{ 'Create Table': string }>(`show create table ${ref}`)
+  const out = new Map<string, string>()
+  for (const line of (r.rows[0]?.['Create Table'] ?? '').split('\n')) {
+    const m = /^\s*`((?:[^`]|``)+)`\s.*?\sGENERATED ALWAYS AS \((.*)\) (?:STORED|VIRTUAL)(?: NOT NULL)?,?$/.exec(line)
+    if (m) out.set(m[1]!.replace(/``/g, '`'), m[2]!)
+  }
+  return out
+}
+
+/**
+ * The server's own spelling of each of a stream's generated expressions: a
+ * temporary table built from the catalog's clauses, read back the way the
+ * live table is. On one pinned connection, since a temporary table lives in
+ * its session.
+ */
+async function canonicalExpressions(db: SqlClient, schema: string, stream: TableDef): Promise<Map<string, string>> {
+  const ref = `${quoteIdent(schema)}.${quoteIdent(`_probe_${randomBytes(4).toString('hex')}`)}`
+  const clauses = stream.columns.map((c) => generatedColumnSql(c, stream))
+  return db.pinned(async (conn) => {
+    await conn.exec(`create temporary table ${ref} (\`_raw\` json, ${clauses.join(', ')})`)
+    try {
+      return await createdExpressions(conn, ref)
+    } finally {
+      await conn.exec(`drop temporary table if exists ${ref}`)
+    }
+  })
+}
+
 export async function detectColumnDrift(db: SqlClient, streams: TableDef[], schema: string): Promise<ColumnDrift[]> {
   const out: ColumnDrift[] = []
   for (const stream of streams) {
     const table = safeIdentifier(stream.name)
     const live = await liveColumns(db, schema, table)
     const recorded = await recordedColumns(db, schema, table)
+    let created: Map<string, string> | undefined
+    let canonical: Map<string, string> | undefined
     const catalog = new Set<string>()
     for (const col of stream.columns) {
       const name = safeIdentifier(col.name)
@@ -133,7 +169,23 @@ export async function detectColumnDrift(db: SqlClient, streams: TableDef[], sche
       }
       const record = recorded.get(name)
       if (record === undefined) {
-        await recordColumn(db, schema, table, name, expected)
+        // Nothing says what this column was created with, so the table is
+        // asked, in its own spelling of the clause the catalog would write.
+        created ??= await createdExpressions(db, `${quoteIdent(schema)}.${quoteIdent(table)}`)
+        canonical ??= await canonicalExpressions(db, schema, stream)
+        const spelled = canonical.get(name)
+        if (spelled !== undefined && spelled === created.get(name)) {
+          await recordColumn(db, schema, table, name, expected)
+          continue
+        }
+        out.push({
+          stream: stream.name,
+          column: name,
+          kind: 'expression',
+          expected,
+          actual: created.get(name) ?? actual.generation_expression,
+          key,
+        })
         continue
       }
       if (record !== expected) {

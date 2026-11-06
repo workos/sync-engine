@@ -16,7 +16,7 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
-import { encodeKey } from '@workos/sync-engine'
+import { encodeKey, userReferenceColumns, userReferencePaths } from '@workos/sync-engine'
 import type { Collection, Db, Document, MongoClient } from 'mongodb'
 import { connect, databaseFromUrl } from './db/client.js'
 import { isTransientMongoError } from './db/errors.js'
@@ -240,15 +240,19 @@ export class MongoDestination implements Destination {
   async redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]> {
     const out: { table: string; rows: number }[] = []
     for (const stream of streams) {
-      const col = stream.columns.find((c) => c.name === 'user_id' || (c.name === 'id' && stream.name === 'users'))
-      if (!col) continue
-      const r = await this.mirror(stream).deleteMany({ _env: env, [fieldPath(col.path)]: userId })
+      const refs = userReferenceColumns(stream)
+      if (refs.length === 0) continue
+      const r = await this.mirror(stream).deleteMany({
+        _env: env,
+        $or: refs.map((c) => ({ [fieldPath(c.path)]: userId })),
+      })
       if (r.deletedCount > 0) out.push({ table: stream.name, rows: r.deletedCount })
     }
+    const namedInData = userReferencePaths(streams).map((p) => ({ [`_raw.data.${p.join('.')}`]: userId }))
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.store
       .collection<MirrorDoc>(this.names.mirror('events'))
-      .deleteMany({ _env: env, $or: [{ '_raw.data.id': userId }, { '_raw.data.user_id': userId }] })
+      .deleteMany({ _env: env, $or: [{ '_raw.data.id': userId }, ...namedInData] })
     if (ev.deletedCount > 0) out.push({ table: 'events', rows: ev.deletedCount })
     // Quarantined events embed the payload too, and they may be the only copy
     // of it: an event rejected before its archive write succeeded is nowhere
@@ -256,7 +260,7 @@ export class MongoDestination implements Destination {
     const rj = await this.quarantine.deleteMany({
       sync_id: this.syncId,
       env,
-      $or: [{ object_id: userId }, { '_raw.data.user_id': userId }],
+      $or: [{ object_id: userId }, ...namedInData],
     })
     if (rj.deletedCount > 0) out.push({ table: '_rejected', rows: rj.deletedCount })
     return out

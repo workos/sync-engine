@@ -105,10 +105,14 @@ npx workos-sync-mysql init --print-sql --schema <branch database> > schema.sql
 npx workos-sync-mysql init --schema <branch database>
 ```
 
-Once the tables and views are in place, `init` runs no DDL at all: it checks
-the live columns, records what it finds, and records the fingerprint. A later
-catalog change that adds a column is the one thing that needs another deploy
-request; `init` reports the missing column and the DDL for it.
+Once the tables and views are in place, `init` changes no schema: it checks
+the live columns, records what it finds, and records the fingerprint. To
+check a column it has no record of, it creates a temporary table from the
+catalog's clauses and drops it again within the session, which is session
+state rather than a schema change, needs only the `CREATE TEMPORARY TABLES`
+grant, and passes a host that gates schema changes. A later catalog change
+that adds a column is the one thing that needs another deploy request;
+`init` reports the missing column and the DDL for it.
 
 `listen` with a health port answers `GET /healthz` with `200` while the tail
 is polling and `503` once a poll is overdue, and `GET /metrics` in Prometheus

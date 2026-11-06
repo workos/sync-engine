@@ -16,7 +16,7 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
-import { encodeKey } from '@workos/sync-engine'
+import { encodeKey, userReferenceColumns, userReferencePaths } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 import { diffIdsInSql } from './db/reconcile.js'
@@ -205,20 +205,26 @@ export class MysqlDestination implements Destination {
   async redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]> {
     const out: { table: string; rows: number }[] = []
     for (const stream of streams) {
-      const col = stream.columns.find((c) => c.name === 'user_id' || (c.name === 'id' && stream.name === 'users'))
-      if (!col) continue
+      const refs = userReferenceColumns(stream)
+      if (refs.length === 0) continue
       const r = await this.client.query(
-        `delete from ${this.table(stream)} where \`_env\` = ? and ${ident(col.name)} = ?`,
-        [env, userId],
+        `delete from ${this.table(stream)} where \`_env\` = ? and (${refs.map((c) => `${ident(c.name)} = ?`).join(' or ')})`,
+        [env, ...refs.map(() => userId)],
       )
       if (r.affectedRows > 0) out.push({ table: stream.name, rows: r.affectedRows })
     }
-    const userIdInData = `json_value(\`_raw\`, ${jsonPath(['data', 'user_id'])} returning char(${KEY_LENGTH}) null on error)`
+    const paths = userReferencePaths(streams)
+    const namedInData = paths
+      .map(
+        (p) => ` or json_value(\`_raw\`, ${jsonPath(['data', ...p])} returning char(${KEY_LENGTH}) null on error) = ?`,
+      )
+      .join('')
+    const named = paths.map(() => userId)
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.client.query(
       `delete from ${quoteIdent(this.schema)}.\`events\`
-       where \`_env\` = ? and (\`object_id\` = ? or ${userIdInData} = ?)`,
-      [env, userId, userId],
+       where \`_env\` = ? and (\`object_id\` = ?${namedInData})`,
+      [env, userId, ...named],
     )
     if (ev.affectedRows > 0) out.push({ table: 'events', rows: ev.affectedRows })
     // Quarantined events embed the payload too, and they may be the only copy
@@ -226,8 +232,8 @@ export class MysqlDestination implements Destination {
     // in `events`.
     const rj = await this.client.query(
       `delete from ${quoteIdent(this.schema)}.\`_rejected\`
-       where sync_id = ? and env = ? and (object_id = ? or ${userIdInData} = ?)`,
-      [this.syncId, env, userId, userId],
+       where sync_id = ? and env = ? and (object_id = ?${namedInData})`,
+      [this.syncId, env, userId, ...named],
     )
     if (rj.affectedRows > 0) out.push({ table: '_rejected', rows: rj.affectedRows })
     return out
