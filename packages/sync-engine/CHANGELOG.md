@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.0](https://github.com/workos/sync-engine/compare/sync-engine-v0.1.0...sync-engine-v0.2.0) (2026-11-06)
+
+
+### Features
+
+* Abandon oversized reconcile streams, add excludeStreams ([#45](https://github.com/workos/sync-engine/issues/45)) ([598f82a](https://github.com/workos/sync-engine/commit/598f82af4cc9fb1b2d7bc8e48ad29f7d6fb015aa))
+* **clickhouse:** add the ClickHouse destination package ([#46](https://github.com/workos/sync-engine/issues/46)) ([a8ea9e9](https://github.com/workos/sync-engine/commit/a8ea9e9b4ebb9ee8ebce704f2bcc77ae126d2111))
+* **mongodb:** add the MongoDB destination package ([#41](https://github.com/workos/sync-engine/issues/41)) ([9f0c1d0](https://github.com/workos/sync-engine/commit/9f0c1d0fab94461540496fb359735a17c3ff82b0))
+* **mysql:** add the MySQL destination package ([#40](https://github.com/workos/sync-engine/issues/40)) ([01fa153](https://github.com/workos/sync-engine/commit/01fa153ad69b8dec00f8461ebf58137e2625f760))
+
+
+### Bug Fixes
+
+* **engine:** honor a stop() issued while init() is still running ([#42](https://github.com/workos/sync-engine/issues/42)) ([4f9aebf](https://github.com/workos/sync-engine/commit/4f9aebf981c6acd99be86d7b09b22dbd370af61b))
+* **engine:** record per-parent backfill progress as one watermark ([#48](https://github.com/workos/sync-engine/issues/48)) ([6b84f5a](https://github.com/workos/sync-engine/commit/6b84f5a4fe123f6596472d7a210c20279864b007))
+* redact every column that names a user, verify unrecorded MySQL columns ([#52](https://github.com/workos/sync-engine/issues/52)) ([613ae96](https://github.com/workos/sync-engine/commit/613ae9642ac5dae0ea87368d1c700ef92874507d))
+
 ## [0.1.0](https://github.com/workos/sync-engine/compare/sync-engine-v0.0.1...sync-engine-v0.1.0) (2026-11-04)
 
 
