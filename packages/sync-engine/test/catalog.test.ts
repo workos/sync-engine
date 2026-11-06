@@ -62,10 +62,12 @@ describe('user references', () => {
     })
     const organizations = withExtra.find((s) => s.name === 'organizations')!
     expect(userReferenceColumns(organizations).map((c) => c.name)).toEqual(['owner', 'user_id'])
+    // The catalog's own paths stay: the archive holds every event type,
+    // whichever streams were selected.
     expect(
       userReferencePaths(withExtra)
         .map((p) => p.join('.'))
         .sort(),
-    ).toEqual(['metadata.owner_user_id', 'user_id'])
+    ).toEqual(['accepted_user_id', 'inviter_user_id', 'metadata.owner_user_id', 'user_id'])
   })
 })
