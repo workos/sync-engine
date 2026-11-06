@@ -99,8 +99,12 @@ export async function migrate(
 ): Promise<MigrateResult> {
   return db.pinned(async (conn) => {
     const lock = lockName(schema)
-    const got = await conn.query<{ l: number | null }>(`select get_lock(?, 60) as l`, [lock])
-    if (got.rows[0]?.l !== 1) throw new Error(`could not take the migration lock for ${schema} within 60s`)
+    // Read the value by position, not by alias: Vitess (PlanetScale) answers a
+    // lock function itself and names the column after the expression, so `l`
+    // would be undefined there even though the lock was granted.
+    const got = await conn.query<Record<string, number | null>>(`select get_lock(?, 60) as l`, [lock])
+    const taken = Object.values(got.rows[0] ?? {})[0]
+    if (Number(taken) !== 1) throw new Error(`could not take the migration lock for ${schema} within 60s`)
     try {
       return await applySchema(conn, streams, schema, logger, options)
     } finally {
