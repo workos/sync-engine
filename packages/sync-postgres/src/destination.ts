@@ -28,6 +28,14 @@ import { quoteIdent, safeIdentifier } from './schema/ddl.js'
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
 
+/**
+ * The columns that name a user: a membership's or sign-in's `user_id`, and
+ * an invitation's inviter and the user who accepted it. `redact` erases a
+ * row that names the subject in any of them, and an archived or quarantined
+ * event whose payload does.
+ */
+const USER_REFERENCES = ['user_id', 'inviter_user_id', 'accepted_user_id']
+
 export interface PostgresDestinationOptions {
   /** Connection string. Alternatively pass a pre-built `db`. */
   databaseUrl?: string
@@ -204,19 +212,22 @@ export class PostgresDestination implements Destination {
   async redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]> {
     const out: { table: string; rows: number }[] = []
     for (const stream of streams) {
-      const col = stream.columns.find((c) => c.name === 'user_id' || (c.name === 'id' && stream.name === 'users'))
-      if (!col) continue
+      const refs = stream.columns.filter(
+        (c) => USER_REFERENCES.includes(c.name) || (c.name === 'id' && stream.name === 'users'),
+      )
+      if (refs.length === 0) continue
       const r = await this.client.query(
         `delete from ${this.table(stream)}
-         where "_env" = $1 and ${ident(col.name)} = $2 returning 1`,
+         where "_env" = $1 and (${refs.map((c) => `${ident(c.name)} = $2`).join(' or ')}) returning 1`,
         [env, userId],
       )
       if (r.rows.length > 0) out.push({ table: stream.name, rows: r.rows.length })
     }
+    const namedInData = (param: string) => USER_REFERENCES.map((f) => `"_raw"->'data'->>'${f}' = ${param}`).join(' or ')
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.client.query(
       `delete from ${quoteIdent(this.schema)}."events"
-       where "_env" = $1 and ("object_id" = $2 or "_raw"->'data'->>'user_id' = $2) returning 1`,
+       where "_env" = $1 and ("object_id" = $2 or ${namedInData('$2')}) returning 1`,
       [env, userId],
     )
     if (ev.rows.length > 0) out.push({ table: 'events', rows: ev.rows.length })
@@ -225,7 +236,7 @@ export class PostgresDestination implements Destination {
     // in `events`.
     const rj = await this.client.query(
       `delete from ${quoteIdent(this.schema)}."_rejected"
-       where sync_id = $1 and env = $2 and ("object_id" = $3 or "_raw"->'data'->>'user_id' = $3) returning 1`,
+       where sync_id = $1 and env = $2 and ("object_id" = $3 or ${namedInData('$3')}) returning 1`,
       [this.syncId, env, userId],
     )
     if (rj.rows.length > 0) out.push({ table: '_rejected', rows: rj.rows.length })

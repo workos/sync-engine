@@ -140,6 +140,33 @@ describeDb('column drift detection', () => {
     expect(await recorded([changed])).toBe(true)
   })
 
+  it('judges an unrecorded column by the table itself, as after a schema applied by hand', async () => {
+    await migrate(db, [users], db.schema)
+    const forgetAll = async () => {
+      await db.query(`delete from \`${db.schema}\`.\`_columns\``)
+      await db.query(`delete from \`${db.schema}\`.\`_migrations\``)
+    }
+    // The same catalog again: every column checks out and is recorded.
+    await forgetAll()
+    const same = await migrate(db, [users], db.schema)
+    expect(same.drift).toEqual([])
+    expect(await recorded([users])).toBe(true)
+
+    // A changed path with no record to compare against. `ADD COLUMN IF NOT
+    // EXISTS` leaves the column as it was; the table says so, and that is
+    // drift to report, not a clause to record as installed.
+    await forgetAll()
+    await insertUser({ id: 'user_1', email: 'old@example.com', primary_email: 'new@example.com' })
+    const moved = await migrate(db, [usersMovedEmail], db.schema)
+    expect(moved.drift.map((d) => [d.column, d.kind])).toEqual([['email', 'expression']])
+    expect(await recorded([usersMovedEmail])).toBe(false)
+    const fixed = await migrate(db, [usersMovedEmail], db.schema, undefined, { repair: true })
+    expect(fixed.drift).toEqual([])
+    const row = await db.query<{ email: string }>(`select email from \`${db.schema}\`.users`)
+    expect(row.rows[0]!.email).toBe('new@example.com')
+    expect(await recorded([usersMovedEmail])).toBe(true)
+  })
+
   it('refuses to repair a key column', async () => {
     await migrate(db, [users], db.schema)
     const rekeyed = withColumn(users, { name: 'id', type: 'text', path: 'uid' })

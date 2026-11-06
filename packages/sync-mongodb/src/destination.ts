@@ -35,6 +35,14 @@ import {
 import { migrate, type MigrateResult } from './schema/migrate.js'
 import { fieldPath, keyPath, Names } from './schema/names.js'
 
+/**
+ * The columns that name a user: a membership's or sign-in's `user_id`, and
+ * an invitation's inviter and the user who accepted it. `redact` erases a
+ * row that names the subject in any of them, and an archived or quarantined
+ * event whose payload does.
+ */
+const USER_REFERENCES = ['user_id', 'inviter_user_id', 'accepted_user_id']
+
 export interface MongoDestinationOptions {
   /** Connection string (`mongodb://` or `mongodb+srv://`). Alternatively pass a pre-built `client`. */
   url?: string
@@ -240,15 +248,21 @@ export class MongoDestination implements Destination {
   async redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]> {
     const out: { table: string; rows: number }[] = []
     for (const stream of streams) {
-      const col = stream.columns.find((c) => c.name === 'user_id' || (c.name === 'id' && stream.name === 'users'))
-      if (!col) continue
-      const r = await this.mirror(stream).deleteMany({ _env: env, [fieldPath(col.path)]: userId })
+      const refs = stream.columns.filter(
+        (c) => USER_REFERENCES.includes(c.name) || (c.name === 'id' && stream.name === 'users'),
+      )
+      if (refs.length === 0) continue
+      const r = await this.mirror(stream).deleteMany({
+        _env: env,
+        $or: refs.map((c) => ({ [fieldPath(c.path)]: userId })),
+      })
       if (r.deletedCount > 0) out.push({ table: stream.name, rows: r.deletedCount })
     }
+    const namedInData = USER_REFERENCES.map((f) => ({ [`_raw.data.${f}`]: userId }))
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.store
       .collection<MirrorDoc>(this.names.mirror('events'))
-      .deleteMany({ _env: env, $or: [{ '_raw.data.id': userId }, { '_raw.data.user_id': userId }] })
+      .deleteMany({ _env: env, $or: [{ '_raw.data.id': userId }, ...namedInData] })
     if (ev.deletedCount > 0) out.push({ table: 'events', rows: ev.deletedCount })
     // Quarantined events embed the payload too, and they may be the only copy
     // of it: an event rejected before its archive write succeeded is nowhere
@@ -256,7 +270,7 @@ export class MongoDestination implements Destination {
     const rj = await this.quarantine.deleteMany({
       sync_id: this.syncId,
       env,
-      $or: [{ object_id: userId }, { '_raw.data.user_id': userId }],
+      $or: [{ object_id: userId }, ...namedInData],
     })
     if (rj.deletedCount > 0) out.push({ table: '_rejected', rows: rj.deletedCount })
     return out

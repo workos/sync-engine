@@ -28,6 +28,14 @@ import { jsonPath, quoteIdent, safeIdentifier, KEY_LENGTH } from './schema/ddl.j
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
 
+/**
+ * The columns that name a user: a membership's or sign-in's `user_id`, and
+ * an invitation's inviter and the user who accepted it. `redact` erases a
+ * row that names the subject in any of them, and an archived or quarantined
+ * event whose payload does.
+ */
+const USER_REFERENCES = ['user_id', 'inviter_user_id', 'accepted_user_id']
+
 export interface MysqlDestinationOptions {
   /** Connection string, `mysql://user:password@host:3306/db`. Alternatively pass a pre-built `db`. */
   databaseUrl?: string
@@ -205,20 +213,25 @@ export class MysqlDestination implements Destination {
   async redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]> {
     const out: { table: string; rows: number }[] = []
     for (const stream of streams) {
-      const col = stream.columns.find((c) => c.name === 'user_id' || (c.name === 'id' && stream.name === 'users'))
-      if (!col) continue
+      const refs = stream.columns.filter(
+        (c) => USER_REFERENCES.includes(c.name) || (c.name === 'id' && stream.name === 'users'),
+      )
+      if (refs.length === 0) continue
       const r = await this.client.query(
-        `delete from ${this.table(stream)} where \`_env\` = ? and ${ident(col.name)} = ?`,
-        [env, userId],
+        `delete from ${this.table(stream)} where \`_env\` = ? and (${refs.map((c) => `${ident(c.name)} = ?`).join(' or ')})`,
+        [env, ...refs.map(() => userId)],
       )
       if (r.affectedRows > 0) out.push({ table: stream.name, rows: r.affectedRows })
     }
-    const userIdInData = `json_value(\`_raw\`, ${jsonPath(['data', 'user_id'])} returning char(${KEY_LENGTH}) null on error)`
+    const namedInData = USER_REFERENCES.map(
+      (f) => `json_value(\`_raw\`, ${jsonPath(['data', f])} returning char(${KEY_LENGTH}) null on error) = ?`,
+    ).join(' or ')
+    const named = USER_REFERENCES.map(() => userId)
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.client.query(
       `delete from ${quoteIdent(this.schema)}.\`events\`
-       where \`_env\` = ? and (\`object_id\` = ? or ${userIdInData} = ?)`,
-      [env, userId, userId],
+       where \`_env\` = ? and (\`object_id\` = ? or ${namedInData})`,
+      [env, userId, ...named],
     )
     if (ev.affectedRows > 0) out.push({ table: 'events', rows: ev.affectedRows })
     // Quarantined events embed the payload too, and they may be the only copy
@@ -226,8 +239,8 @@ export class MysqlDestination implements Destination {
     // in `events`.
     const rj = await this.client.query(
       `delete from ${quoteIdent(this.schema)}.\`_rejected\`
-       where sync_id = ? and env = ? and (object_id = ? or ${userIdInData} = ?)`,
-      [this.syncId, env, userId, userId],
+       where sync_id = ? and env = ? and (object_id = ? or ${namedInData})`,
+      [this.syncId, env, userId, ...named],
     )
     if (rj.affectedRows > 0) out.push({ table: '_rejected', rows: rj.affectedRows })
     return out

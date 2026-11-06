@@ -494,12 +494,21 @@ describeDb('redaction', () => {
   it('erases a subject from the mirror and the event archive', async () => {
     const user = fake.createUser({ email: 'forget@example.com' })
     fake.emitAuthAttempt(user['id'] as string, true)
+    // Invitations name a user as the one who accepted and as the inviter.
+    const org = fake.createOrganization()
+    const accepted = fake.createInvitation(org['id'] as string)
+    fake.acceptInvitation(accepted['id'] as string, user['id'] as string)
+    fake.createInvitation(org['id'] as string, { inviter_user_id: user['id'] })
+    fake.createInvitation(org['id'] as string)
     const engine = makeEngine(db, fake)
     await engine.backfill()
     await engine.tick()
 
     const removed = await engine.redact(user['id'] as string)
     expect(removed).toContainEqual({ table: 'users', rows: 1 })
+    expect(removed).toContainEqual({ table: 'invitations', rows: 2 })
+    const invitations = await db.query<{ n: number }>(`select count(*) as n from \`${db.schema}\`.invitations`)
+    expect(Number(invitations.rows[0]!.n)).toBe(1)
     expect(removed).toContainEqual({ table: 'auth_attempts', rows: 1 })
     expect(removed.find((r) => r.table === 'events')!.rows).toBeGreaterThan(0)
 
