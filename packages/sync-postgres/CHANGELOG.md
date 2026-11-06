@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.0](https://github.com/workos/sync-engine/compare/sync-postgres-v0.1.0...sync-postgres-v0.2.0) (2026-11-06)
+
+
+### Features
+
+* Abandon oversized reconcile streams, add excludeStreams ([#45](https://github.com/workos/sync-engine/issues/45)) ([598f82a](https://github.com/workos/sync-engine/commit/598f82af4cc9fb1b2d7bc8e48ad29f7d6fb015aa))
+
+
+### Bug Fixes
+
+* **postgres:** run the installed command, dedupe by instant, refuse out-of-range offsets ([#49](https://github.com/workos/sync-engine/issues/49)) ([e667d58](https://github.com/workos/sync-engine/commit/e667d58c506f507edcdb2d996d3a4a9ec3a84731))
+* redact every column that names a user, verify unrecorded MySQL columns ([#52](https://github.com/workos/sync-engine/issues/52)) ([613ae96](https://github.com/workos/sync-engine/commit/613ae9642ac5dae0ea87368d1c700ef92874507d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @workos/sync-engine bumped to 0.2.0
+
 ## [0.1.0](https://github.com/workos/sync-engine/compare/sync-postgres-v0.0.1...sync-postgres-v0.1.0) (2026-11-04)
 
 
