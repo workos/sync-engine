@@ -36,6 +36,29 @@ describe('write path', () => {
     return r.rows[0]
   }
 
+  it('reads an updatedAt without a zone as UTC whatever the session TimeZone, and honours an offset', async () => {
+    await db.exec("set time zone 'America/New_York'")
+    await upsertRows(db, opts, users, 'prod', [{ data: userPayload(), updatedAt: '2026-01-15T10:00:00' }], 'replace')
+    await upsertRows(
+      db,
+      opts,
+      users,
+      'prod',
+      [{ data: userPayload({ id: 'user_2' }), updatedAt: '2026-01-15T10:00:00+01:00' }],
+      'replace',
+    )
+    const r = await db.query<{ id: string; at: string }>(
+      `select id, to_char("_updated_at" at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as at from workos.users order by id`,
+    )
+    expect(r.rows).toEqual([
+      { id: 'user_1', at: '2026-01-15T10:00:00Z' },
+      { id: 'user_2', at: '2026-01-15T09:00:00Z' },
+    ])
+    await expect(
+      upsertRows(db, opts, users, 'prod', [{ data: userPayload(), updatedAt: 'maybe' }], 'replace'),
+    ).rejects.toThrow(/invalid input syntax/)
+  })
+
   it('inserts and reports created vs updated', async () => {
     const first = await upsertRows(
       db,

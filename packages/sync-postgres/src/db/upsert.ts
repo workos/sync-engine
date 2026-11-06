@@ -48,6 +48,18 @@ interface BuiltStatement {
   params: unknown[]
 }
 
+/**
+ * `param` as the instant its text names. A string with a zone (`Z`,
+ * `+01:00`) goes through `timestamptz`, which honours the offset whatever
+ * the session's `TimeZone`; one without a zone is read as UTC, as the
+ * catalog's `parse_iso8601`, the other destinations and the engine's
+ * `isoInstant` read it, where `::timestamptz` alone would read it in the
+ * session's zone and a pooler can hand out sessions in any zone. Text that
+ * is no timestamp still fails the cast, deterministically.
+ */
+const instant = (param: string): string =>
+  `(case when ${param} ~ '(Z|z|[+-]\\d\\d(:?\\d\\d)?)$' then ${param}::timestamptz else timezone('UTC', ${param}::timestamp) end)`
+
 export function buildUpsert(
   schema: string,
   stream: TableDef,
@@ -60,7 +72,7 @@ export function buildUpsert(
   const tuples = rows.map((r) => {
     const i = params.length
     params.push(env, JSON.stringify(r.data), r.updatedAt)
-    return `($${i + 1}, $${i + 2}::jsonb, $${i + 3}::timestamptz)`
+    return `($${i + 1}, $${i + 2}::jsonb, ${instant(`$${i + 3}`)})`
   })
 
   const conflict = [ENV, ...stream.key].map((k) => quoteIdent(safeIdentifier(k))).join(', ')
@@ -154,7 +166,7 @@ export async function deleteRows(
     const tuples = batch.map((r) => {
       const i = params.length
       params.push(env, JSON.stringify(r.data), r.updatedAt)
-      return `($${i + 1}, $${i + 2}::jsonb, $${i + 3}::timestamptz, $${i + 3}::timestamptz)`
+      return `($${i + 1}, $${i + 2}::jsonb, ${instant(`$${i + 3}`)}, ${instant(`$${i + 3}`)})`
     })
     // `greatest`, not `coalesce`, for `_deleted_at`: a membership removed,
     // re-added and removed again must carry the *latest* removal, because that
@@ -194,7 +206,7 @@ export async function relinkRows(
     const tuples = batch.map((r) => {
       const i = params.length
       params.push(env, JSON.stringify(r.data), r.updatedAt)
-      return `($${i + 1}, $${i + 2}::jsonb, $${i + 3}::timestamptz)`
+      return `($${i + 1}, $${i + 2}::jsonb, ${instant(`$${i + 3}`)})`
     })
     // A membership is a fact that can legitimately come back: added, removed,
     // added again. Unlike object deletes, a re-link clears the tombstone —
@@ -248,7 +260,7 @@ export async function unlinkRows(
     const tuples = batch.map((r) => {
       const i = params.length
       params.push(env, JSON.stringify(r.data), r.updatedAt)
-      return `($${i + 1}, $${i + 2}::jsonb, $${i + 3}::timestamptz, $${i + 3}::timestamptz)`
+      return `($${i + 1}, $${i + 2}::jsonb, ${instant(`$${i + 3}`)}, ${instant(`$${i + 3}`)})`
     })
     // `_updated_at` moves to the removal time, so the next re-add is gated
     // against the removal by the same comparison every membership write uses.
