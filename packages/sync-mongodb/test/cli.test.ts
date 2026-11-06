@@ -1,108 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { SyncEngine, WorkOSClient, silentLogger } from '@workos/sync-engine'
-import {
-  invokedDirectly,
-  main,
-  parseExcludeStreams,
-  parseHydrate,
-  parseLeaseTtl,
-  parseMaxPages,
-  parseSslCa,
-  repairRequested,
-} from '../src/cli.js'
+import { SyncEngine, WorkOSClient, silentLogger, parseExcludeStreams } from '@workos/sync-engine'
+import { main } from '../src/cli.js'
 import { createTestDb, type TestDb } from './helpers/mongo.js'
 import { FaultyDestination } from './helpers/faulty.js'
 import { MongoDestination } from '../src/destination.js'
-import { TEST_CA_PEM } from './helpers/ca.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
 
-describe('entrypoint', () => {
-  let dir: string
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'workos-sync-mongodb-bin-'))
-  })
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
-  })
-
-  it('recognises the script itself and the symlink npm installs as the command', () => {
-    const script = join(dir, 'cli.js')
-    writeFileSync(script, '')
-    const url = pathToFileURL(script).href
-    expect(invokedDirectly(script, url)).toBe(true)
-
-    // `npm install` links `node_modules/.bin/workos-sync-mongodb` at dist/cli.js,
-    // so argv[1] is the link, not the file.
-    const link = join(dir, 'workos-sync-mongodb')
-    symlinkSync(script, link)
-    expect(invokedDirectly(link, url)).toBe(true)
-  })
-
-  it('is false for an import, a missing path, or another script', () => {
-    const script = join(dir, 'cli.js')
-    writeFileSync(script, '')
-    const url = pathToFileURL(script).href
-    expect(invokedDirectly(undefined, url)).toBe(false)
-    expect(invokedDirectly(join(dir, 'missing'), url)).toBe(false)
-    const other = join(dir, 'vitest.mjs')
-    writeFileSync(other, '')
-    expect(invokedDirectly(other, url)).toBe(false)
-    // This test file was started by the test runner, not by the CLI.
-    expect(invokedDirectly(process.argv[1], url)).toBe(false)
-  })
-})
-
-describe('WORKOS_SYNC_HYDRATE', () => {
-  it('leaves the engine default in place when unset', () => {
-    expect(parseHydrate(undefined)).toBeUndefined()
-    expect(parseHydrate('')).toBeUndefined()
-  })
-
-  it('accepts one mode for every stream', () => {
-    expect(parseHydrate('off')).toBe('off')
-    expect(parseHydrate('always')).toBe('always')
-  })
-
-  it('accepts per-stream overrides on top of the default', () => {
-    expect(parseHydrate('users=always')).toEqual({ users: 'always' })
-    expect(parseHydrate('users=off, organizations=off')).toEqual({ users: 'off', organizations: 'off' })
-  })
-
-  it('rejects anything else loudly', () => {
-    expect(() => parseHydrate('sometimes')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
-    expect(() => parseHydrate('users=maybe')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
-  })
-})
-
-describe('backfill --max-pages', () => {
-  it('means unbounded when absent', () => {
-    expect(parseMaxPages(undefined)).toBeUndefined()
-  })
-
-  it('accepts a positive integer', () => {
-    expect(parseMaxPages('25')).toBe(25)
-    expect(parseMaxPages(' 1 ')).toBe(1)
-  })
-
-  it('refuses a bare flag, zero, a fraction, and anything that is not a number', () => {
-    for (const bad of [true, '', '0', '-3', '1.5', 'ten']) {
-      expect(() => parseMaxPages(bad)).toThrow(/invalid --max-pages/)
-    }
-  })
-})
-
 describe('init --repair', () => {
-  it('asks for repair on init and nothing else', () => {
-    expect(repairRequested('init', { repair: true })).toBe(true)
-    expect(repairRequested('init', {})).toBe(false)
-    // `reconcile --repair` repairs rows, not views.
-    expect(repairRequested('reconcile', { repair: true })).toBe(false)
-  })
-
   it('is in the help text, which names this destination', async () => {
     const out: string[] = []
     const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
@@ -122,60 +26,6 @@ describe('init --repair', () => {
     expect(help).toContain('WORKOS_SYNC_MONGODB_TLS_CA')
     expect(help).not.toContain('--print-sql')
     expect(help).not.toContain('Postgres')
-  })
-})
-
-describe('WORKOS_SYNC_LEASE_TTL_MS', () => {
-  it('leaves the engine default in place when unset or empty', () => {
-    expect(parseLeaseTtl(undefined)).toBeUndefined()
-    expect(parseLeaseTtl('')).toBeUndefined()
-    expect(parseLeaseTtl('  ')).toBeUndefined()
-  })
-
-  it('accepts a number of milliseconds', () => {
-    expect(parseLeaseTtl('250')).toBe(250)
-  })
-
-  it('refuses a value that would expire on arrival', () => {
-    for (const bad of ['0', '-1', '0.5', 'abc', 'Infinity']) {
-      expect(() => parseLeaseTtl(bad)).toThrow(/invalid WORKOS_SYNC_LEASE_TTL_MS/)
-    }
-  })
-})
-
-describe('WORKOS_SYNC_MONGODB_TLS_CA', () => {
-  const pem = TEST_CA_PEM
-
-  it('leaves the driver defaults in place when unset or empty', () => {
-    expect(parseSslCa(undefined)).toBeUndefined()
-    expect(parseSslCa('')).toBeUndefined()
-    expect(parseSslCa('  ')).toBeUndefined()
-  })
-
-  it('accepts PEM as is, as a bundle, with escaped newlines, or as base64', () => {
-    expect(parseSslCa(pem)).toBe(pem.trim())
-    expect(parseSslCa(pem + pem)).toBe((pem + pem).trim())
-    expect(parseSslCa(pem.trim().replace(/\n/g, '\\n'))).toBe(pem.trim())
-    const b64 = Buffer.from(pem).toString('base64')
-    expect(parseSslCa(b64)).toBe(pem)
-    expect(parseSslCa(b64.replace(/(.{20})/g, '$1\n'))).toBe(pem)
-  })
-
-  it('refuses anything that is not a certificate, damaged ones included', () => {
-    const lines = pem.trim().split('\n')
-    const header = lines[0]!
-    const footer = lines[lines.length - 1]!
-    const truncated = [header, ...lines.slice(1, 4), footer].join('\n')
-    for (const bad of [
-      '/etc/ssl/ca.crt',
-      'not a cert',
-      Buffer.from('nope').toString('base64'),
-      header,
-      truncated,
-      Buffer.from(truncated).toString('base64'),
-    ]) {
-      expect(() => parseSslCa(bad)).toThrow(/invalid WORKOS_SYNC_MONGODB_TLS_CA/)
-    }
   })
 })
 
@@ -238,7 +88,7 @@ describe('commands', () => {
 
   it('init creates the schema from the environment and the flags, and is quiet when nothing changed', async () => {
     expect(
-      await main(['init', '--database', t.name, '--streams', 'users', '--prefix', 'mirror_'], { client: t.client }),
+      await main(['init', '--database', t.name, '--streams', 'users', '--prefix', 'mirror_'], { db: t.client }),
     ).toBe(0)
     expect(out.join('')).toContain('schema ready')
     const names = (await t.db.listCollections().toArray())
@@ -257,18 +107,18 @@ describe('commands', () => {
     expect(out.some((o) => o.includes('mirror_users_live'))).toBe(true)
     out.length = 0
     expect(
-      await main(['init', '--database', t.name, '--streams', 'users', '--prefix', 'mirror_'], { client: t.client }),
+      await main(['init', '--database', t.name, '--streams', 'users', '--prefix', 'mirror_'], { db: t.client }),
     ).toBe(0)
     expect(out.join('')).toBe('schema ready\n')
     // The environment works where the flags do.
     process.env['WORKOS_SYNC_DATABASE'] = t.name
     process.env['WORKOS_SYNC_PREFIX'] = 'other_'
-    expect(await main(['init', '--streams', 'users'], { client: t.client })).toBe(0)
+    expect(await main(['init', '--streams', 'users'], { db: t.client })).toBe(0)
     expect(await t.db.listCollections({ name: 'other_users' }).toArray()).toHaveLength(1)
   })
 
   it('init --repair redefines a generated view whose pipeline changed, and plain init refuses to', async () => {
-    expect(await main(['init', '--database', t.name, '--streams', 'users'], { client: t.client })).toBe(0)
+    expect(await main(['init', '--database', t.name, '--streams', 'users'], { db: t.client })).toBe(0)
     await t.db.command({
       collMod: 'workos_users_live',
       viewOn: 'workos_users',
@@ -276,10 +126,10 @@ describe('commands', () => {
     })
     // The fingerprint is recorded, so a plain init does not look; a catalog change makes it look.
     await expect(
-      main(['init', '--database', t.name, '--streams', 'users,organizations'], { client: t.client }),
+      main(['init', '--database', t.name, '--streams', 'users,organizations'], { db: t.client }),
     ).rejects.toThrow(/init --repair/)
     expect(
-      await main(['init', '--repair', '--database', t.name, '--streams', 'users,organizations'], { client: t.client }),
+      await main(['init', '--repair', '--database', t.name, '--streams', 'users,organizations'], { db: t.client }),
     ).toBe(0)
     const info = (await t.db.listCollections({ name: 'workos_users_live' }, { nameOnly: false }).toArray())[0]!
     expect(info.options?.['pipeline']).toEqual([{ $match: { _deleted_at: null } }])
@@ -288,12 +138,12 @@ describe('commands', () => {
   it('needs a connection string, a key, and a known stream', async () => {
     await expect(main(['init'])).rejects.toThrow(/DATABASE_URL/)
     delete process.env['WORKOS_API_KEY']
-    await expect(main(['init', '--database', t.name], { client: t.client })).rejects.toThrow(/WORKOS_API_KEY/)
+    await expect(main(['init', '--database', t.name], { db: t.client })).rejects.toThrow(/WORKOS_API_KEY/)
     process.env['WORKOS_API_KEY'] = 'sk_test_1'
-    await expect(main(['init', '--database', t.name, '--streams', 'customers'], { client: t.client })).rejects.toThrow(
+    await expect(main(['init', '--database', t.name, '--streams', 'customers'], { db: t.client })).rejects.toThrow(
       /unknown stream: customers/,
     )
-    await expect(main(['init', '--database', t.name, '--prefix', 'bad prefix'], { client: t.client })).rejects.toThrow(
+    await expect(main(['init', '--database', t.name, '--prefix', 'bad prefix'], { db: t.client })).rejects.toThrow(
       /invalid collection prefix/,
     )
   })
@@ -307,7 +157,7 @@ describe('commands', () => {
       err.push(String(chunk))
       return true
     })
-    expect(await main(['frobnicate', '--database', t.name], { client: t.client })).toBe(1)
+    expect(await main(['frobnicate', '--database', t.name], { db: t.client })).toBe(1)
     expect(err.join('')).toContain('unknown command: frobnicate')
   })
 

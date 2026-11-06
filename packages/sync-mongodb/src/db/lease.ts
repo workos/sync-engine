@@ -33,6 +33,7 @@
  * cursor, as they are to Postgres's `jsonb`.
  */
 import type { Lease, LeaseResult } from '@workos/sync-engine'
+import { canonicalJson } from '@workos/sync-engine'
 import type { Collection, Document } from 'mongodb'
 
 export interface LeaseFields {
@@ -52,24 +53,6 @@ export interface SyncDoc extends Document {
   env: string
   lease?: LeaseFields | null
   state?: Record<string, StateField>
-}
-
-/** `value` as JSON with every object's keys sorted, so equal values serialise equally. */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortKeys(value))
-}
-
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys)
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      const v = (value as Record<string, unknown>)[key]
-      if (v !== undefined) out[key] = sortKeys(v)
-    }
-    return out
-  }
-  return value
 }
 
 /** The field a stream's cursor lives under. Stream names are catalog-controlled, but a path separator in one would silently address the wrong thing. */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { healthOptionsFromEnv } from '../src/health.js'
+import { healthOptionsFromEnv } from '../src/cli/health-options.js'
 
 describe('WORKOS_SYNC_HEALTH_*', () => {
   it('stays off unless a port is given', () => {

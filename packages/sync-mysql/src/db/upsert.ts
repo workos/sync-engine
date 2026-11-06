@@ -23,144 +23,21 @@
  * transient error and retries. The statistics are exact, since the decision
  * is made here.
  */
-import { emptyStats, type Row, type TableDef, type WriteMode, type WriteStats } from '@workos/sync-engine'
+import {
+  emptyStats,
+  type Row,
+  type TableDef,
+  type WriteMode,
+  type WriteStats,
+  keyValues,
+  dedupeByKey,
+  wavesByKey,
+  chunk,
+  parseUpdatedAt,
+  jsonEqual,
+} from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
 import { quoteIdent, safeIdentifier, ENV, RAW } from '../schema/ddl.js'
-
-export function readPath(data: Record<string, unknown>, path: string | string[]): unknown {
-  const parts = Array.isArray(path) ? path : [path]
-  let cur: unknown = data
-  for (const p of parts) {
-    if (cur == null || typeof cur !== 'object') return undefined
-    cur = (cur as Record<string, unknown>)[p]
-  }
-  return cur
-}
-
-/** Key values for a row, in `stream.key` order. Undefined if any part is missing. */
-export function keyValues(stream: TableDef, data: Record<string, unknown>): string[] | undefined {
-  const out: string[] = []
-  for (const k of stream.key) {
-    const col = stream.columns.find((c) => c.name === k)
-    const v = readPath(data, col ? col.path : k)
-    if (v == null || v === '') return undefined
-    out.push(String(v))
-  }
-  return out
-}
-
-/**
- * Collapse rows that share a primary key, keeping the newest. One
- * multi-row statement must not touch a row twice, so this is required, not
- * an optimization. It serves the delete, relink and unlink paths, whose rows
- * are whole; upserts use `wavesByKey`.
- */
-export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropped: number } {
-  const byKey = new Map<string, { row: Row; at: number }>()
-  let dropped = 0
-  for (const row of rows) {
-    const key = keyValues(stream, row.data)
-    if (!key) {
-      dropped++
-      continue
-    }
-    const k = key.join('\0')
-    const at = micros(row.updatedAt)
-    const existing = byKey.get(k)
-    if (!existing || !isBefore(row.updatedAt, at, existing.row.updatedAt, existing.at)) byKey.set(k, { row, at })
-  }
-  return { rows: [...byKey.values()].map((e) => e.row), dropped }
-}
-
-/**
- * The instant `iso` names, in microseconds since the epoch, or NaN.
- * `Date.parse` reads three fractional digits; a `DATETIME(6)` keeps six, so
- * the rest of the fraction is read here and two rows a microsecond apart
- * stay ordered the way the staleness gate will order them.
- */
-function micros(iso: string): number {
-  const frac = /\.(\d+)/.exec(iso)?.[1] ?? ''
-  const ms = Date.parse(frac.length > 3 ? iso.replace(`.${frac}`, `.${frac.slice(0, 3)}`) : iso)
-  if (Number.isNaN(ms)) return ms
-  return ms * 1000 + Number(frac.slice(3, 6).padEnd(3, '0'))
-}
-
-/**
- * Whether one timestamp is strictly earlier than another, by the instant
- * each names: `01:00:00+01:00` sorts after `00:30:00Z` as text and is half an
- * hour earlier as a time. A value that is not a date is ordered as text; the
- * database refuses it on the write either way.
- */
-function isBefore(a: string, atA: number, b: string, atB: number): boolean {
-  if (Number.isNaN(atA) || Number.isNaN(atB)) return a < b
-  return atA < atB
-}
-
-/**
- * Split a batch into waves in which no key appears twice, keeping order: the
- * n-th row for a key goes in wave n. Written one after another, the waves
- * are exactly the rows written one at a time — each row meets the staleness
- * gate against what the row before it left stored, and a merge overlays it
- * on that — while a batch with no repeated key, which is nearly every batch,
- * is still a single statement. See the Postgres destination for why keeping
- * only the newest row would be wrong for a merge.
- */
-export function wavesByKey(stream: TableDef, rows: Row[]): { waves: Row[][]; dropped: number } {
-  const waves: Row[][] = []
-  const seen = new Map<string, number>()
-  let dropped = 0
-  for (const row of rows) {
-    const key = keyValues(stream, row.data)
-    if (!key) {
-      dropped++
-      continue
-    }
-    const k = key.join('\0')
-    const n = seen.get(k) ?? 0
-    seen.set(k, n + 1)
-    const wave = waves[n] ?? (waves[n] = [])
-    wave.push(row)
-  }
-  return { waves, dropped }
-}
-
-export const chunk = <T>(items: T[], size: number): T[][] => {
-  const out: T[][] = []
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
-  return out
-}
-
-/**
- * `Row.updatedAt` as a `Date`. Postgres casts the string in SQL and a bad one
- * fails the statement; here the same verdict is reached before the
- * statement, with a code the error classifier reports as deterministic, so
- * the event is quarantined rather than retried forever.
- */
-export function parseUpdatedAt(value: string): Date {
-  const d = new Date(value)
-  if (typeof value !== 'string' || Number.isNaN(d.getTime())) {
-    throw Object.assign(new Error(`invalid updatedAt timestamp: ${JSON.stringify(value)}`), {
-      code: 'ER_INVALID_TIMESTAMP',
-    })
-  }
-  return d
-}
-
-/** Structural equality with key order ignored, which is what `is distinct from` means for jsonb. */
-export function jsonEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true
-  if (typeof a !== typeof b || a === null || b === null || typeof a !== 'object') return false
-  if (Array.isArray(a) !== Array.isArray(b)) return false
-  if (Array.isArray(a)) {
-    const bb = b as unknown[]
-    return a.length === bb.length && a.every((v, i) => jsonEqual(v, bb[i]))
-  }
-  const ao = a as Record<string, unknown>
-  const bo = b as Record<string, unknown>
-  const keys = Object.keys(ao)
-  if (keys.length !== Object.keys(bo).length) return false
-  return keys.every((k) => Object.hasOwn(bo, k) && jsonEqual(ao[k], bo[k]))
-}
 
 /** Shallow merge: the jsonb `||` of the Postgres destination. */
 const merge = (stored: Record<string, unknown>, incoming: Record<string, unknown>): Record<string, unknown> => ({

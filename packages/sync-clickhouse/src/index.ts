@@ -33,21 +33,10 @@ export {
 } from './schema/ddl.js'
 export { liveViewSql, liveViewName } from './schema/views.js'
 
-export {
-  upsertRows,
-  deleteRows,
-  relinkRows,
-  unlinkRows,
-  dedupeByKey,
-  wavesByKey,
-  keyValues,
-  parseUpdatedAt,
-  jsonEqual,
-} from './db/upsert.js'
+export { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 export { diffIdsInClickHouse } from './db/reconcile.js'
 export type { ChDiff } from './db/reconcile.js'
 export { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
-export { canonicalJson } from './db/lease.js'
 export { isTransientClickHouseError } from './db/errors.js'
 export { connect, fromClient, clientConfig, APPLICATION_NAME, DEFAULT_SETTINGS, KEEPER_SETTINGS } from './db/client.js'
 export type { ConnectOptions, ChClient } from './db/client.js'

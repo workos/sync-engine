@@ -41,7 +41,7 @@ describe('isTransientMysqlError', () => {
 
   it('presumes anything it cannot classify is deterministic', () => {
     expect(isTransientMysqlError(new Error('plain'))).toBe(false)
-    expect(isTransientMysqlError(err({ code: 'ER_INVALID_TIMESTAMP' }))).toBe(false)
+    expect(isTransientMysqlError(err({ code: 'INVALID_TIMESTAMP' }))).toBe(false)
     expect(isTransientMysqlError(null)).toBe(false)
     expect(isTransientMysqlError('ECONNRESET')).toBe(false)
   })

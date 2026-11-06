@@ -70,6 +70,49 @@ export { backfillStream, pageBudget } from './sync/backfill.js'
 export type { BackfillOptions, BackfillStreamResult, PageBudget } from './sync/backfill.js'
 export { diffStream, freshness, OversizedStreamError } from './sync/reconcile.js'
 export { diffIdsInMemory, encodeKey } from './sync/diff.js'
+export {
+  readPath,
+  keyValues,
+  dedupeByKey,
+  wavesByKey,
+  chunk,
+  isoInstant,
+  parseUpdatedAt,
+  jsonEqual,
+  canonicalJson,
+} from './rows.js'
+
+export {
+  runCli,
+  exitWith,
+  renderHelp,
+  parseArgs,
+  streamsFromFlags,
+  environmentsFromEnv,
+  parseHydrate,
+  repairRequested,
+  parseSslCa,
+  parseLeaseTtl,
+  parseMaxPages,
+  parseExcludeStreams,
+  engineConfigFromEnv,
+  invokedDirectly,
+  healthOptionsFromEnv,
+  otelEnabled,
+  startOtel,
+} from './cli/index.js'
+export type {
+  CliFlags,
+  CliSpec,
+  DestinationOptions,
+  HelpRow,
+  HelpSpec,
+  InitReport,
+  MainDeps,
+  OtelHandle,
+  ParsedArgs,
+  SdkModule,
+} from './cli/index.js'
 
 export { createLogger, silentLogger } from './logger.js'
 export { METER_NAME } from './otel.js'

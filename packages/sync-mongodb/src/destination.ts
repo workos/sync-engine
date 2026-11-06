@@ -16,22 +16,14 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
-import { encodeKey, userReferenceColumns, userReferencePaths } from '@workos/sync-engine'
+import { encodeKey, userReferenceColumns, userReferencePaths, readPath } from '@workos/sync-engine'
 import type { Collection, Db, Document, MongoClient } from 'mongodb'
 import { connect, databaseFromUrl } from './db/client.js'
 import { isTransientMongoError } from './db/errors.js'
 import { acquireLease, getLease, getState, releaseLease, setState, setStateIfHeld, type SyncDoc } from './db/lease.js'
 import { diffIdsInMongo } from './db/reconcile.js'
 import { clearRejected, countRejected, listRejected, rejectEvents, type RejectedDoc } from './db/rejected.js'
-import {
-  deleteRows,
-  readPath,
-  relinkRows,
-  unlinkRows,
-  upsertRows,
-  type MirrorDoc,
-  type WriteOptions,
-} from './db/upsert.js'
+import { deleteRows, relinkRows, unlinkRows, upsertRows, type MirrorDoc, type WriteOptions } from './db/upsert.js'
 import { migrate, type MigrateResult } from './schema/migrate.js'
 import { fieldPath, keyPath, Names } from './schema/names.js'
 

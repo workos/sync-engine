@@ -43,6 +43,16 @@ Install this package directly only to write a new destination.
   so one bad payload cannot stall every stream in the environment. Transient
   errors never qualify, and `replayRejected` puts an event back.
 - **`SyncEngine`** — the lifecycle that ties them together.
+- **Rows** — `keyValues`, `dedupeByKey`, `wavesByKey`, `chunk`: what every
+  destination does to a batch before it writes it, whatever the database:
+  find each row's key, collapse or order the rows that share one, cut the
+  batch into pieces.
+- **Command line** — `runCli`: the `init`, `backfill`, `listen`, `tick`,
+  `reconcile`, `refresh`, `status`, `redact`, `rejected` and `streams`
+  commands every destination ships, with their flags, exit codes, help text,
+  health server and OpenTelemetry bootstrap. A destination's own `cli.ts` is
+  a `CliSpec`: how to build its destination, what `init` reports, the DDL
+  `init --print-sql` prints, and the words the help text needs.
 
 ## Using the engine
 

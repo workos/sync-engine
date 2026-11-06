@@ -32,17 +32,7 @@ export {
 } from './schema/ddl.js'
 export { liveViewSql, liveViewName } from './schema/views.js'
 
-export {
-  upsertRows,
-  deleteRows,
-  relinkRows,
-  unlinkRows,
-  dedupeByKey,
-  wavesByKey,
-  keyValues,
-  parseUpdatedAt,
-  jsonEqual,
-} from './db/upsert.js'
+export { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 export { diffIdsInSql } from './db/reconcile.js'
 export type { SqlDiff } from './db/reconcile.js'
 export { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'

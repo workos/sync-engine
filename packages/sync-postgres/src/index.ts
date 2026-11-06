@@ -25,7 +25,7 @@ export type { ColumnDrift, DriftKind, RepairResult } from './schema/drift.js'
 export { buildSchemaSql, createTableSql, columnExpression, parseIso8601Function } from './schema/ddl.js'
 export { liveViewSql, guardedLiveViewSql, liveViewName } from './schema/views.js'
 
-export { upsertRows, deleteRows, relinkRows, unlinkRows, dedupeByKey, keyValues, buildUpsert } from './db/upsert.js'
+export { upsertRows, deleteRows, relinkRows, unlinkRows, buildUpsert } from './db/upsert.js'
 export { diffIdsInSql } from './db/reconcile.js'
 export type { SqlDiff } from './db/reconcile.js'
 export { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'

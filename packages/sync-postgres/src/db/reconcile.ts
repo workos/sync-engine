@@ -14,9 +14,9 @@
  * the local table for `localOnly`, an anti-join from the remote table for
  * `remoteOnly`. Node holds one page of remote rows at a time, plus the drift.
  */
-import { encodeKey, type IdDiff, type TableDef } from '@workos/sync-engine'
+import { encodeKey, type IdDiff, type TableDef, chunk, keyValues } from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
-import { chunk, keyValues, type WriteOptions } from './upsert.js'
+import type { WriteOptions } from './upsert.js'
 import { quoteIdent, safeIdentifier } from '../schema/ddl.js'
 
 /**

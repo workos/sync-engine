@@ -2,17 +2,18 @@
  * OpenTelemetry for the command line.
  *
  * The engine depends on the OpenTelemetry API only, and the API does nothing
- * until a process installs an SDK. The CLI is a process of its own, so it is
- * where one can live: `WORKOS_SYNC_OTEL=1` starts the Node SDK, configured by
- * the standard `OTEL_*` variables (exporter, endpoint, headers, service
- * name), before the engine is built, and shuts it down once the command
- * returns. The shutdown is the part that matters for `tick` and the sliced
- * commands: they exit seconds after they start, long before the SDK's
- * periodic export would have fired, and shutting down flushes.
+ * until a process installs an SDK. The command is a process of its own, so
+ * it is where one can live: `WORKOS_SYNC_OTEL=1` starts the Node SDK,
+ * configured by the standard `OTEL_*` variables (exporter, endpoint,
+ * headers, service name), before the engine is built, and shuts it down
+ * once the command returns. The shutdown is the part that matters for
+ * `tick` and the sliced commands: they exit seconds after they start, long
+ * before the SDK's periodic export would have fired, and shutting down
+ * flushes.
  *
  * The SDK is an optional dependency of this package, so a host that embeds
- * the library and runs its own SDK can leave it out; the container image has
- * it. A missing module is reported as such rather than as a stack trace.
+ * the library and runs its own SDK can leave it out; the container images
+ * have it. A missing module is reported as such rather than as a stack trace.
  */
 export interface OtelHandle {
   /** Flush and stop the SDK. Call it once the command has returned. */
@@ -23,9 +24,6 @@ export interface OtelHandle {
 export interface SdkModule {
   NodeSDK: new (configuration?: { serviceName?: string }) => { start(): void; shutdown(): Promise<void> }
 }
-
-/** The `service.name` reported, unless `OTEL_SERVICE_NAME` says otherwise. */
-export const DEFAULT_SERVICE_NAME = 'workos-sync-postgres'
 
 const ON = new Set(['1', 'true', 'yes', 'on'])
 const OFF = new Set(['0', 'false', 'no', 'off'])
@@ -42,11 +40,13 @@ export function otelEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 
 /**
  * Start the SDK when `WORKOS_SYNC_OTEL` asks for it; null when it does not.
- * The SDK reads its own configuration from the process environment; `env`
- * only decides whether to start it and what to call the service. `load` is
- * a test seam standing in for the import.
+ * `serviceName` is the `service.name` reported unless `OTEL_SERVICE_NAME`
+ * says otherwise. The SDK reads its own configuration from the process
+ * environment; `env` only decides whether to start it and what to call the
+ * service. `load` is a test seam standing in for the import.
  */
 export async function startOtel(
+  serviceName: string,
   env: NodeJS.ProcessEnv = process.env,
   load: () => Promise<SdkModule> = () => import('@opentelemetry/sdk-node'),
 ): Promise<OtelHandle | null> {
@@ -64,7 +64,7 @@ export async function startOtel(
     throw err
   }
   const named = Boolean(env['OTEL_SERVICE_NAME']?.trim())
-  const sdk = new sdkNode.NodeSDK(named ? {} : { serviceName: DEFAULT_SERVICE_NAME })
+  const sdk = new sdkNode.NodeSDK(named ? {} : { serviceName })
   sdk.start()
   return { shutdown: () => sdk.shutdown() }
 }

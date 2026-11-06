@@ -7,17 +7,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { streamByName } from '@workos/sync-engine'
 import { createTestDb, describeDb, type TestDb } from './helpers/clickhouse.js'
 import { ClickHouseDestination } from '../src/destination.js'
-import { canonicalJson } from '../src/db/lease.js'
-
-describe('canonical json', () => {
-  it('serialises equal values equally whatever the key order', () => {
-    expect(canonicalJson({ b: 1, a: { d: [1, { z: 1, y: 2 }], c: null } })).toBe(
-      canonicalJson({ a: { c: null, d: [1, { y: 2, z: 1 }] }, b: 1 }),
-    )
-    expect(canonicalJson({ a: 1, b: undefined })).toBe('{"a":1}')
-    expect(canonicalJson([3, 1])).toBe('[3,1]')
-  })
-})
 
 describeDb('events tail lease', () => {
   let db: TestDb

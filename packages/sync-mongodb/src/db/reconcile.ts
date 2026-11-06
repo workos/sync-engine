@@ -15,11 +15,11 @@
  * an anti-join from the remote side for `remoteOnly`. Node holds one page of
  * remote rows at a time, plus the drift.
  */
-import { encodeKey, type IdDiff, type TableDef } from '@workos/sync-engine'
+import { encodeKey, type IdDiff, type TableDef, chunk, keyValues } from '@workos/sync-engine'
 import { randomBytes } from 'node:crypto'
 import { MongoBulkWriteError, type Collection, type Db, type Document } from 'mongodb'
 import { fieldPath, keyPath, type Names } from '../schema/names.js'
-import { chunk, keyValues, type MirrorDoc, type WriteOptions } from './upsert.js'
+import type { MirrorDoc, WriteOptions } from './upsert.js'
 
 export interface MongoDiff extends IdDiff {
   /** Remote rows with no value at the key path. Counted rather than thrown. */

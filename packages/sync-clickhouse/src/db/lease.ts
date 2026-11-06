@@ -27,6 +27,7 @@
  * that equal cursors compare equal as text, as they do as jsonb.
  */
 import type { Lease, LeaseResult } from '@workos/sync-engine'
+import { canonicalJson } from '@workos/sync-engine'
 import { isoOf, KEEPER_SETTINGS, type ChClient } from './client.js'
 import { isKeeperConflict } from './errors.js'
 import { quoteIdent } from '../schema/ddl.js'
@@ -50,24 +51,6 @@ export interface SyncRow {
   states: string
   /** The server's clock at the moment of the read, for judging expiry. */
   now: string
-}
-
-/** `value` as JSON with every object's keys sorted, so equal values serialise equally. */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortKeys(value))
-}
-
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys)
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      const v = (value as Record<string, unknown>)[key]
-      if (v !== undefined) out[key] = sortKeys(v)
-    }
-    return out
-  }
-  return value
 }
 
 export const syncKey = (syncId: string, env: string) => `${syncId}${SEP}${env}`

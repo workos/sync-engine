@@ -37,7 +37,17 @@
  * expression context reads a string like `"$100 plan"` as a field path, and
  * `$literal` is what stops it.
  */
-import { emptyStats, type Row, type TableDef, type WriteMode, type WriteStats } from '@workos/sync-engine'
+import {
+  emptyStats,
+  type Row,
+  type TableDef,
+  type WriteMode,
+  type WriteStats,
+  readPath,
+  dedupeByKey,
+  wavesByKey,
+  chunk,
+} from '@workos/sync-engine'
 import type { AnyBulkWriteOperation, Collection, Document, Filter } from 'mongodb'
 import { fieldPath, keyPath } from '../schema/names.js'
 import { parseInstant } from './timestamps.js'
@@ -55,108 +65,14 @@ export interface MirrorDoc extends Document {
   _deleted_at?: Date | null
 }
 
-export function readPath(data: Record<string, unknown>, path: string | string[]): unknown {
-  const parts = Array.isArray(path) ? path : [path]
-  let cur: unknown = data
-  for (const p of parts) {
-    if (cur == null || typeof cur !== 'object') return undefined
-    cur = (cur as Record<string, unknown>)[p]
-  }
-  return cur
-}
-
 /**
- * Key values for a row, in `stream.key` order. Undefined if any part is
- * missing, or is not a scalar: an object where an id should be is a malformed
- * row, not a key, and is never let near a filter.
+ * The instant a row's timestamp names, by the strict parser the write stores
+ * it with: `parseInstant` reads a timestamp without a zone as UTC and refuses
+ * anything that is not an ISO-8601 instant, so the row a batch discards is
+ * judged by the rules the row it keeps is written by, and a bad timestamp
+ * fails here with the error the write would have raised.
  */
-export function keyValues(stream: TableDef, data: Record<string, unknown>): string[] | undefined {
-  const out: string[] = []
-  for (const k of stream.key) {
-    const v = readPath(data, keyPath(stream, k))
-    if (v == null || v === '' || typeof v === 'object') return undefined
-    out.push(String(v))
-  }
-  return out
-}
-
-/**
- * Collapse rows that share a primary key, keeping the newest. It serves the
- * delete, relink and unlink paths, whose rows are whole; upserts use
- * `wavesByKey`.
- *
- * "Newest" is judged by the instant, not the text: `01:00:00+01:00` sorts
- * after `00:30:00Z` as a string and is half an hour older as a time. A
- * timestamp that is not an instant fails here with the same error the write
- * would have raised for it.
- */
-export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropped: number } {
-  const byKey = new Map<string, { row: Row; at: number }>()
-  let dropped = 0
-  for (const row of rows) {
-    const key = keyValues(stream, row.data)
-    if (!key) {
-      dropped++
-      continue
-    }
-    const k = key.join('\0')
-    const at = parseInstant(row.updatedAt).getTime()
-    const existing = byKey.get(k)
-    if (!existing || at >= existing.at) byKey.set(k, { row, at })
-  }
-  return { rows: [...byKey.values()].map((e) => e.row), dropped }
-}
-
-/**
- * Split a batch into waves in which no key appears twice, keeping order: the
- * n-th row for a key goes in wave n. Written one after another, the waves
- * are exactly the rows written one at a time — each row meets the staleness
- * gate against what the row before it left stored, and a merge overlays it
- * on that — while a batch with no repeated key, which is nearly every batch,
- * is still a single bulk write.
- *
- * An ordered bulk write already applies its operations one after another,
- * so the waves are not what makes this correct; they are what keeps the
- * write's shape the same as the Postgres destination's, where they are.
- *
- * Keeping the newest row, as `dedupeByKey` does, is wrong for a merge write:
- * a hydrated create (the whole REST object) followed in the same poll by an
- * update event whose payload is narrower would lose every field the event
- * omits until the next refresh, which is what hydration exists to prevent.
- * Folding the payloads here instead would be wrong the other way: a row
- * older than the stored one is refused on its own, but folded under a newer
- * row's timestamp its fields would overwrite the stored values. Only the
- * database knows the stored timestamp, so the database applies the gate.
- */
-export function wavesByKey(stream: TableDef, rows: Row[]): { waves: Row[][]; dropped: number } {
-  const waves: Row[][] = []
-  const seen = new Map<string, number>()
-  let dropped = 0
-  for (const row of rows) {
-    const key = keyValues(stream, row.data)
-    if (!key) {
-      dropped++
-      continue
-    }
-    const k = key.join('\0')
-    const n = seen.get(k) ?? 0
-    seen.set(k, n + 1)
-    const wave = waves[n] ?? (waves[n] = [])
-    wave.push(row)
-  }
-  return { waves, dropped }
-}
-
-export const chunk = <T>(items: T[], size: number): T[][] => {
-  // A size that never advances the loop would grow `out` until the process
-  // ran out of memory; a bad setting gets an error instead.
-  if (!Number.isInteger(size) || size < 1) {
-    throw new Error(`batchSize must be a positive integer, got ${String(size)}`)
-  }
-  const out: T[][] = []
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
-  return out
-}
+const instantOf = (iso: string): number => parseInstant(iso).getTime()
 
 export interface WriteOptions {
   /** Rows per bulk write. Defaults to 500. */
@@ -280,7 +196,7 @@ export async function deleteRows(
 ): Promise<WriteStats> {
   const stats = emptyStats()
   if (rows.length === 0) return stats
-  const { rows: deduped, dropped } = dedupeByKey(stream, rows)
+  const { rows: deduped, dropped } = dedupeByKey(stream, rows, instantOf)
   stats.skipped += dropped
 
   for (const batch of chunk(deduped, opts.batchSize ?? DEFAULT_BATCH_SIZE)) {
@@ -324,7 +240,7 @@ export async function relinkRows(
 ): Promise<WriteStats> {
   const stats = emptyStats()
   if (rows.length === 0) return stats
-  const { rows: deduped, dropped } = dedupeByKey(stream, rows)
+  const { rows: deduped, dropped } = dedupeByKey(stream, rows, instantOf)
   stats.skipped += dropped
 
   for (const batch of chunk(deduped, opts.batchSize ?? DEFAULT_BATCH_SIZE)) {
@@ -384,7 +300,7 @@ export async function unlinkRows(
 ): Promise<WriteStats> {
   const stats = emptyStats()
   if (rows.length === 0) return stats
-  const { rows: deduped, dropped } = dedupeByKey(stream, rows)
+  const { rows: deduped, dropped } = dedupeByKey(stream, rows, instantOf)
   stats.skipped += dropped
 
   for (const batch of chunk(deduped, opts.batchSize ?? DEFAULT_BATCH_SIZE)) {

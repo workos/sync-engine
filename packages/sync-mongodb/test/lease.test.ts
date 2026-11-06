@@ -3,10 +3,10 @@
  * cursors share one document, so every check here is one atomic update.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { streamByName } from '@workos/sync-engine'
+import { streamByName, canonicalJson } from '@workos/sync-engine'
 import { createTestDb, type TestDb } from './helpers/mongo.js'
 import { MongoDestination } from '../src/destination.js'
-import { canonicalJson, type SyncDoc } from '../src/db/lease.js'
+import type { SyncDoc } from '../src/db/lease.js'
 
 describe('events tail lease', () => {
   let t: TestDb

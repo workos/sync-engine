@@ -24,23 +24,13 @@ export { ensureLiveView, LIVE_PIPELINE } from './schema/views.js'
 export type { ApplyViewOptions, ViewOutcome } from './schema/views.js'
 export { Names, DEFAULT_PREFIX, LIVE_VIEW_SUFFIX, validatePrefix, fieldPath, keyPath } from './schema/names.js'
 
-export {
-  upsertRows,
-  deleteRows,
-  relinkRows,
-  unlinkRows,
-  dedupeByKey,
-  wavesByKey,
-  keyValues,
-  keyFilter,
-  readPath,
-} from './db/upsert.js'
+export { upsertRows, deleteRows, relinkRows, unlinkRows, keyFilter } from './db/upsert.js'
 export type { MirrorDoc, WriteOptions } from './db/upsert.js'
 export { diffIdsInMongo } from './db/reconcile.js'
 export type { MongoDiff } from './db/reconcile.js'
 export { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
 export type { RejectedDoc } from './db/rejected.js'
-export { acquireLease, releaseLease, getLease, getState, setState, setStateIfHeld, canonicalJson } from './db/lease.js'
+export { acquireLease, releaseLease, getLease, getState, setState, setStateIfHeld } from './db/lease.js'
 export type { SyncDoc } from './db/lease.js'
 export { isTransientMongoError } from './db/errors.js'
 export { parseIso8601, parseInstant, parseInstantOrNull, InvalidTimestampError } from './db/timestamps.js'
