@@ -16,6 +16,10 @@
       "release-type": "node",
       "component": "sync-postgres"
     },
+    "packages/sync-mongodb": {
+      "release-type": "node",
+      "component": "sync-mongodb"
+    },
     "packages/sync-mysql": {
       "release-type": "node",
       "component": "sync-mysql"
