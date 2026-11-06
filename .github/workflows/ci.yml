@@ -9,8 +9,82 @@ permissions:
   contents: read
 
 jobs:
+  # Which packages this run touched, so each job below runs only for them.
+  # A pull request runs the jobs for the packages whose files changed, plus
+  # every job when a shared file changed (the lockfile, the workspace file, a
+  # root config, this workflow) or when the engine changed, since every
+  # destination depends on it. A push to main and a release PR run everything.
+  changes:
+    name: Changed packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      engine: ${{ steps.decide.outputs.engine }}
+      postgres: ${{ steps.decide.outputs.postgres }}
+      mongodb: ${{ steps.decide.outputs.mongodb }}
+      mysql: ${{ steps.decide.outputs.mysql }}
+      clickhouse: ${{ steps.decide.outputs.clickhouse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            shared:
+              - package.json
+              - pnpm-lock.yaml
+              - pnpm-workspace.yaml
+              - tsconfig*.json
+              - .oxlintrc.json
+              - .oxfmtrc.json
+              - .npmrc
+              - .github/workflows/ci.yml
+            engine:
+              - packages/sync-engine/**
+            postgres:
+              - packages/sync-postgres/**
+              - examples/**
+            mongodb:
+              - packages/sync-mongodb/**
+            mysql:
+              - packages/sync-mysql/**
+            clickhouse:
+              - packages/sync-clickhouse/**
+
+      - name: Decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          SHARED: ${{ steps.filter.outputs.shared }}
+          ENGINE: ${{ steps.filter.outputs.engine }}
+          POSTGRES: ${{ steps.filter.outputs.postgres }}
+          MONGODB: ${{ steps.filter.outputs.mongodb }}
+          MYSQL: ${{ steps.filter.outputs.mysql }}
+          CLICKHOUSE: ${{ steps.filter.outputs.clickhouse }}
+        run: |
+          all=false
+          case "$EVENT" in push) all=true ;; esac
+          case "$HEAD_REF" in release-please--*) all=true ;; esac
+          if [ "$SHARED" = "true" ] || [ "$ENGINE" = "true" ]; then all=true; fi
+          {
+            echo "engine=$all"
+            for d in postgres mongodb mysql clickhouse; do
+              v=$(eval "echo \$$(echo "$d" | tr '[:lower:]' '[:upper:]')")
+              if [ "$all" = "true" ] || [ "$v" = "true" ]; then echo "$d=true"; else echo "$d=false"; fi
+            done
+          } >> "$GITHUB_OUTPUT"
+          echo "all=$all shared=$SHARED engine=$ENGINE postgres=$POSTGRES mongodb=$MONGODB mysql=$MYSQL clickhouse=$CLICKHOUSE"
+
   engine:
     name: Engine Node ${{ matrix.node }}
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -48,8 +122,13 @@ jobs:
       - name: Build
         run: pnpm --filter @workos/sync-engine build
 
+      - name: Typecheck
+        run: pnpm --filter @workos/sync-engine typecheck
+
   postgres:
     name: Postgres Node ${{ matrix.node }}
+    needs: changes
+    if: needs.changes.outputs.postgres == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -103,6 +182,9 @@ jobs:
       - name: Build
         run: pnpm --filter "@workos/sync-postgres..." build
 
+      - name: Typecheck
+        run: pnpm --filter @workos/sync-postgres typecheck
+
       # The whole lifecycle — schema, backfill, tail, reconcile, repair —
       # against the fake API and an embedded Postgres, through the built
       # packages rather than the sources the unit tests import.
@@ -111,6 +193,8 @@ jobs:
 
   mongodb:
     name: MongoDB Node ${{ matrix.node }}
+    needs: changes
+    if: needs.changes.outputs.mongodb == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -144,8 +228,13 @@ jobs:
       - name: Build
         run: pnpm --filter "@workos/sync-mongodb..." build
 
+      - name: Typecheck
+        run: pnpm --filter @workos/sync-mongodb typecheck
+
   mysql:
     name: MySQL Node ${{ matrix.node }}
+    needs: changes
+    if: needs.changes.outputs.mysql == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -187,8 +276,13 @@ jobs:
       - name: Build
         run: pnpm --filter "@workos/sync-mysql..." build
 
+      - name: Typecheck
+        run: pnpm --filter @workos/sync-mysql typecheck
+
   clickhouse:
     name: ClickHouse Node ${{ matrix.node }}
+    needs: changes
+    if: needs.changes.outputs.clickhouse == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -236,3 +330,6 @@ jobs:
 
       - name: Build
         run: pnpm --filter "@workos/sync-clickhouse..." build
+
+      - name: Typecheck
+        run: pnpm --filter @workos/sync-clickhouse typecheck
