@@ -1,6 +1,6 @@
 {
   "name": "@workos/sync-mongodb",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Mirror your WorkOS data into MongoDB. Backfill, tail the Events API, and reconcile drift.",
   "type": "module",
   "license": "MIT",
