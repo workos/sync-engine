@@ -2,5 +2,6 @@
   "packages/sync-engine": "0.1.0",
   "packages/sync-postgres": "0.1.0",
   "packages/sync-mongodb": "0.0.0",
-  "packages/sync-mysql": "0.0.0"
+  "packages/sync-mysql": "0.0.0",
+  "packages/sync-clickhouse": "0.0.1"
 }
