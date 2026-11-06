@@ -17,6 +17,7 @@
 import { createHash } from 'node:crypto'
 import type { Logger, TableDef } from '@workos/sync-engine'
 import { KEEPER_SETTINGS, type ChClient } from '../db/client.js'
+import { isKeeperConflict } from '../db/errors.js'
 import {
   addColumnSql,
   addIndexSql,
@@ -79,6 +80,33 @@ export interface MigrateResult {
   drift: ColumnDrift[]
   /** Columns redefined by this run's repair pass. Only with `repair: true`. */
   repaired: ColumnDrift[]
+}
+
+const backoff = () => new Promise((r) => setTimeout(r, 5 + Math.random() * 20))
+
+/**
+ * Record the fingerprint. Two processes applying the same catalog at once
+ * both reach this with the same value, and a KeeperMap insert that loses
+ * the create race is refused with "Node exists" even with strict mode off:
+ * the row the other process wrote is this one's, so that counts as done.
+ */
+async function recordFingerprint(db: ChClient, s: string, fp: string, detail: string): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (attempt > 0) await backoff()
+    try {
+      await db.command(
+        `INSERT INTO ${s}.\`_migrations\` (fingerprint, applied_at, detail) VALUES ({fp:String}, now64(3, 'UTC'), {detail:String})`,
+        { fp, detail },
+        { ...KEEPER_SETTINGS, keeper_map_strict_mode: 0 },
+      )
+      return
+    } catch (err) {
+      if (!isKeeperConflict(err)) throw err
+    }
+    const rows = await db.query(`SELECT 1 FROM ${s}.\`_migrations\` WHERE fingerprint = {fp:String}`, { fp })
+    if (rows.length > 0) return
+  }
+  throw new Error(`could not record the schema fingerprint ${fp}: the row kept changing under 8 attempts`)
 }
 
 const names = async (db: ChClient, sql: string, params: Record<string, unknown>) =>
@@ -224,11 +252,7 @@ export async function migrate(
     return { applied: true, fingerprint: fp, statements, drift, repaired }
   }
 
-  await db.command(
-    `INSERT INTO ${s}.\`_migrations\` (fingerprint, applied_at, detail) VALUES ({fp:String}, now64(3, 'UTC'), {detail:String})`,
-    { fp, detail: JSON.stringify({ streams: streams.map((st) => st.name), statements }) },
-    { ...KEEPER_SETTINGS, keeper_map_strict_mode: 0 },
-  )
+  await recordFingerprint(db, s, fp, JSON.stringify({ streams: streams.map((st) => st.name), statements }))
 
   logger?.info('schema applied', { fingerprint: fp, statements, repaired: repaired.length })
   return { applied: true, fingerprint: fp, statements, drift, repaired }

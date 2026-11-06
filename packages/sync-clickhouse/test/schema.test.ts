@@ -262,6 +262,34 @@ describeDb('migrations against real ClickHouse', () => {
     expect(rows[1]).toMatchObject({ n: null, d: null, flag: null, metadata: null })
   })
 
+  it('finishes when a concurrent run recorded the same fingerprint and columns a moment earlier', async () => {
+    // A KeeperMap insert refused with "Node exists" after the other process
+    // created the key between this insert's existence check and its write:
+    // the first `_columns` and `_migrations` inserts are refused that way,
+    // and what the other process wrote is found in place.
+    const refused: string[] = []
+    const racing: TestDb = {
+      ...db,
+      async command(sql, params, settings) {
+        const target = /INSERT INTO [^\n]*`(_columns|_migrations)`/.exec(sql)?.[1]
+        if (target && !refused.includes(target)) {
+          refused.push(target)
+          await db.command(sql, params, settings)
+          throw Object.assign(new Error('Code: 999. DB::Exception: Transaction failed (Node exists): Op #0'), {
+            code: '999',
+          })
+        }
+        return db.command(sql, params, settings)
+      },
+    }
+    const r = await migrate(racing, [users], db.schema)
+    expect(r.applied).toBe(true)
+    expect(refused).toEqual(['_columns', '_migrations'])
+    expect((await migrate(db, [users], db.schema)).applied).toBe(false)
+    const recorded = await db.query<{ n: string }>(`SELECT toString(count()) AS n FROM \`${db.schema}\`.\`_columns\``)
+    expect(Number(recorded[0]!.n)).toBe(users.columns.length)
+  })
+
   it('serialises nothing: two concurrent migrations both finish with one schema', async () => {
     const results = await Promise.all([migrate(db, STREAMS, db.schema), migrate(db, STREAMS, db.schema)])
     expect(results.map((r) => r.applied)).toContain(true)

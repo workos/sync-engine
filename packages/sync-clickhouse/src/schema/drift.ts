@@ -68,25 +68,47 @@ async function recordedColumns(db: ChClient, schema: string, table: string): Pro
   return new Map(rows.map((r) => [r.column_name, r.ddl]))
 }
 
+const backoff = () => new Promise((r) => setTimeout(r, 5 + Math.random() * 20))
+
 /**
  * Record (or re-record) the clause a column was created with. Strict mode
- * is off, so this overwrites; two processes recording the same column at
- * once can still race on the first write, and the loser simply writes again.
+ * is off, so an existing record is overwritten. Even so, a KeeperMap
+ * insert decides create-or-set per key before its transaction, so two
+ * processes recording the same column at once can both decide "create"
+ * and the second is refused with "Node exists". The loser then reads what
+ * landed: the same clause means the record is already right, another
+ * clause is overwritten in place.
  */
 export async function recordColumn(db: ChClient, schema: string, table: string, column: string, ddl: string) {
-  for (let attempt = 0; ; attempt++) {
+  const ref = `${quoteIdent(schema)}.\`_columns\``
+  const k = `${table}\u0001${column}`
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (attempt > 0) await backoff()
     try {
       await db.command(
-        `INSERT INTO ${quoteIdent(schema)}.\`_columns\` (k, table_name, column_name, ddl)
-         VALUES ({k:String}, {table:String}, {column:String}, {ddl:String})`,
-        { k: `${table}\u0001${column}`, table, column, ddl },
+        `INSERT INTO ${ref} (k, table_name, column_name, ddl) VALUES ({k:String}, {table:String}, {column:String}, {ddl:String})`,
+        { k, table, column, ddl },
         { ...KEEPER_SETTINGS, keeper_map_strict_mode: 0 },
       )
       return
     } catch (err) {
-      if (attempt >= 3 || !isKeeperConflict(err)) throw err
+      if (!isKeeperConflict(err)) throw err
+    }
+    const [stored] = await db.query<{ ddl: string }>(`SELECT ddl FROM ${ref} WHERE k = {k:String}`, { k })
+    if (!stored) continue
+    if (stored.ddl === ddl) return
+    try {
+      await db.command(
+        `ALTER TABLE ${ref} UPDATE table_name = {table:String}, column_name = {column:String}, ddl = {ddl:String} WHERE k = {k:String}`,
+        { k, table, column, ddl },
+        { ...KEEPER_SETTINGS, keeper_map_strict_mode: 0 },
+      )
+      return
+    } catch (err) {
+      if (!isKeeperConflict(err)) throw err
     }
   }
+  throw new Error(`could not record the column ${table}.${column}: the row kept changing under 8 attempts`)
 }
 
 async function forgetColumn(db: ChClient, schema: string, table: string, column: string) {
