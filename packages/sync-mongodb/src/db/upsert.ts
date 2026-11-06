@@ -65,6 +65,15 @@ export interface MirrorDoc extends Document {
   _deleted_at?: Date | null
 }
 
+/**
+ * The instant a row's timestamp names, by the strict parser the write stores
+ * it with: `parseInstant` reads a timestamp without a zone as UTC and refuses
+ * anything that is not an ISO-8601 instant, so the row a batch discards is
+ * judged by the rules the row it keeps is written by, and a bad timestamp
+ * fails here with the error the write would have raised.
+ */
+const instantOf = (iso: string): number => parseInstant(iso).getTime()
+
 export interface WriteOptions {
   /** Rows per bulk write. Defaults to 500. */
   batchSize?: number
@@ -187,7 +196,7 @@ export async function deleteRows(
 ): Promise<WriteStats> {
   const stats = emptyStats()
   if (rows.length === 0) return stats
-  const { rows: deduped, dropped } = dedupeByKey(stream, rows)
+  const { rows: deduped, dropped } = dedupeByKey(stream, rows, instantOf)
   stats.skipped += dropped
 
   for (const batch of chunk(deduped, opts.batchSize ?? DEFAULT_BATCH_SIZE)) {
@@ -231,7 +240,7 @@ export async function relinkRows(
 ): Promise<WriteStats> {
   const stats = emptyStats()
   if (rows.length === 0) return stats
-  const { rows: deduped, dropped } = dedupeByKey(stream, rows)
+  const { rows: deduped, dropped } = dedupeByKey(stream, rows, instantOf)
   stats.skipped += dropped
 
   for (const batch of chunk(deduped, opts.batchSize ?? DEFAULT_BATCH_SIZE)) {
@@ -291,7 +300,7 @@ export async function unlinkRows(
 ): Promise<WriteStats> {
   const stats = emptyStats()
   if (rows.length === 0) return stats
-  const { rows: deduped, dropped } = dedupeByKey(stream, rows)
+  const { rows: deduped, dropped } = dedupeByKey(stream, rows, instantOf)
   stats.skipped += dropped
 
   for (const batch of chunk(deduped, opts.batchSize ?? DEFAULT_BATCH_SIZE)) {

@@ -4,6 +4,7 @@ import {
   canonicalJson,
   chunk,
   dedupeByKey,
+  isoInstant,
   jsonEqual,
   keyValues,
   parseUpdatedAt,
@@ -79,6 +80,39 @@ describe('key extraction', () => {
       { data: userPayload({ email: 'b@example.com' }), updatedAt: 'yesterday' },
     ])
     expect(junk.rows.map((r) => r.data['email'])).toEqual(['b@example.com'])
+  })
+
+  it('reads a timestamp without a zone as UTC, the way every destination stores it', () => {
+    expect(isoInstant('2026-01-15T10:00:00')).toBe(Date.parse('2026-01-15T10:00:00Z'))
+    expect(isoInstant('2026-01-15 10:00:00.5')).toBe(Date.parse('2026-01-15T10:00:00.5Z'))
+    expect(isoInstant('2026-01-15T10:00:00+01:00')).toBe(Date.parse('2026-01-15T09:00:00Z'))
+    expect(isoInstant('later')).toBeNaN()
+    expect(parseUpdatedAt('2026-01-15T10:00:00').toISOString()).toBe('2026-01-15T10:00:00.000Z')
+    // Zone-less at ten and zoned at noon: noon is newer, whatever the process's zone.
+    const { rows } = dedupeByKey(users, [
+      { data: userPayload({ email: 'ten@example.com' }), updatedAt: '2026-01-15T10:00:00' },
+      { data: userPayload({ email: 'noon@example.com' }), updatedAt: '2026-01-15T12:00:00Z' },
+    ])
+    expect(rows.map((r) => r.data['email'])).toEqual(['noon@example.com'])
+  })
+
+  it("judges by a destination's own parser when given one, and fails as it would", () => {
+    const strict = (iso: string) => {
+      if (!/Z$/.test(iso)) throw Object.assign(new Error(`invalid timestamp ${iso}`), { code: 'INVALID_TIMESTAMP' })
+      return Date.parse(iso)
+    }
+    const { rows } = dedupeByKey(
+      users,
+      [
+        { data: userPayload({ email: 'older@example.com' }), updatedAt: '2026-01-01T00:00:00Z' },
+        { data: userPayload({ email: 'newer@example.com' }), updatedAt: '2026-01-02T00:00:00Z' },
+      ],
+      strict,
+    )
+    expect(rows.map((r) => r.data['email'])).toEqual(['newer@example.com'])
+    expect(() => dedupeByKey(users, [{ data: userPayload(), updatedAt: '2026-01-01T00:00:00+01:00' }], strict)).toThrow(
+      /invalid timestamp/,
+    )
   })
 
   it('splits repeated keys into ordered waves and leaves distinct keys in one', () => {

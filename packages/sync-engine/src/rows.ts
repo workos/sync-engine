@@ -34,6 +34,18 @@ export function keyValues(stream: TableDef, data: Record<string, unknown>): stri
   return out
 }
 
+/** An ISO-8601 timestamp with a time but no zone: `2026-01-15T10:00:00`, `2026-01-15T10:00:00.5`. */
+const ZONELESS = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/
+
+/**
+ * The instant `iso` names, in milliseconds since the epoch, or NaN. A
+ * timestamp without a zone is read as UTC, which is how every destination
+ * stores it; `Date.parse` alone would read it as the process's local time.
+ */
+export function isoInstant(iso: string): number {
+  return Date.parse(ZONELESS.test(iso) ? `${iso}Z` : iso)
+}
+
 /**
  * The instant `iso` names, in microseconds since the epoch, or NaN.
  * `Date.parse` reads three fractional digits; a database may keep six, so
@@ -42,7 +54,7 @@ export function keyValues(stream: TableDef, data: Record<string, unknown>): stri
  */
 function micros(iso: string): number {
   const frac = /\.(\d+)/.exec(iso)?.[1] ?? ''
-  const ms = Date.parse(frac.length > 3 ? iso.replace(`.${frac}`, `.${frac.slice(0, 3)}`) : iso)
+  const ms = isoInstant(frac.length > 3 ? iso.replace(`.${frac}`, `.${frac.slice(0, 3)}`) : iso)
   if (Number.isNaN(ms)) return ms
   return ms * 1000 + Number(frac.slice(3, 6).padEnd(3, '0'))
 }
@@ -62,8 +74,19 @@ function isBefore(a: string, atA: number, b: string, atB: number): boolean {
  * Collapse rows that share a primary key, keeping the newest. It serves the
  * delete, relink and unlink paths, whose rows are whole; upserts use
  * `wavesByKey`.
+ *
+ * "Newest" is judged by the instant each timestamp names, read the way the
+ * destination will store it: by default a UTC reading with microsecond
+ * order, a value that is not a date ordered as text and refused on the
+ * write. A destination with a stricter parser of its own passes it as
+ * `instant`, so the rows it discards are judged by the same rules as the
+ * rows it writes, and a bad timestamp fails here as it would there.
  */
-export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropped: number } {
+export function dedupeByKey(
+  stream: TableDef,
+  rows: Row[],
+  instant: (iso: string) => number = micros,
+): { rows: Row[]; dropped: number } {
   const byKey = new Map<string, { row: Row; at: number }>()
   let dropped = 0
   for (const row of rows) {
@@ -73,7 +96,7 @@ export function dedupeByKey(stream: TableDef, rows: Row[]): { rows: Row[]; dropp
       continue
     }
     const k = key.join('\0')
-    const at = micros(row.updatedAt)
+    const at = instant(row.updatedAt)
     const existing = byKey.get(k)
     if (!existing || !isBefore(row.updatedAt, at, existing.row.updatedAt, existing.at)) byKey.set(k, { row, at })
   }
@@ -132,7 +155,7 @@ export function chunk<T>(items: T[], size: number): T[][] {
  * event rather than retrying it forever.
  */
 export function parseUpdatedAt(value: string): Date {
-  const d = new Date(value)
+  const d = new Date(typeof value === 'string' ? isoInstant(value) : NaN)
   if (typeof value !== 'string' || Number.isNaN(d.getTime())) {
     throw Object.assign(new Error(`invalid updatedAt timestamp: ${JSON.stringify(value)}`), {
       code: 'INVALID_TIMESTAMP',

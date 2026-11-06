@@ -60,6 +60,23 @@ describe('write path', () => {
   const row = (data: Record<string, unknown>, updatedAt: string) => ({ data, updatedAt })
   const readUser = async (id = 'user_1') => coll.findOne({ _env: 'prod', '_raw.id': id })
 
+  it('judges duplicate rows by the strict parser the write uses, and refuses a bad timestamp before discarding any', async () => {
+    await upsertRows(coll, opts, users, 'prod', [row(userPayload(), '2026-01-15T00:00:00.000Z')], 'replace')
+    // Zone-less at ten and zoned at noon: noon is newer, whatever the process's zone.
+    await deleteRows(coll, opts, users, 'prod', [
+      row({ id: 'user_1' }, '2026-01-15T12:00:00Z'),
+      row({ id: 'user_1' }, '2026-01-15T10:00:00'),
+    ])
+    const doc = await coll.findOne({ '_raw.id': 'user_1' })
+    expect(doc?._deleted_at?.toISOString()).toBe('2026-01-15T12:00:00.000Z')
+    await expect(
+      deleteRows(coll, opts, users, 'prod', [
+        row({ id: 'user_1' }, '2026-01-16T00:00:00Z'),
+        row({ id: 'user_1' }, 'yesterday'),
+      ]),
+    ).rejects.toMatchObject({ code: 'INVALID_TIMESTAMP' })
+  })
+
   it('inserts and reports created vs updated', async () => {
     const first = await upsertRows(
       coll,

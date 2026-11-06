@@ -76,6 +76,7 @@ export {
   dedupeByKey,
   wavesByKey,
   chunk,
+  isoInstant,
   parseUpdatedAt,
   jsonEqual,
   canonicalJson,
