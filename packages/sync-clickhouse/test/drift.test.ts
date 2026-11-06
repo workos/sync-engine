@@ -153,6 +153,47 @@ describeDb('column drift detection', () => {
     expect(await typeOf('users_live')).toBe(await typeOf('users'))
   })
 
+  it('judges an unrecorded column by the table itself, as after a schema applied by hand', async () => {
+    await migrate(db, [users], db.schema)
+    const forgetAll = async () => {
+      for (const t of ['_columns', '_migrations']) {
+        await db.command(
+          `ALTER TABLE \`${db.schema}\`.\`${t}\` DELETE WHERE 1`,
+          {},
+          {
+            async_insert: 0,
+            keeper_map_strict_mode: 0,
+          },
+        )
+      }
+    }
+    // The same catalog again: every column checks out and is recorded.
+    await forgetAll()
+    const same = await migrate(db, [users], db.schema)
+    expect(same.drift).toEqual([])
+    expect(await recorded([users])).toBe(true)
+
+    // A changed path with no record to compare against. `ADD COLUMN IF NOT
+    // EXISTS` leaves the column as it was; the table says so, and that is
+    // drift to report, not a clause to record as installed.
+    await forgetAll()
+    await insertUser({ id: 'user_1', email: 'old@example.com', primary_email: 'new@example.com' })
+    const moved = await migrate(db, [usersMovedEmail], db.schema)
+    expect(moved.drift.map((d) => [d.column, d.kind])).toEqual([['email', 'expression']])
+    expect(await recorded([usersMovedEmail])).toBe(false)
+    const fixed = await migrate(db, [usersMovedEmail], db.schema, undefined, { repair: true })
+    expect(fixed.drift).toEqual([])
+    const row = await db.query<{ email: string }>(`SELECT email FROM \`${db.schema}\`.users FINAL`)
+    expect(row[0]!.email).toBe('new@example.com')
+    expect(await recorded([usersMovedEmail])).toBe(true)
+    // The probe table is gone again.
+    const probes = await db.query(
+      `SELECT name FROM system.tables WHERE database = {s:String} AND name LIKE '\\_probe\\_%'`,
+      { s: db.schema },
+    )
+    expect(probes).toEqual([])
+  })
+
   it('refuses to repair a key column', async () => {
     await migrate(db, [users], db.schema)
     const rekeyed = withColumn(users, { name: 'id', type: 'text', path: 'uid' })

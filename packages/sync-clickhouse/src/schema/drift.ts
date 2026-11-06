@@ -12,15 +12,20 @@
  * The expression is compared against `_columns`, the engine's own record of
  * the DDL it emitted for every projected column, not against what
  * `system.columns` shows: the server stores a re-formatted expression, so
- * text written by the catalog and text read back never compare equal. The
- * live type is compared with the catalog's directly; `system.columns`
- * spells types canonically, and so does `columnType`.
+ * text written by the catalog and text read back never compare equal. A
+ * column with no record — a schema applied by hand from `init --print-sql`
+ * — has only the table as a witness, so the catalog's clause is put through
+ * the same formatter, by way of a throwaway table, before the two are
+ * compared; only a match is recorded, anything else is drift. The live type
+ * is compared with the catalog's directly; `system.columns` spells types
+ * canonically, and so does `columnType`.
  *
  * Never touched, only reported: key columns (they sort the table), columns
  * that are not `DEFAULT` expressions (they are yours), and orphans —
  * recorded columns the catalog no longer names, which still compute from
  * `_raw` with their old expression and are harmless to leave.
  */
+import { randomBytes } from 'node:crypto'
 import type { Logger, TableDef } from '@workos/sync-engine'
 import { KEEPER_SETTINGS, type ChClient } from '../db/client.js'
 import { isKeeperConflict } from '../db/errors.js'
@@ -119,12 +124,36 @@ async function forgetColumn(db: ChClient, schema: string, table: string, column:
   )
 }
 
+/**
+ * The server's own spelling of each of a stream's generated expressions,
+ * read back from a throwaway `Memory` table built from the catalog's
+ * clauses. It is what `system.columns.default_expression` would show for a
+ * column created from those clauses, so an unrecorded column can be judged
+ * against the table it is in.
+ */
+async function canonicalExpressions(db: ChClient, schema: string, stream: TableDef): Promise<Map<string, string>> {
+  const probe = `_probe_${randomBytes(4).toString('hex')}`
+  const ref = `${quoteIdent(schema)}.${quoteIdent(probe)}`
+  const clauses = stream.columns.map((c) => generatedColumnSql(c, stream))
+  await db.command(`CREATE TABLE ${ref} (\`_raw\` String, ${clauses.join(', ')}) ENGINE = Memory`)
+  try {
+    const rows = await db.query<{ name: string; default_expression: string }>(
+      `SELECT name, default_expression FROM system.columns WHERE database = {schema:String} AND table = {table:String}`,
+      { schema, table: probe },
+    )
+    return new Map(rows.map((r) => [r.name, r.default_expression]))
+  } finally {
+    await db.command(`DROP TABLE IF EXISTS ${ref}`)
+  }
+}
+
 export async function detectColumnDrift(db: ChClient, streams: TableDef[], schema: string): Promise<ColumnDrift[]> {
   const out: ColumnDrift[] = []
   for (const stream of streams) {
     const table = safeIdentifier(stream.name)
     const live = await liveColumns(db, schema, table)
     const recorded = await recordedColumns(db, schema, table)
+    let canonical: Map<string, string> | undefined
     const catalog = new Set<string>()
     for (const col of stream.columns) {
       const name = safeIdentifier(col.name)
@@ -147,7 +176,21 @@ export async function detectColumnDrift(db: ChClient, streams: TableDef[], schem
       }
       const record = recorded.get(name)
       if (record === undefined) {
-        await recordColumn(db, schema, table, name, expected)
+        // Nothing says what this column was created with, so the table is
+        // asked, in its own spelling of the clause the catalog would write.
+        canonical ??= await canonicalExpressions(db, schema, stream)
+        if (canonical.get(name) === actual.default_expression) {
+          await recordColumn(db, schema, table, name, expected)
+          continue
+        }
+        out.push({
+          stream: stream.name,
+          column: name,
+          kind: 'expression',
+          expected,
+          actual: actual.default_expression,
+          key,
+        })
         continue
       }
       if (record !== expected) {

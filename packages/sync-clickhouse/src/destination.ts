@@ -28,6 +28,14 @@ import { jsonPathArgs, quoteIdent, safeIdentifier } from './schema/ddl.js'
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
 
+/**
+ * The columns that name a user: a membership's or sign-in's `user_id`, and
+ * an invitation's inviter and the user who accepted it. `redact` erases a
+ * row that names the subject in any of them, and an archived or quarantined
+ * event whose payload does.
+ */
+const USER_REFERENCES = ['user_id', 'inviter_user_id', 'accepted_user_id']
+
 export interface ClickHouseDestinationOptions {
   /**
    * The HTTP interface, `https://user:password@host:8443`. Alternatively
@@ -221,23 +229,27 @@ export class ClickHouseDestination implements Destination {
       out.push({ table: label, rows: n })
     }
     for (const stream of streams) {
-      const col = stream.columns.find((c) => c.name === 'user_id' || (c.name === 'id' && stream.name === 'users'))
-      if (!col) continue
+      const refs = stream.columns.filter(
+        (c) => USER_REFERENCES.includes(c.name) || (c.name === 'id' && stream.name === 'users'),
+      )
+      if (refs.length === 0) continue
       await erase(
         stream.name,
         tableRef(this.schema, stream),
         this.final(stream),
-        `\`_env\` = {env:String} AND ${ident(col.name)} = {id:String}`,
+        `\`_env\` = {env:String} AND (${refs.map((c) => `${ident(c.name)} = {id:String}`).join(' OR ')})`,
         { env, id: userId },
       )
     }
-    const userIdInData = `JSONExtractString(\`_raw\`, ${jsonPathArgs(['data', 'user_id'])})`
+    const namedInData = USER_REFERENCES.map(
+      (field) => `JSONExtractString(\`_raw\`, ${jsonPathArgs(['data', field])}) = {id:String}`,
+    ).join(' OR ')
     // Archived events embed the payload, so they must be scrubbed too.
     await erase(
       'events',
       `${quoteIdent(this.schema)}.\`events\``,
-      '',
-      `\`_env\` = {env:String} AND (\`object_id\` = {id:String} OR ${userIdInData} = {id:String})`,
+      ' FINAL',
+      `\`_env\` = {env:String} AND (\`object_id\` = {id:String} OR ${namedInData})`,
       { env, id: userId },
     )
     // Quarantined events embed the payload too, and they may be the only copy
@@ -247,7 +259,7 @@ export class ClickHouseDestination implements Destination {
       '_rejected',
       `${quoteIdent(this.schema)}.\`_rejected\``,
       ' FINAL',
-      `sync_id = {syncId:String} AND env = {env:String} AND (object_id = {id:String} OR ${userIdInData} = {id:String})`,
+      `sync_id = {syncId:String} AND env = {env:String} AND (object_id = {id:String} OR ${namedInData})`,
       { syncId: this.syncId, env, id: userId },
     )
     return out
