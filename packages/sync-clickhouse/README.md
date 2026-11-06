@@ -28,7 +28,7 @@ the mirror streams when you want to join against them.
 
 ## Requirements
 
-- ClickHouse 23.3 or later, self-hosted or ClickHouse Cloud. Tested against
+- ClickHouse 23.11 or later, self-hosted or ClickHouse Cloud. Tested against
   26.x in CI and against ClickHouse Cloud.
 - A ClickHouse Keeper (or ZooKeeper) reachable by the server, with
   `keeper_map_path_prefix` set. The single-writer lease, the cursors, and
@@ -121,7 +121,8 @@ the same setting, the flag wins.
 
 The user the sync connects as needs `CREATE DATABASE` the first time, or an
 existing database it may create tables in, plus `CREATE TABLE`, `CREATE VIEW`,
-`ALTER`, `INSERT`, `SELECT` and `ALTER DELETE` on that database.
+`DROP TABLE` (for the staging tables `reconcile` builds and drops), `ALTER`,
+`INSERT`, `SELECT` and `ALTER DELETE` on that database.
 
 ## Embed it
 

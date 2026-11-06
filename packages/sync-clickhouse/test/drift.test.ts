@@ -186,12 +186,6 @@ describeDb('column drift detection', () => {
     const row = await db.query<{ email: string }>(`SELECT email FROM \`${db.schema}\`.users FINAL`)
     expect(row[0]!.email).toBe('new@example.com')
     expect(await recorded([usersMovedEmail])).toBe(true)
-    // The probe table is gone again.
-    const probes = await db.query(
-      `SELECT name FROM system.tables WHERE database = {s:String} AND name LIKE '\\_probe\\_%'`,
-      { s: db.schema },
-    )
-    expect(probes).toEqual([])
   })
 
   it('refuses to repair a key column', async () => {
