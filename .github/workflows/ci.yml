@@ -186,3 +186,53 @@ jobs:
 
       - name: Build
         run: pnpm --filter "@workos/sync-mysql..." build
+
+  clickhouse:
+    name: ClickHouse Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    env:
+      # There is no embedded ClickHouse, so the whole suite runs against the
+      # container; without this variable the database-backed tests skip.
+      TEST_CLICKHOUSE_URL: http://default@127.0.0.1:8123
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Not a service container: those start before the checkout, and the
+      # server needs the config in test/clickhouse/ — an embedded Keeper for
+      # the KeeperMap bookkeeping tables and `keeper_map_path_prefix`.
+      - name: Start ClickHouse
+        run: |
+          docker run -d --name clickhouse -p 127.0.0.1:8123:8123 \
+            -v "$PWD/packages/sync-clickhouse/test/clickhouse/config.xml:/etc/clickhouse-server/config.d/sync.xml:ro" \
+            -v "$PWD/packages/sync-clickhouse/test/clickhouse/users.xml:/etc/clickhouse-server/users.d/sync.xml:ro" \
+            -e CLICKHOUSE_SKIP_USER_SETUP=1 \
+            --ulimit nofile=262144:262144 \
+            clickhouse/clickhouse-server:26.10
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8123/ping >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          echo "ClickHouse did not become ready" >&2
+          docker logs clickhouse >&2
+          exit 1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm --filter @workos/sync-clickhouse test:database
+
+      - name: Build
+        run: pnpm --filter "@workos/sync-clickhouse..." build
