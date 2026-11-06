@@ -25,6 +25,8 @@ if [ "$changed" = "0" ]; then
   exit 0
 fi
 echo "pre-push: $changed package(s) changed since $(git rev-parse --short "$base")"
-pnpm --filter "...[$base]" run build
+# Build takes the dependencies in as well (the trailing `...`): a destination
+# compiles against the engine's built output, which a fresh checkout lacks.
+pnpm --filter "...[$base]..." run build
 pnpm --filter "...[$base]" run typecheck
 pnpm --filter "...[$base]" run test

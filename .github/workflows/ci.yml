@@ -81,10 +81,13 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "all=$all shared=$SHARED engine=$ENGINE postgres=$POSTGRES mongodb=$MONGODB mysql=$MYSQL clickhouse=$CLICKHOUSE"
 
+  # Each job below runs its steps only for a package this run touched. The
+  # jobs themselves always run: a job skipped by a job-level condition is
+  # skipped before its matrix expands, so the checks the branch rules
+  # require by name (`Engine Node 22`, ...) would never be reported.
   engine:
     name: Engine Node ${{ matrix.node }}
     needs: changes
-    if: needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -92,6 +95,7 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.engine == 'true'
         with:
           persist-credentials: false
 
@@ -99,8 +103,10 @@ jobs:
       # registry pnpm will actually use. The pnpm version is read from the
       # `packageManager` field in package.json.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.engine == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.engine == 'true'
         with:
           node-version: ${{ matrix.node }}
 
@@ -114,21 +120,24 @@ jobs:
       #     allow-external-fork-fallback: true
 
       - name: Install
+        if: needs.changes.outputs.engine == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.engine == 'true'
         run: pnpm --filter @workos/sync-engine test
 
       - name: Build
+        if: needs.changes.outputs.engine == 'true'
         run: pnpm --filter @workos/sync-engine build
 
       - name: Typecheck
+        if: needs.changes.outputs.engine == 'true'
         run: pnpm --filter @workos/sync-engine typecheck
 
   postgres:
     name: Postgres Node ${{ matrix.node }}
     needs: changes
-    if: needs.changes.outputs.postgres == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -152,6 +161,7 @@ jobs:
       TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.postgres == 'true'
         with:
           persist-credentials: false
 
@@ -159,8 +169,10 @@ jobs:
       # registry pnpm will actually use. The pnpm version is read from the
       # `packageManager` field in package.json.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.postgres == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.postgres == 'true'
         with:
           node-version: ${{ matrix.node }}
 
@@ -174,27 +186,33 @@ jobs:
       #     allow-external-fork-fallback: true
 
       - name: Install
+        if: needs.changes.outputs.postgres == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.postgres == 'true'
         run: pnpm --filter @workos/sync-postgres test
 
       - name: Build
+        if: needs.changes.outputs.postgres == 'true'
         run: pnpm --filter "@workos/sync-postgres..." build
 
       - name: Typecheck
-        run: pnpm --filter @workos/sync-postgres typecheck
+        if: needs.changes.outputs.postgres == 'true'
+        run: |
+          pnpm --filter @workos/sync-postgres typecheck
+          pnpm --filter workos-sync-postgres-example typecheck
 
       # The whole lifecycle — schema, backfill, tail, reconcile, repair —
       # against the fake API and an embedded Postgres, through the built
       # packages rather than the sources the unit tests import.
       - name: End-to-end example
+        if: needs.changes.outputs.postgres == 'true'
         run: pnpm --filter workos-sync-postgres-example start
 
   mongodb:
     name: MongoDB Node ${{ matrix.node }}
     needs: changes
-    if: needs.changes.outputs.mongodb == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -202,12 +220,15 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.mongodb == 'true'
         with:
           persist-credentials: false
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.mongodb == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.mongodb == 'true'
         with:
           node-version: ${{ matrix.node }}
 
@@ -215,26 +236,30 @@ jobs:
       # downloads the binary on first use; the cache keeps that off the
       # critical path. The version is pinned in the package's package.json.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: needs.changes.outputs.mongodb == 'true'
         with:
           path: ~/.cache/mongodb-binaries
           key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('packages/sync-mongodb/package.json') }}
 
       - name: Install
+        if: needs.changes.outputs.mongodb == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.mongodb == 'true'
         run: pnpm --filter @workos/sync-mongodb test
 
       - name: Build
+        if: needs.changes.outputs.mongodb == 'true'
         run: pnpm --filter "@workos/sync-mongodb..." build
 
       - name: Typecheck
+        if: needs.changes.outputs.mongodb == 'true'
         run: pnpm --filter @workos/sync-mongodb typecheck
 
   mysql:
     name: MySQL Node ${{ matrix.node }}
     needs: changes
-    if: needs.changes.outputs.mysql == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -258,31 +283,37 @@ jobs:
       TEST_MYSQL_URL: mysql://root@127.0.0.1:3306
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.mysql == 'true'
         with:
           persist-credentials: false
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.mysql == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.mysql == 'true'
         with:
           node-version: ${{ matrix.node }}
 
       - name: Install
+        if: needs.changes.outputs.mysql == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.mysql == 'true'
         run: pnpm --filter @workos/sync-mysql test:database
 
       - name: Build
+        if: needs.changes.outputs.mysql == 'true'
         run: pnpm --filter "@workos/sync-mysql..." build
 
       - name: Typecheck
+        if: needs.changes.outputs.mysql == 'true'
         run: pnpm --filter @workos/sync-mysql typecheck
 
   clickhouse:
     name: ClickHouse Node ${{ matrix.node }}
     needs: changes
-    if: needs.changes.outputs.clickhouse == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -294,6 +325,7 @@ jobs:
       TEST_CLICKHOUSE_URL: http://default@127.0.0.1:8123
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.clickhouse == 'true'
         with:
           persist-credentials: false
 
@@ -301,6 +333,7 @@ jobs:
       # server needs the config in test/clickhouse/ — an embedded Keeper for
       # the KeeperMap bookkeeping tables and `keeper_map_path_prefix`.
       - name: Start ClickHouse
+        if: needs.changes.outputs.clickhouse == 'true'
         run: |
           docker run -d --name clickhouse -p 127.0.0.1:8123:8123 \
             -v "$PWD/packages/sync-clickhouse/test/clickhouse/config.xml:/etc/clickhouse-server/config.d/sync.xml:ro" \
@@ -317,19 +350,25 @@ jobs:
           exit 1
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.clickhouse == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.clickhouse == 'true'
         with:
           node-version: ${{ matrix.node }}
 
       - name: Install
+        if: needs.changes.outputs.clickhouse == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.clickhouse == 'true'
         run: pnpm --filter @workos/sync-clickhouse test:database
 
       - name: Build
+        if: needs.changes.outputs.clickhouse == 'true'
         run: pnpm --filter "@workos/sync-clickhouse..." build
 
       - name: Typecheck
+        if: needs.changes.outputs.clickhouse == 'true'
         run: pnpm --filter @workos/sync-clickhouse typecheck
