@@ -1,21 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { streamByName, STREAMS } from '@workos/sync-engine'
+import { streamByName, STREAMS, keyValues } from '@workos/sync-engine'
 import type { Collection } from 'mongodb'
 import { createTestDb, type TestDb } from './helpers/mongo.js'
 import { migrate } from '../src/schema/migrate.js'
 import { Names } from '../src/schema/names.js'
-import {
-  upsertRows,
-  deleteRows,
-  relinkRows,
-  unlinkRows,
-  dedupeByKey,
-  wavesByKey,
-  keyValues,
-  keyFilter,
-  chunk,
-  type MirrorDoc,
-} from '../src/db/upsert.js'
+import { upsertRows, deleteRows, relinkRows, unlinkRows, keyFilter, type MirrorDoc } from '../src/db/upsert.js'
 import { InvalidTimestampError } from '../src/db/timestamps.js'
 
 const users = streamByName('users')!
@@ -35,13 +24,6 @@ const userPayload = (over: Record<string, unknown> = {}) => ({
 })
 
 describe('key extraction', () => {
-  it('reads slug-keyed streams that have no id in their event payload', () => {
-    // role.* events carry only a slug — no id at all.
-    const roles = streamByName('roles')!
-    expect(keyValues(roles, { slug: 'admin', permissions: [] })).toEqual(['admin'])
-    expect(keyValues(roles, { permissions: [] })).toBeUndefined()
-  })
-
   it('reads composite keys, and names a row by every one of them', () => {
     const orgRoles = streamByName('organization_roles')!
     expect(keyValues(orgRoles, { organization_id: 'org_1', slug: 'admin' })).toEqual(['org_1', 'admin'])
@@ -59,52 +41,6 @@ describe('key extraction', () => {
     expect(keyValues(users, { id: ['user_1'] })).toBeUndefined()
     // Were a row to reach the filter anyway, the object is a value to equal, not a query.
     expect(keyFilter(users, 'prod', { id: { $ne: null } })).toEqual({ _env: 'prod', '_raw.id': { $eq: { $ne: null } } })
-  })
-
-  it('splits into batches of a positive whole size only', () => {
-    expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]])
-    expect(chunk([], 2)).toEqual([])
-    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(() => chunk([1], bad)).toThrow(/batchSize must be a positive integer/)
-    }
-  })
-
-  it('collapses duplicate keys within a batch, keeping the newest', () => {
-    const { rows, dropped } = dedupeByKey(users, [
-      { data: userPayload({ email: 'old@example.com' }), updatedAt: '2026-01-01T00:00:00.000Z' },
-      { data: userPayload({ email: 'new@example.com' }), updatedAt: '2026-01-02T00:00:00.000Z' },
-      { data: { email: 'no-id@example.com' }, updatedAt: '2026-01-03T00:00:00.000Z' },
-    ])
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.data['email']).toBe('new@example.com')
-    expect(dropped).toBe(1)
-  })
-
-  it('judges the newest row by its instant, not by the text of its timestamp', () => {
-    // "01:00:00+01:00" sorts after "00:30:00Z" as text and is half an hour earlier as a time.
-    const { rows } = dedupeByKey(users, [
-      { data: userPayload({ email: 'older@example.com' }), updatedAt: '2026-01-01T01:00:00+01:00' },
-      { data: userPayload({ email: 'newer@example.com' }), updatedAt: '2026-01-01T00:30:00Z' },
-    ])
-    expect(rows.map((r) => r.data['email'])).toEqual(['newer@example.com'])
-    // A timestamp that is not an instant is refused here, as the write would refuse it.
-    expect(() => dedupeByKey(users, [{ data: userPayload(), updatedAt: 'yesterday' }])).toThrow(InvalidTimestampError)
-  })
-
-  it('splits repeated keys into ordered waves and leaves distinct keys in one', () => {
-    const first = { data: userPayload({ external_id: 'ext_1' }), updatedAt: '2026-01-01T00:00:00.000Z' }
-    const other = { data: userPayload({ id: 'user_2' }), updatedAt: '2026-01-01T00:00:00.000Z' }
-    const second = { data: { id: 'user_1', first_name: 'Grace' }, updatedAt: '2026-01-02T00:00:00.000Z' }
-    const { waves, dropped } = wavesByKey(users, [
-      first,
-      other,
-      second,
-      { data: { email: 'no-id@example.com' }, updatedAt: '2026-01-03T00:00:00.000Z' },
-    ])
-    expect(waves).toEqual([[first, other], [second]])
-    expect(waves[0]![0]).toBe(first)
-    expect(dropped).toBe(1)
-    expect(wavesByKey(users, [first, other]).waves).toEqual([[first, other]])
   })
 })
 

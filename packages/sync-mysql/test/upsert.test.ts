@@ -1,18 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { it, expect, beforeEach, afterEach } from 'vitest'
 import { createTestDb, describeDb, type TestDb } from './helpers/mysql.js'
 import { migrate } from '../src/schema/migrate.js'
-import {
-  upsertRows,
-  deleteRows,
-  relinkRows,
-  unlinkRows,
-  dedupeByKey,
-  wavesByKey,
-  keyValues,
-  parseUpdatedAt,
-  jsonEqual,
-} from '../src/db/upsert.js'
-import { isTransientMysqlError } from '../src/db/errors.js'
+import { upsertRows, deleteRows, relinkRows, unlinkRows } from '../src/db/upsert.js'
 import { streamByName } from '@workos/sync-engine'
 
 const users = streamByName('users')!
@@ -25,89 +14,6 @@ const userPayload = (over: Record<string, unknown> = {}) => ({
   created_at: '2026-01-01T00:00:00.000Z',
   updated_at: '2026-01-01T00:00:00.000Z',
   ...over,
-})
-
-describe('key extraction', () => {
-  it('reads slug-keyed streams that have no id in their event payload', () => {
-    const roles = streamByName('roles')!
-    expect(keyValues(roles, { slug: 'admin', permissions: [] })).toEqual(['admin'])
-    expect(keyValues(roles, { permissions: [] })).toBeUndefined()
-  })
-
-  it('reads composite keys', () => {
-    const orgRoles = streamByName('organization_roles')!
-    expect(keyValues(orgRoles, { organization_id: 'org_1', slug: 'admin' })).toEqual(['org_1', 'admin'])
-  })
-
-  it('collapses duplicate keys within a batch, keeping the newest', () => {
-    const { rows, dropped } = dedupeByKey(users, [
-      { data: userPayload({ email: 'old@example.com' }), updatedAt: '2026-01-01T00:00:00.000Z' },
-      { data: userPayload({ email: 'new@example.com' }), updatedAt: '2026-01-02T00:00:00.000Z' },
-      { data: { email: 'no-id@example.com' }, updatedAt: '2026-01-03T00:00:00.000Z' },
-    ])
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.data['email']).toBe('new@example.com')
-    expect(dropped).toBe(1)
-  })
-
-  it('judges the newest row by its instant, not by the text of its timestamp', () => {
-    // "01:00:00+01:00" sorts after "00:30:00Z" as text and is half an hour earlier as a time.
-    const { rows } = dedupeByKey(users, [
-      { data: userPayload({ email: 'older@example.com' }), updatedAt: '2026-01-01T01:00:00+01:00' },
-      { data: userPayload({ email: 'newer@example.com' }), updatedAt: '2026-01-01T00:30:00Z' },
-    ])
-    expect(rows.map((r) => r.data['email'])).toEqual(['newer@example.com'])
-    // The database keeps six fractional digits, so two rows a microsecond apart stay ordered.
-    const fine = dedupeByKey(users, [
-      { data: userPayload({ email: 'newer@example.com' }), updatedAt: '2026-01-01T00:00:00.000900Z' },
-      { data: userPayload({ email: 'older@example.com' }), updatedAt: '2026-01-01T00:00:00.000100Z' },
-    ])
-    expect(fine.rows.map((r) => r.data['email'])).toEqual(['newer@example.com'])
-    // What is not a date is ordered as text, and the database refuses it on the write.
-    const junk = dedupeByKey(users, [
-      { data: userPayload({ email: 'a@example.com' }), updatedAt: 'later' },
-      { data: userPayload({ email: 'b@example.com' }), updatedAt: 'yesterday' },
-    ])
-    expect(junk.rows.map((r) => r.data['email'])).toEqual(['b@example.com'])
-  })
-
-  it('splits repeated keys into ordered waves and leaves distinct keys in one', () => {
-    const first = { data: userPayload({ external_id: 'ext_1' }), updatedAt: '2026-01-01T00:00:00.000Z' }
-    const other = { data: userPayload({ id: 'user_2' }), updatedAt: '2026-01-01T00:00:00.000Z' }
-    const second = { data: { id: 'user_1', first_name: 'Grace' }, updatedAt: '2026-01-02T00:00:00.000Z' }
-    const { waves, dropped } = wavesByKey(users, [
-      first,
-      other,
-      second,
-      { data: { email: 'no-id@example.com' }, updatedAt: '2026-01-03T00:00:00.000Z' },
-    ])
-    expect(waves).toEqual([[first, other], [second]])
-    expect(waves[0]![0]).toBe(first)
-    expect(dropped).toBe(1)
-  })
-})
-
-describe('timestamps and equality', () => {
-  it('parses an ISO-8601 updatedAt and refuses anything else as a deterministic error', () => {
-    expect(parseUpdatedAt('2026-01-01T00:00:00.000Z').toISOString()).toBe('2026-01-01T00:00:00.000Z')
-    let err: unknown
-    try {
-      parseUpdatedAt('maybe')
-    } catch (e) {
-      err = e
-    }
-    expect(err).toBeInstanceOf(Error)
-    expect((err as { code: string }).code).toBe('ER_INVALID_TIMESTAMP')
-    // The quarantine must see it as a verdict on the row, not a bad moment.
-    expect(isTransientMysqlError(err)).toBe(false)
-  })
-
-  it('compares JSON structurally, ignoring key order', () => {
-    expect(jsonEqual({ a: 1, b: [1, { c: null }] }, { b: [1, { c: null }], a: 1 })).toBe(true)
-    expect(jsonEqual({ a: 1 }, { a: 1, b: undefined })).toBe(false)
-    expect(jsonEqual({ a: [1, 2] }, { a: [2, 1] })).toBe(false)
-    expect(jsonEqual(null, {})).toBe(false)
-  })
 })
 
 const SOME_STREAMS = ['users', 'roles', 'group_memberships', 'events'].map((n) => streamByName(n)!)

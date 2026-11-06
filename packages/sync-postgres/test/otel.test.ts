@@ -1,10 +1,10 @@
 /**
- * The engine's own instruments driven by real ticks against a real Postgres
- * (the bridge and the client instruments are unit-tested in
- * sync-engine/test/otel.test.ts), and the CLI's SDK bootstrap.
+ * The engine's own instruments driven by real ticks against a real Postgres;
+ * the bridge, the client instruments and the command line's SDK bootstrap
+ * are unit-tested in sync-engine/test/otel.test.ts.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { context, metrics, propagation, type Attributes } from '@opentelemetry/api'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { metrics, type Attributes } from '@opentelemetry/api'
 import {
   AggregationTemporality,
   InMemoryMetricExporter,
@@ -17,7 +17,6 @@ import { createTestDb } from './helpers/pg.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
 import { FaultyDestination } from './helpers/faulty.js'
 import type { SqlClient } from '../src/db/client.js'
-import { DEFAULT_SERVICE_NAME, otelEnabled, startOtel, type SdkModule } from '../src/otel.js'
 
 const STREAMS = ['users', 'organizations', 'events']
 
@@ -141,79 +140,5 @@ describe('engine metrics', () => {
     expect(value(metric(ms, 'workos.sync.events.rejected'), { env: 'prod' })).toBe(1)
     expect(value(metric(ms, 'workos.sync.errors'), { env: 'prod' })).toBe(1)
     expect(value(metric(ms, 'workos.sync.ticks'), { env: 'prod' })).toBe(2)
-  })
-})
-
-describe('WORKOS_SYNC_OTEL', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs()
-    // The real SDK registers these and leaves them on shutdown.
-    metrics.disable()
-    context.disable()
-    propagation.disable()
-  })
-
-  it('is off unless asked, and refuses what it cannot read', async () => {
-    expect(otelEnabled({})).toBe(false)
-    expect(otelEnabled({ WORKOS_SYNC_OTEL: '' })).toBe(false)
-    expect(otelEnabled({ WORKOS_SYNC_OTEL: '0' })).toBe(false)
-    expect(otelEnabled({ WORKOS_SYNC_OTEL: 'false' })).toBe(false)
-    expect(otelEnabled({ WORKOS_SYNC_OTEL: '1' })).toBe(true)
-    expect(otelEnabled({ WORKOS_SYNC_OTEL: ' True ' })).toBe(true)
-    expect(() => otelEnabled({ WORKOS_SYNC_OTEL: 'maybe' })).toThrow(/invalid WORKOS_SYNC_OTEL/)
-    await expect(startOtel({})).resolves.toBeNull()
-  })
-
-  it('starts the SDK with a service name of its own unless OTEL_SERVICE_NAME is set, and stops it', async () => {
-    const configs: unknown[] = []
-    let started = 0
-    let stopped = 0
-    const sdkNode: SdkModule = {
-      NodeSDK: class {
-        constructor(configuration?: { serviceName?: string }) {
-          configs.push(configuration)
-        }
-        start() {
-          started++
-        }
-        async shutdown() {
-          stopped++
-        }
-      },
-    }
-    const load = async () => sdkNode
-
-    const handle = await startOtel({ WORKOS_SYNC_OTEL: '1' }, load)
-    expect(configs).toEqual([{ serviceName: DEFAULT_SERVICE_NAME }])
-    expect(started).toBe(1)
-    await handle!.shutdown()
-    expect(stopped).toBe(1)
-
-    await startOtel({ WORKOS_SYNC_OTEL: 'yes', OTEL_SERVICE_NAME: 'mirror' }, load)
-    expect(configs[1]).toEqual({})
-  })
-
-  it('says what is missing when the SDK is not installed, and passes other failures through', async () => {
-    const missing = async () => {
-      throw Object.assign(new Error("Cannot find package '@opentelemetry/sdk-node'"), { code: 'ERR_MODULE_NOT_FOUND' })
-    }
-    await expect(startOtel({ WORKOS_SYNC_OTEL: '1' }, missing)).rejects.toThrow(/not installed/)
-    const broken = async () => {
-      throw new Error('boom')
-    }
-    await expect(startOtel({ WORKOS_SYNC_OTEL: '1' }, broken)).rejects.toThrow('boom')
-  })
-
-  it('installs the real SDK as the global meter provider, configured from OTEL_* variables', async () => {
-    vi.stubEnv('OTEL_METRICS_EXPORTER', 'console')
-    vi.stubEnv('OTEL_TRACES_EXPORTER', 'none')
-    vi.stubEnv('OTEL_LOGS_EXPORTER', 'none')
-    const before = metrics.getMeterProvider()
-    const handle = await startOtel({ WORKOS_SYNC_OTEL: '1' })
-    expect(handle).not.toBeNull()
-    const provider = metrics.getMeterProvider()
-    expect(provider).not.toBe(before)
-    expect(typeof (provider as { forceFlush?: unknown }).forceFlush).toBe('function')
-    await handle!.shutdown()
   })
 })

@@ -5,8 +5,8 @@
  * series the way the built-in `/metrics` does. Driving the engine's own
  * instruments takes a destination; sync-postgres/test/otel.test.ts has one.
  */
-import { describe, it, expect, afterEach } from 'vitest'
-import { metrics, type Attributes } from '@opentelemetry/api'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { context, metrics, propagation, type Attributes } from '@opentelemetry/api'
 import {
   AggregationTemporality,
   InMemoryMetricExporter,
@@ -17,6 +17,7 @@ import {
 } from '@opentelemetry/sdk-metrics'
 import { PrometheusSerializer } from '@opentelemetry/exporter-prometheus'
 import { EngineInstruments, METER_NAME } from '../src/otel.js'
+import { otelEnabled, startOtel, type SdkModule } from '../src/cli/otel.js'
 import { HealthTracker, renderMetrics } from '../src/health.js'
 import { WorkOSClient } from '../src/workos/client.js'
 import { FakeWorkOS, resetIds } from './helpers/fake-workos.js'
@@ -282,5 +283,79 @@ describe('client instruments', () => {
     expect(histogram(duration, { phase: 'hydrate', rate_key: 'global', 'http.response.status_code': 200 })?.count).toBe(
       1,
     )
+  })
+})
+
+describe('WORKOS_SYNC_OTEL', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    // The real SDK registers these and leaves them on shutdown.
+    metrics.disable()
+    context.disable()
+    propagation.disable()
+  })
+
+  it('is off unless asked, and refuses what it cannot read', async () => {
+    expect(otelEnabled({})).toBe(false)
+    expect(otelEnabled({ WORKOS_SYNC_OTEL: '' })).toBe(false)
+    expect(otelEnabled({ WORKOS_SYNC_OTEL: '0' })).toBe(false)
+    expect(otelEnabled({ WORKOS_SYNC_OTEL: 'false' })).toBe(false)
+    expect(otelEnabled({ WORKOS_SYNC_OTEL: '1' })).toBe(true)
+    expect(otelEnabled({ WORKOS_SYNC_OTEL: ' True ' })).toBe(true)
+    expect(() => otelEnabled({ WORKOS_SYNC_OTEL: 'maybe' })).toThrow(/invalid WORKOS_SYNC_OTEL/)
+    await expect(startOtel('workos-sync-test', {})).resolves.toBeNull()
+  })
+
+  it("starts the SDK with the spec's service name unless OTEL_SERVICE_NAME is set, and stops it", async () => {
+    const configs: unknown[] = []
+    let started = 0
+    let stopped = 0
+    const sdkNode: SdkModule = {
+      NodeSDK: class {
+        constructor(configuration?: { serviceName?: string }) {
+          configs.push(configuration)
+        }
+        start() {
+          started++
+        }
+        async shutdown() {
+          stopped++
+        }
+      },
+    }
+    const load = async () => sdkNode
+
+    const handle = await startOtel('workos-sync-test', { WORKOS_SYNC_OTEL: '1' }, load)
+    expect(configs).toEqual([{ serviceName: 'workos-sync-test' }])
+    expect(started).toBe(1)
+    await handle!.shutdown()
+    expect(stopped).toBe(1)
+
+    await startOtel('workos-sync-test', { WORKOS_SYNC_OTEL: 'yes', OTEL_SERVICE_NAME: 'mirror' }, load)
+    expect(configs[1]).toEqual({})
+  })
+
+  it('says what is missing when the SDK is not installed, and passes other failures through', async () => {
+    const missing = async () => {
+      throw Object.assign(new Error("Cannot find package '@opentelemetry/sdk-node'"), { code: 'ERR_MODULE_NOT_FOUND' })
+    }
+    await expect(startOtel('workos-sync-test', { WORKOS_SYNC_OTEL: '1' }, missing)).rejects.toThrow(/not installed/)
+    const broken = async () => {
+      throw new Error('boom')
+    }
+    await expect(startOtel('workos-sync-test', { WORKOS_SYNC_OTEL: '1' }, broken)).rejects.toThrow('boom')
+  })
+
+  it('installs the real SDK as the global meter provider, configured from OTEL_* variables', async () => {
+    vi.stubEnv('OTEL_METRICS_EXPORTER', 'console')
+    vi.stubEnv('OTEL_TRACES_EXPORTER', 'none')
+    vi.stubEnv('OTEL_LOGS_EXPORTER', 'none')
+    const before = metrics.getMeterProvider()
+    const handle = await startOtel('workos-sync-test', { WORKOS_SYNC_OTEL: '1' })
+    expect(handle).not.toBeNull()
+    const provider = metrics.getMeterProvider()
+    expect(provider).not.toBe(before)
+    expect(typeof (provider as { forceFlush?: unknown }).forceFlush).toBe('function')
+    await handle!.shutdown()
   })
 })

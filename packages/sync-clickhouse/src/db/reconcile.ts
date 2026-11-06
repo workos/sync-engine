@@ -14,10 +14,10 @@
  * replica, and on a replicated deployment the next request may land
  * elsewhere. They are dropped when the diff ends, however it ends.
  */
-import { encodeKey, type IdDiff, type TableDef } from '@workos/sync-engine'
+import { encodeKey, type IdDiff, type TableDef, chunk, keyValues } from '@workos/sync-engine'
 import { randomBytes } from 'node:crypto'
 import type { ChClient } from './client.js'
-import { chunk, keyExpression, keyValues, tableRef, KEY_SEPARATOR, type WriteOptions } from './upsert.js'
+import { keyExpression, tableRef, KEY_SEPARATOR, type WriteOptions } from './upsert.js'
 import { quoteIdent, ENV } from '../schema/ddl.js'
 
 export interface ChDiff extends IdDiff {

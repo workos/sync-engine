@@ -1,120 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { SyncEngine, WorkOSClient, selectStreams, silentLogger } from '@workos/sync-engine'
-import {
-  invokedDirectly,
-  main,
-  parseHydrate,
-  parseExcludeStreams,
-  parseLeaseTtl,
-  parseMaxPages,
-  parseSslCa,
-  printSchemaSql,
-  repairRequested,
-} from '../src/cli.js'
+import { main, printSchemaSql } from '../src/cli.js'
 import { fingerprint, migrate } from '../src/schema/migrate.js'
 import { createTestDb, describeDb, type TestDb } from './helpers/mysql.js'
 import { FaultyDestination } from './helpers/faulty.js'
-import { TEST_CA_PEM } from './helpers/ca.js'
 import { FakeWorkOS, resetIds } from '../../sync-engine/test/helpers/fake-workos.js'
 
-describe('entrypoint', () => {
-  let dir: string
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'workos-sync-mysql-bin-'))
-  })
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
-  })
-
-  it('recognises the script itself and the symlink npm installs as the command', () => {
-    const script = join(dir, 'cli.js')
-    writeFileSync(script, '')
-    const url = pathToFileURL(script).href
-    expect(invokedDirectly(script, url)).toBe(true)
-
-    // `npm install` links `node_modules/.bin/workos-sync-mysql` at dist/cli.js,
-    // so argv[1] is the link, not the file.
-    const link = join(dir, 'workos-sync-mysql')
-    symlinkSync(script, link)
-    expect(invokedDirectly(link, url)).toBe(true)
-  })
-
-  it('is false for an import, a missing path, or another script', () => {
-    const script = join(dir, 'cli.js')
-    writeFileSync(script, '')
-    const url = pathToFileURL(script).href
-    expect(invokedDirectly(undefined, url)).toBe(false)
-    expect(invokedDirectly(join(dir, 'missing'), url)).toBe(false)
-    const other = join(dir, 'vitest.mjs')
-    writeFileSync(other, '')
-    expect(invokedDirectly(other, url)).toBe(false)
-    // This test file was started by the test runner, not by the CLI.
-    expect(invokedDirectly(process.argv[1], url)).toBe(false)
-  })
-})
-
-describe('WORKOS_SYNC_HYDRATE', () => {
-  it('leaves the engine default in place when unset', () => {
-    expect(parseHydrate(undefined)).toBeUndefined()
-    expect(parseHydrate('')).toBeUndefined()
-  })
-
-  it('accepts one mode for every stream', () => {
-    expect(parseHydrate('off')).toBe('off')
-    expect(parseHydrate('always')).toBe('always')
-  })
-
-  it('accepts per-stream overrides on top of the default', () => {
-    expect(parseHydrate('users=always')).toEqual({ users: 'always' })
-    expect(parseHydrate('users=off, organizations=off')).toEqual({ users: 'off', organizations: 'off' })
-  })
-
-  it('rejects anything else loudly', () => {
-    expect(() => parseHydrate('sometimes')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
-    expect(() => parseHydrate('users=maybe')).toThrow(/invalid WORKOS_SYNC_HYDRATE/)
-  })
-})
-
-describe('backfill --max-pages', () => {
-  it('means unbounded when absent', () => {
-    expect(parseMaxPages(undefined)).toBeUndefined()
-  })
-
-  it('accepts a positive integer', () => {
-    expect(parseMaxPages('25')).toBe(25)
-    expect(parseMaxPages(' 1 ')).toBe(1)
-  })
-
-  it('refuses a bare flag, zero, a fraction, and anything that is not a number', () => {
-    for (const bad of [true, '', '0', '-3', '1.5', 'ten']) {
-      expect(() => parseMaxPages(bad)).toThrow(/invalid --max-pages/)
-    }
-  })
-})
-
-describe('reconcile --exclude-streams', () => {
-  it('means nothing excluded when absent and splits a list', () => {
-    expect(parseExcludeStreams(undefined)).toBeUndefined()
-    expect(parseExcludeStreams('users, invitations')).toEqual(['users', 'invitations'])
-  })
-
-  it('refuses a bare flag: an exclusion of nothing is the mistake it exists to prevent', () => {
-    expect(() => parseExcludeStreams(true)).toThrow(/invalid --exclude-streams/)
-    expect(() => parseExcludeStreams(' , ')).toThrow(/invalid --exclude-streams/)
-  })
-})
-
 describe('init --repair', () => {
-  it('asks for repair on init and nothing else', () => {
-    expect(repairRequested('init', { repair: true })).toBe(true)
-    expect(repairRequested('init', {})).toBe(false)
-    expect(repairRequested('reconcile', { repair: true })).toBe(false)
-  })
-
   it('is in the help text', async () => {
     const out: string[] = []
     const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string) => {
@@ -132,45 +24,6 @@ describe('init --repair', () => {
     expect(help).toContain('reconcile [--repair] [--resume] [--max-pages <n>] [--exclude-streams <a,b>]')
     expect(help).toContain('WORKOS_SYNC_MYSQL_SSL_CA')
     expect(help).not.toContain('Postgres')
-  })
-})
-
-describe('WORKOS_SYNC_LEASE_TTL_MS', () => {
-  it('leaves the engine default in place when unset or empty', () => {
-    expect(parseLeaseTtl(undefined)).toBeUndefined()
-    expect(parseLeaseTtl('')).toBeUndefined()
-  })
-
-  it('accepts a number of milliseconds', () => {
-    expect(parseLeaseTtl('250')).toBe(250)
-  })
-
-  it('refuses a value that would expire on arrival', () => {
-    for (const bad of ['0', '-1', '0.5', 'abc', 'Infinity']) {
-      expect(() => parseLeaseTtl(bad)).toThrow(/invalid WORKOS_SYNC_LEASE_TTL_MS/)
-    }
-  })
-})
-
-describe('WORKOS_SYNC_MYSQL_SSL_CA', () => {
-  const pem = TEST_CA_PEM
-
-  it('leaves the driver defaults in place when unset or empty', () => {
-    expect(parseSslCa(undefined)).toBeUndefined()
-    expect(parseSslCa('  ')).toBeUndefined()
-  })
-
-  it('accepts PEM as is, as a bundle, with escaped newlines, or as base64', () => {
-    expect(parseSslCa(pem)).toBe(pem.trim())
-    expect(parseSslCa(pem + pem)).toBe((pem + pem).trim())
-    expect(parseSslCa(pem.trim().replace(/\n/g, '\\n'))).toBe(pem.trim())
-    expect(parseSslCa(Buffer.from(pem).toString('base64'))).toBe(pem)
-  })
-
-  it('refuses anything that is not a certificate', () => {
-    for (const bad of ['/etc/ssl/ca.crt', 'not a cert', Buffer.from('nope').toString('base64')]) {
-      expect(() => parseSslCa(bad)).toThrow(/invalid WORKOS_SYNC_MYSQL_SSL_CA/)
-    }
   })
 })
 

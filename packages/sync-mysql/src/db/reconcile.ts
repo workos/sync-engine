@@ -14,9 +14,9 @@
  * separate columns rather than one encoded string: MySQL has no array type,
  * and encoding in SQL would have to reproduce `encodeKey` byte for byte.
  */
-import { encodeKey, type IdDiff, type TableDef } from '@workos/sync-engine'
+import { encodeKey, type IdDiff, type TableDef, chunk, keyValues } from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
-import { chunk, keyValues, type WriteOptions } from './upsert.js'
+import type { WriteOptions } from './upsert.js'
 import { quoteIdent, safeIdentifier, KEY_LENGTH } from '../schema/ddl.js'
 
 /** Live keys read per statement while capturing the local side. */
