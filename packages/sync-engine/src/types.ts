@@ -17,6 +17,12 @@ export interface ColumnDef {
   path: string | string[]
   /** Create a btree index on this column. */
   index?: boolean
+  /**
+   * The stream whose key this column holds, when it holds one: `user_id`
+   * references `users`. What `redact` follows to every row that names a
+   * subject, on every destination alike.
+   */
+  references?: string
 }
 
 /**

@@ -16,7 +16,7 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
-import { encodeKey } from '@workos/sync-engine'
+import { encodeKey, userReferenceColumns, userReferenceFields } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 import { diffIdsInSql } from './db/reconcile.js'
@@ -27,14 +27,6 @@ import { migrate, type MigrateResult } from './schema/migrate.js'
 import { jsonPath, quoteIdent, safeIdentifier, KEY_LENGTH } from './schema/ddl.js'
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
-
-/**
- * The columns that name a user: a membership's or sign-in's `user_id`, and
- * an invitation's inviter and the user who accepted it. `redact` erases a
- * row that names the subject in any of them, and an archived or quarantined
- * event whose payload does.
- */
-const USER_REFERENCES = ['user_id', 'inviter_user_id', 'accepted_user_id']
 
 export interface MysqlDestinationOptions {
   /** Connection string, `mysql://user:password@host:3306/db`. Alternatively pass a pre-built `db`. */
@@ -213,9 +205,7 @@ export class MysqlDestination implements Destination {
   async redact(streams: TableDef[], env: string, userId: string): Promise<{ table: string; rows: number }[]> {
     const out: { table: string; rows: number }[] = []
     for (const stream of streams) {
-      const refs = stream.columns.filter(
-        (c) => USER_REFERENCES.includes(c.name) || (c.name === 'id' && stream.name === 'users'),
-      )
+      const refs = userReferenceColumns(stream)
       if (refs.length === 0) continue
       const r = await this.client.query(
         `delete from ${this.table(stream)} where \`_env\` = ? and (${refs.map((c) => `${ident(c.name)} = ?`).join(' or ')})`,
@@ -223,10 +213,10 @@ export class MysqlDestination implements Destination {
       )
       if (r.affectedRows > 0) out.push({ table: stream.name, rows: r.affectedRows })
     }
-    const namedInData = USER_REFERENCES.map(
-      (f) => `json_value(\`_raw\`, ${jsonPath(['data', f])} returning char(${KEY_LENGTH}) null on error) = ?`,
-    ).join(' or ')
-    const named = USER_REFERENCES.map(() => userId)
+    const namedInData = userReferenceFields()
+      .map((f) => `json_value(\`_raw\`, ${jsonPath(['data', f])} returning char(${KEY_LENGTH}) null on error) = ?`)
+      .join(' or ')
+    const named = userReferenceFields().map(() => userId)
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.client.query(
       `delete from ${quoteIdent(this.schema)}.\`events\`

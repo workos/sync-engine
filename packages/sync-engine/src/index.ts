@@ -37,7 +37,16 @@ export type {
 export { StateStore } from './state.js'
 export { redactPayload, redactRows, redactEvent, RedactingDestination, redacting } from './redact.js'
 
-export { STREAMS, streamByName, streamForId, defaultStreams, selectStreams, subscribedEventTypes } from './catalog.js'
+export {
+  STREAMS,
+  streamByName,
+  streamForId,
+  defaultStreams,
+  selectStreams,
+  subscribedEventTypes,
+  userReferenceColumns,
+  userReferenceFields,
+} from './catalog.js'
 export { routeEvent, sourceUpdatedAt } from './router.js'
 export type { RouteAction } from './router.js'
 

@@ -16,7 +16,7 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
-import { encodeKey } from '@workos/sync-engine'
+import { encodeKey, userReferenceColumns, userReferenceFields } from '@workos/sync-engine'
 import { connect, isoOf, type ChClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows, unlinkRows, keyExpression, tableRef, KEY_SEPARATOR } from './db/upsert.js'
 import { diffIdsInClickHouse } from './db/reconcile.js'
@@ -27,14 +27,6 @@ import { migrate, type MigrateResult } from './schema/migrate.js'
 import { jsonPathArgs, quoteIdent, safeIdentifier } from './schema/ddl.js'
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
-
-/**
- * The columns that name a user: a membership's or sign-in's `user_id`, and
- * an invitation's inviter and the user who accepted it. `redact` erases a
- * row that names the subject in any of them, and an archived or quarantined
- * event whose payload does.
- */
-const USER_REFERENCES = ['user_id', 'inviter_user_id', 'accepted_user_id']
 
 export interface ClickHouseDestinationOptions {
   /**
@@ -229,9 +221,7 @@ export class ClickHouseDestination implements Destination {
       out.push({ table: label, rows: n })
     }
     for (const stream of streams) {
-      const refs = stream.columns.filter(
-        (c) => USER_REFERENCES.includes(c.name) || (c.name === 'id' && stream.name === 'users'),
-      )
+      const refs = userReferenceColumns(stream)
       if (refs.length === 0) continue
       await erase(
         stream.name,
@@ -241,9 +231,9 @@ export class ClickHouseDestination implements Destination {
         { env, id: userId },
       )
     }
-    const namedInData = USER_REFERENCES.map(
-      (field) => `JSONExtractString(\`_raw\`, ${jsonPathArgs(['data', field])}) = {id:String}`,
-    ).join(' OR ')
+    const namedInData = userReferenceFields()
+      .map((field) => `JSONExtractString(\`_raw\`, ${jsonPathArgs(['data', field])}) = {id:String}`)
+      .join(' OR ')
     // Archived events embed the payload, so they must be scrubbed too.
     await erase(
       'events',
