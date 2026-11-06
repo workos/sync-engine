@@ -609,15 +609,18 @@ export function userReferenceColumns(stream: StreamDef): ColumnDef[] {
 }
 
 /**
- * The payload paths that name a user across `streams`, each as its steps
- * under the object: `['user_id']`, or `['metadata', 'owner_user_id']` for a
- * nested extra column. An event's `data` carries the object, so `redact`
- * scrubs archived and quarantined events by `data` followed by each.
+ * The payload paths that name a user, each as its steps under the object:
+ * `['user_id']`, or `['metadata', 'owner_user_id']` for a nested extra
+ * column. Every stream of the catalog contributes, whether selected or
+ * not, because the archive keeps every event type the tail subscribed to;
+ * `streams` adds the extra columns of the selection. An event's `data`
+ * carries the object, so `redact` scrubs archived and quarantined events
+ * by `data` followed by each.
  */
 export function userReferencePaths(streams: StreamDef[]): string[][] {
   const seen = new Set<string>()
   const out: string[][] = []
-  for (const stream of streams) {
+  for (const stream of [...STREAMS, ...streams]) {
     for (const col of stream.columns) {
       if (!namesUser(col)) continue
       const path = Array.isArray(col.path) ? col.path : [col.path]
