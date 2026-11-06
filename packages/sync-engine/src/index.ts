@@ -45,7 +45,7 @@ export {
   selectStreams,
   subscribedEventTypes,
   userReferenceColumns,
-  userReferenceFields,
+  userReferencePaths,
 } from './catalog.js'
 export { routeEvent, sourceUpdatedAt } from './router.js'
 export type { RouteAction } from './router.js'

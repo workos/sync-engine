@@ -5,7 +5,7 @@ import {
   defaultStreams,
   selectStreams,
   userReferenceColumns,
-  userReferenceFields,
+  userReferencePaths,
 } from '../src/catalog.js'
 
 describe('selectStreams', () => {
@@ -47,7 +47,25 @@ describe('user references', () => {
     expect(userReferenceColumns(streamByName('organizations')!)).toEqual([])
   })
 
-  it('collects the payload fields that name a user across the catalog', () => {
-    expect(userReferenceFields().sort()).toEqual(['accepted_user_id', 'inviter_user_id', 'user_id'])
+  it('collects the payload paths that name a user across the given streams, extra and nested ones included', () => {
+    expect(
+      userReferencePaths(STREAMS)
+        .map((p) => p.join('.'))
+        .sort(),
+    ).toEqual(['accepted_user_id', 'inviter_user_id', 'user_id'])
+    const withExtra = selectStreams(['organizations'], {
+      organizations: [
+        { name: 'owner', type: 'text', path: ['metadata', 'owner_user_id'], references: 'users' },
+        // Named `user_id` without declaring anything: counted, as it always was.
+        { name: 'user_id', type: 'text', path: 'user_id' },
+      ],
+    })
+    const organizations = withExtra.find((s) => s.name === 'organizations')!
+    expect(userReferenceColumns(organizations).map((c) => c.name)).toEqual(['owner', 'user_id'])
+    expect(
+      userReferencePaths(withExtra)
+        .map((p) => p.join('.'))
+        .sort(),
+    ).toEqual(['metadata.owner_user_id', 'user_id'])
   })
 })

@@ -16,7 +16,7 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
-import { encodeKey, userReferenceColumns, userReferenceFields } from '@workos/sync-engine'
+import { encodeKey, userReferenceColumns, userReferencePaths } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 import { diffIdsInSql } from './db/reconcile.js'
@@ -213,14 +213,17 @@ export class MysqlDestination implements Destination {
       )
       if (r.affectedRows > 0) out.push({ table: stream.name, rows: r.affectedRows })
     }
-    const namedInData = userReferenceFields()
-      .map((f) => `json_value(\`_raw\`, ${jsonPath(['data', f])} returning char(${KEY_LENGTH}) null on error) = ?`)
-      .join(' or ')
-    const named = userReferenceFields().map(() => userId)
+    const paths = userReferencePaths(streams)
+    const namedInData = paths
+      .map(
+        (p) => ` or json_value(\`_raw\`, ${jsonPath(['data', ...p])} returning char(${KEY_LENGTH}) null on error) = ?`,
+      )
+      .join('')
+    const named = paths.map(() => userId)
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.client.query(
       `delete from ${quoteIdent(this.schema)}.\`events\`
-       where \`_env\` = ? and (\`object_id\` = ? or ${namedInData})`,
+       where \`_env\` = ? and (\`object_id\` = ?${namedInData})`,
       [env, userId, ...named],
     )
     if (ev.affectedRows > 0) out.push({ table: 'events', rows: ev.affectedRows })
@@ -229,7 +232,7 @@ export class MysqlDestination implements Destination {
     // in `events`.
     const rj = await this.client.query(
       `delete from ${quoteIdent(this.schema)}.\`_rejected\`
-       where sync_id = ? and env = ? and (object_id = ? or ${namedInData})`,
+       where sync_id = ? and env = ? and (object_id = ?${namedInData})`,
       [this.syncId, env, userId, ...named],
     )
     if (rj.affectedRows > 0) out.push({ table: '_rejected', rows: rj.affectedRows })

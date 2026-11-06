@@ -16,7 +16,7 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
-import { encodeKey, userReferenceColumns, userReferenceFields } from '@workos/sync-engine'
+import { encodeKey, userReferenceColumns, userReferencePaths } from '@workos/sync-engine'
 import { connect, type SqlClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 import { diffIdsInSql } from './db/reconcile.js'
@@ -213,15 +213,18 @@ export class PostgresDestination implements Destination {
       )
       if (r.rows.length > 0) out.push({ table: stream.name, rows: r.rows.length })
     }
-    const namedInData = (param: string) =>
-      userReferenceFields()
-        .map((f) => `"_raw"->'data'->>'${f}' = ${param}`)
-        .join(' or ')
+    // Each path as a Postgres array literal passed as a parameter, so a
+    // nested one works and no segment is interpolated into SQL.
+    const paths = userReferencePaths(streams).map(
+      (p) => `{${['data', ...p].map((step) => `"${step.replace(/(["\\])/g, '\\$1')}"`).join(',')}}`,
+    )
+    const namedInData = (id: string, from: number) =>
+      paths.map((_, i) => ` or "_raw" #>> $${from + i}::text[] = ${id}`).join('')
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.client.query(
       `delete from ${quoteIdent(this.schema)}."events"
-       where "_env" = $1 and ("object_id" = $2 or ${namedInData('$2')}) returning 1`,
-      [env, userId],
+       where "_env" = $1 and ("object_id" = $2${namedInData('$2', 3)}) returning 1`,
+      [env, userId, ...paths],
     )
     if (ev.rows.length > 0) out.push({ table: 'events', rows: ev.rows.length })
     // Quarantined events embed the payload too, and they may be the only copy
@@ -229,8 +232,8 @@ export class PostgresDestination implements Destination {
     // in `events`.
     const rj = await this.client.query(
       `delete from ${quoteIdent(this.schema)}."_rejected"
-       where sync_id = $1 and env = $2 and ("object_id" = $3 or ${namedInData('$3')}) returning 1`,
-      [this.syncId, env, userId],
+       where sync_id = $1 and env = $2 and ("object_id" = $3${namedInData('$3', 4)}) returning 1`,
+      [this.syncId, env, userId, ...paths],
     )
     if (rj.rows.length > 0) out.push({ table: '_rejected', rows: rj.rows.length })
     return out

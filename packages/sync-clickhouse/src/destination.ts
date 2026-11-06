@@ -16,7 +16,7 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
-import { encodeKey, userReferenceColumns, userReferenceFields } from '@workos/sync-engine'
+import { encodeKey, userReferenceColumns, userReferencePaths } from '@workos/sync-engine'
 import { connect, isoOf, type ChClient } from './db/client.js'
 import { upsertRows, deleteRows, relinkRows, unlinkRows, keyExpression, tableRef, KEY_SEPARATOR } from './db/upsert.js'
 import { diffIdsInClickHouse } from './db/reconcile.js'
@@ -231,15 +231,15 @@ export class ClickHouseDestination implements Destination {
         { env, id: userId },
       )
     }
-    const namedInData = userReferenceFields()
-      .map((field) => `JSONExtractString(\`_raw\`, ${jsonPathArgs(['data', field])}) = {id:String}`)
-      .join(' OR ')
+    const namedInData = userReferencePaths(streams)
+      .map((p) => ` OR JSONExtractString(\`_raw\`, ${jsonPathArgs(['data', ...p])}) = {id:String}`)
+      .join('')
     // Archived events embed the payload, so they must be scrubbed too.
     await erase(
       'events',
       `${quoteIdent(this.schema)}.\`events\``,
       ' FINAL',
-      `\`_env\` = {env:String} AND (\`object_id\` = {id:String} OR ${namedInData})`,
+      `\`_env\` = {env:String} AND (\`object_id\` = {id:String}${namedInData})`,
       { env, id: userId },
     )
     // Quarantined events embed the payload too, and they may be the only copy
@@ -249,7 +249,7 @@ export class ClickHouseDestination implements Destination {
       '_rejected',
       `${quoteIdent(this.schema)}.\`_rejected\``,
       ' FINAL',
-      `sync_id = {syncId:String} AND env = {env:String} AND (object_id = {id:String} OR ${namedInData})`,
+      `sync_id = {syncId:String} AND env = {env:String} AND (object_id = {id:String}${namedInData})`,
       { syncId: this.syncId, env, id: userId },
     )
     return out

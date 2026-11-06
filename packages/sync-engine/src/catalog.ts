@@ -592,31 +592,42 @@ export const STREAMS: StreamDef[] = [
 ] satisfies CatalogStreamDef[]
 
 /**
- * The columns of `stream` that name a user: those declared as referencing
- * `users`, and the `users` stream's own key. A membership's or sign-in's
- * `user_id`, an invitation's inviter and the user who accepted it. `redact`
- * erases a row that names the subject in any of them.
+ * Whether `col` holds a user id: declared with `references: 'users'`, or
+ * named `user_id`, which an `extraColumns` entry may be without declaring
+ * anything, and which always counted.
+ */
+const namesUser = (col: ColumnDef): boolean => col.references === 'users' || col.name === 'user_id'
+
+/**
+ * The columns of `stream` that name a user, and the `users` stream's own
+ * key: a membership's or sign-in's `user_id`, an invitation's inviter and
+ * the user who accepted it, an extra column declared as referencing
+ * `users`. `redact` erases a row that names the subject in any of them.
  */
 export function userReferenceColumns(stream: StreamDef): ColumnDef[] {
-  return stream.columns.filter(
-    (c) => c.references === 'users' || (stream.name === 'users' && stream.key.includes(c.name)),
-  )
+  return stream.columns.filter((c) => namesUser(c) || (stream.name === 'users' && stream.key.includes(c.name)))
 }
 
 /**
- * The top-level payload fields that name a user, across the catalog. An
- * event's `data` carries the object, so a field that references `users` on
- * any stream does there too; `redact` scrubs archived and quarantined
- * events by them.
+ * The payload paths that name a user across `streams`, each as its steps
+ * under the object: `['user_id']`, or `['metadata', 'owner_user_id']` for a
+ * nested extra column. An event's `data` carries the object, so `redact`
+ * scrubs archived and quarantined events by `data` followed by each.
  */
-export function userReferenceFields(): string[] {
-  const out = new Set<string>()
-  for (const stream of STREAMS) {
+export function userReferencePaths(streams: StreamDef[]): string[][] {
+  const seen = new Set<string>()
+  const out: string[][] = []
+  for (const stream of streams) {
     for (const col of stream.columns) {
-      if (col.references === 'users' && typeof col.path === 'string') out.add(col.path)
+      if (!namesUser(col)) continue
+      const path = Array.isArray(col.path) ? col.path : [col.path]
+      const key = path.join('\u0000')
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(path)
     }
   }
-  return [...out]
+  return out
 }
 
 export const streamByName = (name: string): StreamDef | undefined => STREAMS.find((s) => s.name === name)

@@ -16,7 +16,7 @@ import type {
   WriteMode,
   WriteStats,
 } from '@workos/sync-engine'
-import { encodeKey, userReferenceColumns, userReferenceFields } from '@workos/sync-engine'
+import { encodeKey, userReferenceColumns, userReferencePaths } from '@workos/sync-engine'
 import type { Collection, Db, Document, MongoClient } from 'mongodb'
 import { connect, databaseFromUrl } from './db/client.js'
 import { isTransientMongoError } from './db/errors.js'
@@ -248,7 +248,7 @@ export class MongoDestination implements Destination {
       })
       if (r.deletedCount > 0) out.push({ table: stream.name, rows: r.deletedCount })
     }
-    const namedInData = userReferenceFields().map((f) => ({ [`_raw.data.${f}`]: userId }))
+    const namedInData = userReferencePaths(streams).map((p) => ({ [`_raw.data.${p.join('.')}`]: userId }))
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.store
       .collection<MirrorDoc>(this.names.mirror('events'))
