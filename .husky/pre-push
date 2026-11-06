@@ -1,8 +1,8 @@
 # Build, typecheck and test only what this push changed: the packages with
 # changed files since the branch left its upstream (or main, before the first
-# push), and the packages that depend on them, which is what pnpm's `...[ref]`
-# filter selects. A change to a file every package shares (the lockfile, the
-# workspace file, a root config) runs everything, as CI does.
+# push), plus the packages that depend on them. A change to a file every
+# package shares (the lockfile, the workspace file, a root config) runs
+# everything, as CI does; one to docs, workflows or these hooks runs nothing.
 set -e
 
 base=$(git merge-base HEAD '@{upstream}' 2>/dev/null || git merge-base HEAD origin/main 2>/dev/null || true)
@@ -19,14 +19,25 @@ if [ -n "$shared" ]; then
   exit 0
 fi
 
-changed=$(pnpm --filter "...[$base]" exec pwd 2>/dev/null | wc -l | tr -d ' ')
-if [ "$changed" = "0" ]; then
+# The package directories with changed files, as pnpm directory selectors.
+# `...{dir}` is the package and its dependents; `...{dir}...` adds its
+# dependencies, which a build needs: a destination compiles against the
+# engine's built output, which a fresh checkout lacks.
+dirs=$(git diff --name-only "$base" HEAD -- packages examples | awk -F/ 'NF > 2 { print "./" $1 "/" $2 }' | sort -u)
+if [ -z "$dirs" ]; then
   echo "pre-push: no package changed since $(git rev-parse --short "$base"); nothing to run"
   exit 0
 fi
-echo "pre-push: $changed package(s) changed since $(git rev-parse --short "$base")"
-# Build takes the dependencies in as well (the trailing `...`): a destination
-# compiles against the engine's built output, which a fresh checkout lacks.
-pnpm --filter "...[$base]..." run build
-pnpm --filter "...[$base]" run typecheck
-pnpm --filter "...[$base]" run test
+build=""
+check=""
+for dir in $dirs; do
+  build="$build --filter ...{$dir}..."
+  check="$check --filter ...{$dir}"
+done
+echo "pre-push: changed since $(git rev-parse --short "$base"):" $dirs
+# shellcheck disable=SC2086
+pnpm $build run build
+# shellcheck disable=SC2086
+pnpm $check run typecheck
+# shellcheck disable=SC2086
+pnpm $check run test
