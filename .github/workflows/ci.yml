@@ -9,8 +9,85 @@ permissions:
   contents: read
 
 jobs:
+  # Which packages this run touched, so each job below runs only for them.
+  # A pull request runs the jobs for the packages whose files changed, plus
+  # every job when a shared file changed (the lockfile, the workspace file, a
+  # root config, this workflow) or when the engine changed, since every
+  # destination depends on it. A push to main and a release PR run everything.
+  changes:
+    name: Changed packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      engine: ${{ steps.decide.outputs.engine }}
+      postgres: ${{ steps.decide.outputs.postgres }}
+      mongodb: ${{ steps.decide.outputs.mongodb }}
+      mysql: ${{ steps.decide.outputs.mysql }}
+      clickhouse: ${{ steps.decide.outputs.clickhouse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            shared:
+              - package.json
+              - pnpm-lock.yaml
+              - pnpm-workspace.yaml
+              - tsconfig*.json
+              - .oxlintrc.json
+              - .oxfmtrc.json
+              - .npmrc
+              - .github/workflows/ci.yml
+            engine:
+              - packages/sync-engine/**
+            postgres:
+              - packages/sync-postgres/**
+              - examples/**
+            mongodb:
+              - packages/sync-mongodb/**
+            mysql:
+              - packages/sync-mysql/**
+            clickhouse:
+              - packages/sync-clickhouse/**
+
+      - name: Decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          SHARED: ${{ steps.filter.outputs.shared }}
+          ENGINE: ${{ steps.filter.outputs.engine }}
+          POSTGRES: ${{ steps.filter.outputs.postgres }}
+          MONGODB: ${{ steps.filter.outputs.mongodb }}
+          MYSQL: ${{ steps.filter.outputs.mysql }}
+          CLICKHOUSE: ${{ steps.filter.outputs.clickhouse }}
+        run: |
+          all=false
+          case "$EVENT" in push) all=true ;; esac
+          case "$HEAD_REF" in release-please--*) all=true ;; esac
+          if [ "$SHARED" = "true" ] || [ "$ENGINE" = "true" ]; then all=true; fi
+          {
+            echo "engine=$all"
+            for d in postgres mongodb mysql clickhouse; do
+              v=$(eval "echo \$$(echo "$d" | tr '[:lower:]' '[:upper:]')")
+              if [ "$all" = "true" ] || [ "$v" = "true" ]; then echo "$d=true"; else echo "$d=false"; fi
+            done
+          } >> "$GITHUB_OUTPUT"
+          echo "all=$all shared=$SHARED engine=$ENGINE postgres=$POSTGRES mongodb=$MONGODB mysql=$MYSQL clickhouse=$CLICKHOUSE"
+
+  # Each job below runs its steps only for a package this run touched. The
+  # jobs themselves always run: a job skipped by a job-level condition is
+  # skipped before its matrix expands, so the checks the branch rules
+  # require by name (`Engine Node 22`, ...) would never be reported.
   engine:
     name: Engine Node ${{ matrix.node }}
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -18,6 +95,7 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.engine == 'true'
         with:
           persist-credentials: false
 
@@ -25,8 +103,10 @@ jobs:
       # registry pnpm will actually use. The pnpm version is read from the
       # `packageManager` field in package.json.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.engine == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.engine == 'true'
         with:
           node-version: ${{ matrix.node }}
 
@@ -40,48 +120,63 @@ jobs:
       #     allow-external-fork-fallback: true
 
       - name: Install
+        if: needs.changes.outputs.engine == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.engine == 'true'
         run: pnpm --filter @workos/sync-engine test
 
       - name: Build
+        if: needs.changes.outputs.engine == 'true'
         run: pnpm --filter @workos/sync-engine build
+
+      - name: Typecheck
+        if: needs.changes.outputs.engine == 'true'
+        run: pnpm --filter @workos/sync-engine typecheck
 
   postgres:
     name: Postgres Node ${{ matrix.node }}
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         node: [22, 24]
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 127.0.0.1:5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       # Most of the suite runs on embedded PGlite; the multi-connection
       # regressions need a real server and skip themselves without this.
       TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.postgres == 'true'
         with:
           persist-credentials: false
+
+      # Started here rather than as a service container: a service starts
+      # before the gate, so a PR that does not touch this package would
+      # still boot a database for every Node version.
+      - name: Start Postgres
+        if: needs.changes.outputs.postgres == 'true'
+        run: |
+          docker run -d --name postgres -p 127.0.0.1:5432:5432 \
+            -e POSTGRES_HOST_AUTH_METHOD=trust postgres:17-alpine
+          for _ in $(seq 1 60); do
+            if docker exec postgres pg_isready -U postgres >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          echo "Postgres did not become ready" >&2
+          docker logs postgres >&2
+          exit 1
 
       # Package-manager setup comes first so Socket Firewall configures the
       # registry pnpm will actually use. The pnpm version is read from the
       # `packageManager` field in package.json.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.postgres == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.postgres == 'true'
         with:
           node-version: ${{ matrix.node }}
 
@@ -95,22 +190,33 @@ jobs:
       #     allow-external-fork-fallback: true
 
       - name: Install
+        if: needs.changes.outputs.postgres == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.postgres == 'true'
         run: pnpm --filter @workos/sync-postgres test
 
       - name: Build
+        if: needs.changes.outputs.postgres == 'true'
         run: pnpm --filter "@workos/sync-postgres..." build
+
+      - name: Typecheck
+        if: needs.changes.outputs.postgres == 'true'
+        run: |
+          pnpm --filter @workos/sync-postgres typecheck
+          pnpm --filter workos-sync-postgres-example typecheck
 
       # The whole lifecycle — schema, backfill, tail, reconcile, repair —
       # against the fake API and an embedded Postgres, through the built
       # packages rather than the sources the unit tests import.
       - name: End-to-end example
+        if: needs.changes.outputs.postgres == 'true'
         run: pnpm --filter workos-sync-postgres-example start
 
   mongodb:
     name: MongoDB Node ${{ matrix.node }}
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -118,12 +224,15 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.mongodb == 'true'
         with:
           persist-credentials: false
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.mongodb == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.mongodb == 'true'
         with:
           node-version: ${{ matrix.node }}
 
@@ -131,64 +240,87 @@ jobs:
       # downloads the binary on first use; the cache keeps that off the
       # critical path. The version is pinned in the package's package.json.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: needs.changes.outputs.mongodb == 'true'
         with:
           path: ~/.cache/mongodb-binaries
           key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('packages/sync-mongodb/package.json') }}
 
       - name: Install
+        if: needs.changes.outputs.mongodb == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.mongodb == 'true'
         run: pnpm --filter @workos/sync-mongodb test
 
       - name: Build
+        if: needs.changes.outputs.mongodb == 'true'
         run: pnpm --filter "@workos/sync-mongodb..." build
+
+      - name: Typecheck
+        if: needs.changes.outputs.mongodb == 'true'
+        run: pnpm --filter @workos/sync-mongodb typecheck
 
   mysql:
     name: MySQL Node ${{ matrix.node }}
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         node: [22, 24]
-    services:
-      mysql:
-        image: mysql:8.4
-        env:
-          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
-        ports:
-          - 127.0.0.1:3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping -h 127.0.0.1"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     env:
       # There is no embedded MySQL, so the whole suite runs against the
       # service; without this variable the database-backed tests skip.
       TEST_MYSQL_URL: mysql://root@127.0.0.1:3306
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.mysql == 'true'
         with:
           persist-credentials: false
 
+      # Started here rather than as a service container, for the reason the
+      # Postgres job gives.
+      - name: Start MySQL
+        if: needs.changes.outputs.mysql == 'true'
+        run: |
+          docker run -d --name mysql -p 127.0.0.1:3306:3306 \
+            -e MYSQL_ALLOW_EMPTY_PASSWORD=yes mysql:8.4
+          for _ in $(seq 1 90); do
+            if docker exec mysql mysqladmin ping -h 127.0.0.1 --silent >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          echo "MySQL did not become ready" >&2
+          docker logs mysql >&2
+          exit 1
+
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.mysql == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.mysql == 'true'
         with:
           node-version: ${{ matrix.node }}
 
       - name: Install
+        if: needs.changes.outputs.mysql == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.mysql == 'true'
         run: pnpm --filter @workos/sync-mysql test:database
 
       - name: Build
+        if: needs.changes.outputs.mysql == 'true'
         run: pnpm --filter "@workos/sync-mysql..." build
+
+      - name: Typecheck
+        if: needs.changes.outputs.mysql == 'true'
+        run: pnpm --filter @workos/sync-mysql typecheck
 
   clickhouse:
     name: ClickHouse Node ${{ matrix.node }}
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -200,6 +332,7 @@ jobs:
       TEST_CLICKHOUSE_URL: http://default@127.0.0.1:8123
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.clickhouse == 'true'
         with:
           persist-credentials: false
 
@@ -207,6 +340,7 @@ jobs:
       # server needs the config in test/clickhouse/ — an embedded Keeper for
       # the KeeperMap bookkeeping tables and `keeper_map_path_prefix`.
       - name: Start ClickHouse
+        if: needs.changes.outputs.clickhouse == 'true'
         run: |
           docker run -d --name clickhouse -p 127.0.0.1:8123:8123 \
             -v "$PWD/packages/sync-clickhouse/test/clickhouse/config.xml:/etc/clickhouse-server/config.d/sync.xml:ro" \
@@ -223,16 +357,25 @@ jobs:
           exit 1
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: needs.changes.outputs.clickhouse == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.clickhouse == 'true'
         with:
           node-version: ${{ matrix.node }}
 
       - name: Install
+        if: needs.changes.outputs.clickhouse == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Test
+        if: needs.changes.outputs.clickhouse == 'true'
         run: pnpm --filter @workos/sync-clickhouse test:database
 
       - name: Build
+        if: needs.changes.outputs.clickhouse == 'true'
         run: pnpm --filter "@workos/sync-clickhouse..." build
+
+      - name: Typecheck
+        if: needs.changes.outputs.clickhouse == 'true'
+        run: pnpm --filter @workos/sync-clickhouse typecheck

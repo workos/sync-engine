@@ -13,8 +13,70 @@ permissions:
   contents: read
 
 jobs:
+  # Which images this run has to build. A pull request builds the images of
+  # the destinations whose files changed, and every image when something the
+  # image build shares changed: the Dockerfile and its context rules, the
+  # health check script, the engine, the lockfile, this workflow. A push to
+  # main and a release PR build everything.
+  changes:
+    name: Changed destinations
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      all: ${{ steps.decide.outputs.all }}
+      postgres: ${{ steps.filter.outputs.postgres }}
+      mongodb: ${{ steps.filter.outputs.mongodb }}
+      mysql: ${{ steps.filter.outputs.mysql }}
+      clickhouse: ${{ steps.filter.outputs.clickhouse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            shared:
+              - Dockerfile
+              - .dockerignore
+              - docker/**
+              - package.json
+              - pnpm-lock.yaml
+              - pnpm-workspace.yaml
+              - packages/sync-engine/**
+              - .github/workflows/docker.yml
+            postgres:
+              - packages/sync-postgres/**
+            mongodb:
+              - packages/sync-mongodb/**
+            mysql:
+              - packages/sync-mysql/**
+            clickhouse:
+              - packages/sync-clickhouse/**
+
+      - name: Decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          SHARED: ${{ steps.filter.outputs.shared }}
+        run: |
+          all=false
+          case "$EVENT" in push) all=true ;; esac
+          case "$HEAD_REF" in release-please--*) all=true ;; esac
+          if [ "$SHARED" = "true" ]; then all=true; fi
+          echo "all=$all" >> "$GITHUB_OUTPUT"
+          echo "all=$all shared=$SHARED"
+
+  # Every matrix entry still runs and reports, because the branch rules
+  # require each image's check by name; an entry whose destination did not
+  # change skips its steps and reports success in a few seconds.
   docker:
     name: Docker ${{ matrix.destination }} on ${{ matrix.runner }}
+    needs: changes
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -28,12 +90,14 @@ jobs:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.all == 'true' || needs.changes.outputs[matrix.destination] == 'true'
         with:
           persist-credentials: false
 
       # The docker-container driver is what makes the GitHub Actions layer
       # cache usable; the default driver cannot export cache.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: needs.changes.outputs.all == 'true' || needs.changes.outputs[matrix.destination] == 'true'
 
       # Socket Firewall is off until PUBLIC_SOCKET_FIREWALL_TOKEN reaches this
       # repo. To turn it on, uncomment this block; the plain build below then
@@ -93,6 +157,7 @@ jobs:
       # `if: steps.sfw.outputs.active != 'true'` so it only runs as the
       # public external-fork fallback.
       - name: Build image
+        if: needs.changes.outputs.all == 'true' || needs.changes.outputs[matrix.destination] == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
@@ -107,6 +172,7 @@ jobs:
       # The entrypoint runs, and the build carries the stream catalog, with no
       # database or credentials involved.
       - name: Container smoke test
+        if: needs.changes.outputs.all == 'true' || needs.changes.outputs[matrix.destination] == 'true'
         env:
           IMAGE: sync-${{ matrix.destination }}:ci
         run: |
@@ -118,6 +184,7 @@ jobs:
       # the entrypoint's command line. A stand-in server plays the listener,
       # so no database or credentials are involved.
       - name: Health check finds the listener's port
+        if: needs.changes.outputs.all == 'true' || needs.changes.outputs[matrix.destination] == 'true'
         env:
           IMAGE: sync-${{ matrix.destination }}:ci
           SERVER: require('node:http').createServer((_, res) => res.end()).listen(9000)

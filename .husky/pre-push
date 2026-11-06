@@ -1,3 +1,43 @@
-pnpm run build
-pnpm run typecheck
-pnpm test
+# Build, typecheck and test only what this push changed: the packages with
+# changed files since the branch left its upstream (or main, before the first
+# push), plus the packages that depend on them. A change to a file every
+# package shares (the lockfile, the workspace file, a root config) runs
+# everything, as CI does; one to docs, workflows or these hooks runs nothing.
+set -e
+
+base=$(git merge-base HEAD '@{upstream}' 2>/dev/null || git merge-base HEAD origin/main 2>/dev/null || true)
+if [ -z "$base" ]; then
+  echo "pre-push: no upstream or origin/main to compare against; running everything"
+  pnpm run build && pnpm run typecheck && pnpm test
+  exit 0
+fi
+
+shared=$(git diff --name-only "$base" HEAD -- . ':!packages' ':!examples' ':!docs' ':!*.md' ':!.github' ':!.husky' ':!.claude' | head -1)
+if [ -n "$shared" ]; then
+  echo "pre-push: $shared changed, which every package shares; running everything"
+  pnpm run build && pnpm run typecheck && pnpm test
+  exit 0
+fi
+
+# The package directories with changed files, as pnpm directory selectors.
+# `...{dir}` is the package and its dependents; `...{dir}...` adds its
+# dependencies, which a build needs: a destination compiles against the
+# engine's built output, which a fresh checkout lacks.
+dirs=$(git diff --name-only "$base" HEAD -- packages examples | awk -F/ 'NF > 2 { print "./" $1 "/" $2 }' | sort -u)
+if [ -z "$dirs" ]; then
+  echo "pre-push: no package changed since $(git rev-parse --short "$base"); nothing to run"
+  exit 0
+fi
+build=""
+check=""
+for dir in $dirs; do
+  build="$build --filter ...{$dir}..."
+  check="$check --filter ...{$dir}"
+done
+echo "pre-push: changed since $(git rev-parse --short "$base"):" $dirs
+# shellcheck disable=SC2086
+pnpm $build run build
+# shellcheck disable=SC2086
+pnpm $check run typecheck
+# shellcheck disable=SC2086
+pnpm $check run test

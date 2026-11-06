@@ -60,9 +60,3 @@ jobs:
 
       - name: Format Markdown
         run: pnpm exec prettier --check '**/*.md'
-
-      - name: Build
-        run: pnpm build
-
-      - name: Typecheck
-        run: pnpm typecheck
