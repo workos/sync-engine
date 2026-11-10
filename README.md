@@ -120,7 +120,9 @@ ships with the package and so always describes the version you installed. The
 
 Although any accessible database is supported, we also have guides for integrating with the following platforms:
 
-- [Neon](integrations/neon.md)
+- [Neon](docs/integrations/neon.md)
+- [PlanetScale](docs/integrations/planetscale.md), Postgres and Vitess
+- [MongoDB Atlas](docs/integrations/mongodb-atlas.md)
 
 ## How it works
 
