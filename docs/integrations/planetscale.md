@@ -177,7 +177,11 @@ export WORKOS_SYNC_MYSQL_SSL_CA="$(cat /etc/ssl/cert.pem)"                   # m
 export WORKOS_SYNC_MYSQL_SSL_CA="$(cat /etc/ssl/certs/ca-certificates.crt)"  # Debian, Ubuntu
 ```
 
-In embedded code, pass the same text as `sslCa` to `MysqlDestination`.
+Check that the variable is not empty afterwards: a wrong path makes
+`$(cat ...)` expand to nothing, the command treats an empty value as unset
+and leaves TLS off, and PlanetScale then refuses the connection. The two
+examples below assume this export is already in place. In embedded code,
+pass the same text as `sslCa` to `MysqlDestination`.
 
 ### Verify the endpoint
 
@@ -188,7 +192,7 @@ migrations off, and a throwaway WorkOS environment:
 
 ```sh
 export DATABASE_URL='mysql://USER:PASSWORD@aws.connect.psdb.cloud:3306/DATABASE'
-export WORKOS_SYNC_MYSQL_SSL_CA="$(cat /etc/ssl/cert.pem)"
+# WORKOS_SYNC_MYSQL_SSL_CA exported as in TLS, above
 export WORKOS_SYNC_SCHEMA=DATABASE
 export WORKOS_API_KEY=sk_test_...
 
@@ -207,7 +211,7 @@ That lifecycle passed against a PS-10 in November 2026, generated columns,
 
 ```sh
 export DATABASE_URL='mysql://USER:PASSWORD@aws.connect.psdb.cloud:3306/DATABASE'
-export WORKOS_SYNC_MYSQL_SSL_CA="$(cat /etc/ssl/cert.pem)"
+# WORKOS_SYNC_MYSQL_SSL_CA exported as in TLS, above
 export WORKOS_SYNC_SCHEMA=DATABASE
 export WORKOS_API_KEY=sk_...
 
