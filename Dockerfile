@@ -10,7 +10,7 @@
 # A destination package needs a `bin` pointing at dist/cli.js and a `files`
 # list that ships dist/. Nothing here changes when one is added.
 ARG DESTINATION=postgres
-ARG NODE_VERSION=24
+ARG NODE_VERSION=24.22.3
 
 # CI and release callers mount the Socket Firewall npmrc as a BuildKit secret
 # and set SFW_REQUIRED=true. Local builds omit both and use the public registry.
