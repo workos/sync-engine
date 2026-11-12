@@ -5,6 +5,11 @@ so you can query users, organizations, memberships and directory data with SQL
 and join them to your own tables.
 
 This guide takes you from an empty database to a mirror that stays current.
+It shows Postgres; every command and option in it has a MongoDB, a MySQL and
+a ClickHouse counterpart, and each package's README is the reference for it:
+[`@workos/sync-mongodb`](../packages/sync-mongodb/README.md),
+[`@workos/sync-mysql`](../packages/sync-mysql/README.md) and
+[`@workos/sync-clickhouse`](../packages/sync-clickhouse/README.md).
 
 ## Before you start
 
