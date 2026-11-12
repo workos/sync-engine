@@ -38,7 +38,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 24.22.3
 
       # Socket Firewall is off until PUBLIC_SOCKET_FIREWALL_TOKEN reaches this
       # repo: with no token the action fails every run that is not a public

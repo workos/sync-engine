@@ -57,7 +57,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 24.22.3
 
       # The tag is `<component>-v<version>`; the component is the directory
       # under packages/. The package.json must agree with the tag, otherwise
@@ -189,7 +189,7 @@ jobs:
 
       # QEMU + Buildx let a single amd64 runner build and push a multi-arch
       # manifest list (amd64 + arm64) so ARM hosts pull a native image. The
-      # node:24-alpine base is already multi-arch.
+      # node:24.22.3-alpine base is already multi-arch.
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
