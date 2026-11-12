@@ -158,8 +158,8 @@ npx workos-sync-clickhouse listen
 ```
 
 The [container image](../../README.md#against-a-real-environment) and the
-[library](../getting-started.md#embed-it) take the same URL. Two things to
-plan for:
+[library](../../packages/sync-clickhouse/README.md#embed-it) take the same
+URL. Two things to plan for:
 
 - **Start the tail early.** The sign-in history in `auth_attempts` is the
   reason to mirror into ClickHouse, and it begins the day `listen` first
@@ -172,10 +172,17 @@ plan for:
 
 ## Query it
 
-Everything in [Querying the mirror](../queries.md) applies. The service's
-**SQL console** lists the `workos` database next to `default` once `init`
-has run; the `_live` views read with `FINAL` and hide tombstones, and the
-base tables hold every version a row has had. From your own machine,
+The questions in [Querying the mirror](../queries.md) apply, in
+ClickHouse's terms: that guide is written for Postgres, so its JSON
+operators become `JSONExtractString(_raw, 'field')`, its date arithmetic
+becomes ClickHouse's, and a reader's grant is `GRANT SELECT ON workos.* TO
+...` rather than a schema grant. The tables and views are the same. The
+service's **SQL console** lists the `workos` database next to `default`
+once `init` has run; the `_live` views read with `FINAL` and hide
+tombstones. The base tables keep the newest version of each row, tombstones
+included, so "who left" is a query on `workos.users` where `_deleted_at` is
+set; older versions survive only until the next merge, and
+`workos.events` is where history is kept. From your own machine,
 `clickhouse client` takes the host with `--secure` and the password, and
 `curl` takes the endpoint from **Connect** with a query as its body:
 
@@ -184,5 +191,6 @@ SELECT _env, email FROM workos.users_live;
 ```
 
 The [`@workos/sync-clickhouse` README](../../packages/sync-clickhouse/README.md)
-opens with the query this destination exists for: failed sign-ins per
-organization per hour, joined across the mirror tables in one database.
+opens with the query this destination exists for, failed sign-ins per
+organization per hour joined across the mirror tables, and documents the
+schema those queries read.
