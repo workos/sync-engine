@@ -196,8 +196,9 @@ merge time and under `FINAL`; that is the staleness gate, enforced by the
 table whatever order writes land in. A deletion's tombstone carries the deletion time as its version, so it outranks every earlier version of the row. Each mirror table has a generated
 `<table>_live` view — `workos.users_live`, `workos.organizations_live`, and so
 on — that reads with `FINAL` and hides tombstoned rows. **Query the views.**
-The base table shows every version a row ever had, plus its tombstones
-(`_deleted_at`), for when you want to ask who left.
+The base table keeps the newest version of each row, tombstones
+(`_deleted_at`) included, for when you want to ask who left; older versions
+survive only until the next merge. `workos.events` is where history is kept.
 
 A field added upstream can never break ingest — it is queryable as
 `JSONExtractString(_raw, 'field')` immediately, and promoting it to a typed

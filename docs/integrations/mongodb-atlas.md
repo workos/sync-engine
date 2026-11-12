@@ -109,8 +109,8 @@ npx workos-sync-mongodb listen
 ```
 
 The [container image](../../README.md#against-a-real-environment) and the
-[library](../getting-started.md#embed-it) take the same URL. Two things
-to plan for:
+[library](../../packages/sync-mongodb/README.md#embed-it) take the same
+URL. Two things to plan for:
 
 - **A free cluster must stay in use.** Atlas pauses an M0 that has had no
   connections for a long stretch and resumes it from the console. A

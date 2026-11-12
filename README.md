@@ -123,6 +123,7 @@ Although any accessible database is supported, we also have guides for integrati
 - [Neon](docs/integrations/neon.md)
 - [PlanetScale](docs/integrations/planetscale.md), Postgres and Vitess
 - [MongoDB Atlas](docs/integrations/mongodb-atlas.md)
+- [ClickHouse Cloud](docs/integrations/clickhouse-cloud.md)
 
 ## How it works
 
