@@ -325,7 +325,7 @@ importers:
         specifier: workspace:*
         version: link:../sync-engine
       mysql2:
-        specifier: ^3.15.0
+        specifier: ^3.24.6
         version: 3.24.6(@types/node@26.6.5)
     devDependencies:
       '@opentelemetry/api':

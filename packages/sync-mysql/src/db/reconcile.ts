@@ -9,10 +9,17 @@
  * drift; the Postgres destination explains why that bound matters.
  *
  * Temporary tables are per session, and a pool hands each plain `query` to
- * whichever connection is free, so the whole thing runs inside
- * `transaction`, which pins one connection. Key components are staged as
- * separate columns rather than one encoded string: MySQL has no array type,
- * and encoding in SQL would have to reproduce `encodeKey` byte for byte.
+ * whichever connection is free, so the whole thing runs on one pinned
+ * connection. Only the capture of the live ids runs inside a transaction,
+ * which is what makes them one instant's. The listing that follows can take
+ * minutes, and nothing in it needs a transaction: the pages go into a
+ * temporary table nobody else can see. Holding one open across it kept
+ * InnoDB's history alive for the length of the listing, and on a host that
+ * ends a transaction after a fixed time (PlanetScale: 20 seconds) it made
+ * any stream that lists for longer impossible to reconcile. Key components
+ * are staged as separate columns rather than one encoded string: MySQL has
+ * no array type, and encoding in SQL would have to reproduce `encodeKey`
+ * byte for byte.
  */
 import { encodeKey, type IdDiff, type TableDef, chunk, keyValues } from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
@@ -34,7 +41,7 @@ export async function diffIdsInSql(
   env: string,
   remote: AsyncIterable<Record<string, unknown>[]>,
 ): Promise<SqlDiff> {
-  return db.transaction(async (tx) => {
+  return db.pinned(async (conn) => {
     const s = quoteIdent(opts.schema)
     // Qualified with the schema, so the session needs no default database.
     const LOCAL = `${s}.\`_reconcile_local\``
@@ -50,17 +57,18 @@ export async function diffIdsInSql(
     const live = stream.mode === 'append' ? `l.\`_env\` = ?` : `l.\`_env\` = ? and l.\`_deleted_at\` is null`
 
     const drop = async () => {
-      await tx.exec(`drop temporary table if exists ${LOCAL}`)
-      await tx.exec(`drop temporary table if exists ${STAGING}`)
+      await conn.exec(`drop temporary table if exists ${LOCAL}`)
+      await conn.exec(`drop temporary table if exists ${STAGING}`)
     }
     // A call nested inside an outer transaction, or one that failed before
     // its cleanup, would find the previous tables still there. Dropping
-    // first makes the function re-entrant.
+    // first makes the function re-entrant. Creating and dropping a temporary
+    // table commits nothing, so it is safe inside a caller's transaction.
     await drop()
     try {
       const options = 'character set utf8mb4 collate utf8mb4_bin'
-      await tx.exec(`create temporary table ${LOCAL} (${keyDefs}, primary key (${keyList})) ${options}`)
-      await tx.exec(
+      await conn.exec(`create temporary table ${LOCAL} (${keyDefs}, primary key (${keyList})) ${options}`)
+      await conn.exec(
         `create temporary table ${STAGING} (${keyDefs}, raw json not null, primary key (${keyList})) ${options}`,
       )
 
@@ -73,34 +81,38 @@ export async function diffIdsInSql(
       // and the tail would block behind the listing for as long as it runs.
       // A plain consistent read takes no locks, and every page reads the
       // transaction's first snapshot, so the set is still one instant's.
-      let after: string[] | null = null
-      for (;;) {
-        const params: unknown[] = [env]
-        let bound = ''
-        if (after) {
-          params.push(...after)
-          bound =
-            kcols.length === 1
-              ? ` and ${sourceKeys} > ?`
-              : ` and (${sourceKeys}) > (${kcols.map(() => '?').join(', ')})`
-        }
-        const page = await tx.query<Record<string, string>>(
-          `select ${stream.key.map((name, i) => `l.${quoteIdent(safeIdentifier(name))} as k${i}`).join(', ')}
+      // The transaction ends with the capture: it is committed before the
+      // first page is asked for, and the listing runs with none open.
+      await conn.transaction(async (snapshot) => {
+        let after: string[] | null = null
+        for (;;) {
+          const params: unknown[] = [env]
+          let bound = ''
+          if (after) {
+            params.push(...after)
+            bound =
+              kcols.length === 1
+                ? ` and ${sourceKeys} > ?`
+                : ` and (${sourceKeys}) > (${kcols.map(() => '?').join(', ')})`
+          }
+          const page = await snapshot.query<Record<string, string>>(
+            `select ${stream.key.map((name, i) => `l.${quoteIdent(safeIdentifier(name))} as k${i}`).join(', ')}
            from ${table} l where ${live}${bound}
            order by ${sourceKeys} limit ${CAPTURE_PAGE}`,
-          params,
-        )
-        if (page.rows.length === 0) break
-        const values: unknown[] = []
-        const tuples = page.rows.map((r) => {
-          values.push(...kcols.map((k) => r[k]))
-          return `(${kcols.map(() => '?').join(', ')})`
-        })
-        await tx.query(`insert ignore into ${LOCAL} (${keyList}) values ${tuples.join(', ')}`, values)
-        if (page.rows.length < CAPTURE_PAGE) break
-        const last = page.rows[page.rows.length - 1]!
-        after = kcols.map((k) => String(last[k]))
-      }
+            params,
+          )
+          if (page.rows.length === 0) break
+          const values: unknown[] = []
+          const tuples = page.rows.map((r) => {
+            values.push(...kcols.map((k) => r[k]))
+            return `(${kcols.map(() => '?').join(', ')})`
+          })
+          await snapshot.query(`insert ignore into ${LOCAL} (${keyList}) values ${tuples.join(', ')}`, values)
+          if (page.rows.length < CAPTURE_PAGE) break
+          const last = page.rows[page.rows.length - 1]!
+          after = kcols.map((k) => String(last[k]))
+        }
+      })
 
       let skipped = 0
       for await (const page of remote) {
@@ -122,20 +134,20 @@ export async function diffIdsInSql(
           // An id the API returns twice (a page boundary moving under a
           // concurrent write) keeps its first copy. Nothing is lost that the
           // next reconcile would not find again.
-          await tx.query(`insert ignore into ${STAGING} (${keyList}, raw) values ${tuples.join(', ')}`, params)
+          await conn.query(`insert ignore into ${STAGING} (${keyList}, raw) values ${tuples.join(', ')}`, params)
         }
       }
 
-      const matched = await tx.query<{ n: number }>(
+      const matched = await conn.query<{ n: number }>(
         `select count(*) as n from ${LOCAL} l join ${STAGING} r on ${joinOn('l', 'r')}`,
       )
-      const localOnly = await tx.query<Record<string, string>>(
+      const localOnly = await conn.query<Record<string, string>>(
         `select ${orderBy('l')} from ${LOCAL} l
          left join ${STAGING} r on ${joinOn('l', 'r')}
          where r.k0 is null
          order by ${orderBy('l')}`,
       )
-      const remoteOnly = await tx.query<{ raw: Record<string, unknown> }>(
+      const remoteOnly = await conn.query<{ raw: Record<string, unknown> }>(
         `select r.raw from ${STAGING} r
          left join ${LOCAL} l on ${joinOn('r', 'l')}
          where l.k0 is null

@@ -38,8 +38,43 @@ describe('poolConfig', () => {
     expect(APPLICATION_NAME).toBe('workos-sync-engine')
   })
 
-  it('requires TLS and verifies against the CA when one is given', () => {
-    expect(poolConfig('mysql://h/db', { sslCa: 'pem' })['ssl']).toEqual({ ca: 'pem', rejectUnauthorized: true })
+  it('requires TLS and verifies the chain and the host name when a CA is given', () => {
+    // mysql2 checks the host name only when `verifyIdentity` is on. Without
+    // it, any certificate the CA ever issued passed, for any host.
+    expect(poolConfig('mysql://h/db', { sslCa: 'pem' })['ssl']).toEqual({
+      ca: 'pem',
+      rejectUnauthorized: true,
+      verifyIdentity: true,
+    })
+  })
+
+  it('adds the host name check to an ssl object in the connection string', () => {
+    const ssl = (query: string) => poolConfig(`mysql://u:p@h/db?ssl=${query}`)['ssl']
+    // What PlanetScale's connection strings end with.
+    expect(ssl('{"rejectUnauthorized":true}')).toEqual({ rejectUnauthorized: true, verifyIdentity: true })
+    expect(ssl('{}')).toEqual({ verifyIdentity: true })
+    expect(ssl('{"minVersion":"TLSv1.3"}')).toEqual({ minVersion: 'TLSv1.3', verifyIdentity: true })
+  })
+
+  it('leaves the connection string alone when it says what it wants, or is not an object', () => {
+    const ssl = (query: string) => poolConfig(`mysql://u:p@h/db?ssl=${query}`)['ssl']
+    // Verification turned off, or the host name check declined (a tunnel).
+    expect(ssl('{"rejectUnauthorized":false}')).toBeUndefined()
+    expect(ssl('{"rejectUnauthorized":true,"verifyIdentity":false}')).toBeUndefined()
+    // A named mysql2 profile, a bare boolean, and something unparseable.
+    expect(ssl('Amazon%20RDS')).toBeUndefined()
+    expect(ssl('true')).toBeUndefined()
+    expect(ssl('{oops')).toBeUndefined()
+    // And the string itself is still handed over unchanged.
+    expect(poolConfig('mysql://u:p@h/db?ssl={"rejectUnauthorized":false}')['uri']).toContain('rejectUnauthorized')
+  })
+
+  it('lets the CA win when the connection string has an ssl parameter too', () => {
+    expect(poolConfig('mysql://h/db?ssl={"rejectUnauthorized":false}', { sslCa: 'pem' })['ssl']).toEqual({
+      ca: 'pem',
+      rejectUnauthorized: true,
+      verifyIdentity: true,
+    })
   })
 
   it('puts every new session in UTC', () => {
@@ -128,6 +163,41 @@ describe('fromPool', () => {
       'rollback to savepoint workos_sync_tx_1',
       'release savepoint workos_sync_tx_1',
       'commit',
+      'release',
+    ])
+  })
+
+  it('begins its own transaction on a pinned connection that has none open', async () => {
+    const { pool, log } = fakePool()
+    const db = fromPool(pool)
+    await db.pinned(async (conn) => {
+      await conn.exec('create temporary table t (x int)')
+      // A savepoint here would be outside any transaction and protect
+      // nothing, so the pinned connection begins and commits one itself.
+      await conn.transaction(async (tx) => {
+        await tx.query('select 1')
+        await tx.transaction(async (inner) => {
+          await inner.query('update t set x = 2')
+        })
+      })
+      await expect(
+        conn.transaction(async () => {
+          throw new Error('boom')
+        }),
+      ).rejects.toThrow('boom')
+      await conn.exec('drop temporary table t')
+    })
+    expect(log).toEqual([
+      'create temporary table t (x int)',
+      'begin',
+      'select 1',
+      'savepoint workos_sync_tx_1',
+      'update t set x = 2',
+      'release savepoint workos_sync_tx_1',
+      'commit',
+      'begin',
+      'rollback',
+      'drop temporary table t',
       'release',
     ])
   })

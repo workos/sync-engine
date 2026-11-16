@@ -62,6 +62,8 @@ export const spec: CliSpec<SqlClient, MysqlDestination> = {
   rowNoun: 'row',
   connection: 'MySQL connection string',
   tlsCaVar: 'WORKOS_SYNC_MYSQL_SSL_CA',
+  // mysql2 connects in plaintext unless it is told otherwise.
+  tlsCaDefault: 'no TLS, unless the connection string has an ssl parameter',
   serviceName: 'workos-sync-mysql',
   init: {
     name: 'init [--repair] [--print-sql]',
