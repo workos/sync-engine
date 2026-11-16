@@ -35,11 +35,28 @@
  * write failure.
  */
 import type { ColumnDef, TableDef } from '@workos/sync-engine'
-import { quoteIdent, quoteLiteral, safeIdentifier } from './identifiers.js'
+import {
+  objectName,
+  qualified,
+  quoteIdent,
+  quoteLiteral,
+  safeIdentifier,
+  target,
+  type SchemaRef,
+} from './identifiers.js'
 import { liveViewSql } from './views.js'
 
 // Re-exported so callers keep importing the identifier helpers from here.
-export { quoteIdent, quoteLiteral, safeIdentifier } from './identifiers.js'
+export {
+  objectName,
+  parseTablePrefix,
+  qualified,
+  quoteIdent,
+  quoteLiteral,
+  safeIdentifier,
+  target,
+} from './identifiers.js'
+export type { SchemaRef, Target } from './identifiers.js'
 
 export const RAW = '_raw'
 export const ENV = '_env'
@@ -154,8 +171,8 @@ export function generatedColumnSql(col: ColumnDef, stream: TableDef): string {
   )} stored`
 }
 
-export function createSchemaSql(schema: string): string {
-  return `create database if not exists ${quoteIdent(schema)} ${TABLE_OPTIONS}`
+export function createSchemaSql(ref: SchemaRef): string {
+  return `create database if not exists ${quoteIdent(target(ref).schema)} ${TABLE_OPTIONS}`
 }
 
 /**
@@ -177,13 +194,12 @@ export function createSchemaSql(schema: string): string {
  * differs between versions, so the DDL the engine emitted is recorded as
  * written and compared with what the catalog would emit now. See `drift.ts`.
  */
-export function bookkeepingSql(schema: string): [name: string, sql: string][] {
-  const s = quoteIdent(schema)
+export function bookkeepingSql(ref: SchemaRef): [name: string, sql: string][] {
   const id = `varchar(${KEY_LENGTH})`
   return [
     [
-      '_sync_state',
-      `create table if not exists ${s}.\`_sync_state\` (
+      objectName(ref, '_sync_state'),
+      `create table if not exists ${qualified(ref, '_sync_state')} (
   sync_id    ${id} not null,
   env        ${id} not null,
   stream     ${id} not null,
@@ -193,8 +209,8 @@ export function bookkeepingSql(schema: string): [name: string, sql: string][] {
 ) ${TABLE_OPTIONS}`,
     ],
     [
-      '_migrations',
-      `create table if not exists ${s}.\`_migrations\` (
+      objectName(ref, '_migrations'),
+      `create table if not exists ${qualified(ref, '_migrations')} (
   fingerprint varchar(64) not null,
   applied_at  datetime(6) not null default current_timestamp(6),
   detail      json null,
@@ -202,8 +218,8 @@ export function bookkeepingSql(schema: string): [name: string, sql: string][] {
 ) ${TABLE_OPTIONS}`,
     ],
     [
-      '_sync_lease',
-      `create table if not exists ${s}.\`_sync_lease\` (
+      objectName(ref, '_sync_lease'),
+      `create table if not exists ${qualified(ref, '_sync_lease')} (
   sync_id     ${id} not null,
   env         ${id} not null,
   holder      varchar(255) not null,
@@ -213,8 +229,8 @@ export function bookkeepingSql(schema: string): [name: string, sql: string][] {
 ) ${TABLE_OPTIONS}`,
     ],
     [
-      '_rejected',
-      `create table if not exists ${s}.\`_rejected\` (
+      objectName(ref, '_rejected'),
+      `create table if not exists ${qualified(ref, '_rejected')} (
   sync_id     ${id} not null,
   env         ${id} not null,
   event_id    ${id} not null,
@@ -228,8 +244,8 @@ export function bookkeepingSql(schema: string): [name: string, sql: string][] {
 ) ${TABLE_OPTIONS}`,
     ],
     [
-      '_columns',
-      `create table if not exists ${s}.\`_columns\` (
+      objectName(ref, '_columns'),
+      `create table if not exists ${qualified(ref, '_columns')} (
   table_name  varchar(64) not null,
   column_name varchar(64) not null,
   ddl         text not null,
@@ -269,9 +285,7 @@ export function indexSpecs(stream: TableDef): IndexSpec[] {
 const indexClause = (idx: IndexSpec) =>
   `index ${quoteIdent(idx.name)} (${quoteIdent(idx.column)}${idx.prefix ? `(${idx.prefix})` : ''})`
 
-export function createTableSql(stream: TableDef, schema: string): string {
-  const s = quoteIdent(schema)
-  const table = quoteIdent(safeIdentifier(stream.name))
+export function createTableSql(stream: TableDef, ref: SchemaRef): string {
   const cols: string[] = [
     `${quoteIdent(ENV)}       varchar(${KEY_LENGTH}) not null`,
     `${quoteIdent(RAW)}       json not null`,
@@ -288,7 +302,7 @@ export function createTableSql(stream: TableDef, schema: string): string {
   cols.push(`primary key (${pk})`)
   for (const idx of indexSpecs(stream)) cols.push(indexClause(idx))
 
-  return `create table if not exists ${s}.${table} (\n  ${cols.join(',\n  ')}\n) ${TABLE_OPTIONS}`
+  return `create table if not exists ${qualified(ref, stream.name)} (\n  ${cols.join(',\n  ')}\n) ${TABLE_OPTIONS}`
 }
 
 /**
@@ -297,14 +311,12 @@ export function createTableSql(stream: TableDef, schema: string): string {
  * `information_schema` what is there and emits only what is missing;
  * these build the statements it then runs.
  */
-export function addColumnSql(stream: TableDef, col: ColumnDef, schema: string): string {
-  const table = `${quoteIdent(schema)}.${quoteIdent(safeIdentifier(stream.name))}`
-  return `alter table ${table} add column ${generatedColumnSql(col, stream)}`
+export function addColumnSql(stream: TableDef, col: ColumnDef, ref: SchemaRef): string {
+  return `alter table ${qualified(ref, stream.name)} add column ${generatedColumnSql(col, stream)}`
 }
 
-export function addIndexSql(stream: TableDef, idx: IndexSpec, schema: string): string {
-  const table = `${quoteIdent(schema)}.${quoteIdent(safeIdentifier(stream.name))}`
-  return `alter table ${table} add ${indexClause(idx)}`
+export function addIndexSql(stream: TableDef, idx: IndexSpec, ref: SchemaRef): string {
+  return `alter table ${qualified(ref, stream.name)} add ${indexClause(idx)}`
 }
 
 /**
@@ -314,11 +326,11 @@ export function addIndexSql(stream: TableDef, idx: IndexSpec, schema: string): s
  * the same schema `init` would. A column added to an existing table is the
  * one thing it cannot express; `init` does that.
  */
-export function buildSchemaSql(streams: TableDef[], schema: string): string[] {
-  const out: string[] = [createSchemaSql(schema), ...bookkeepingSql(schema).map(([, sql]) => sql)]
+export function buildSchemaSql(streams: TableDef[], ref: SchemaRef): string[] {
+  const out: string[] = [createSchemaSql(ref), ...bookkeepingSql(ref).map(([, sql]) => sql)]
   for (const s of streams) {
-    out.push(createTableSql(s, schema))
-    out.push(...liveViewSql(s, schema))
+    out.push(createTableSql(s, ref))
+    out.push(...liveViewSql(s, ref))
   }
   return out
 }

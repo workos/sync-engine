@@ -28,8 +28,11 @@ import {
   createTableSql,
   generatedColumnSql,
   indexSpecs,
-  quoteIdent,
+  objectName,
+  qualified,
   safeIdentifier,
+  target,
+  type SchemaRef,
 } from './ddl.js'
 import { applyLiveView, type ApplyViewOptions } from './views.js'
 import { detectColumnDrift, recordColumn, repairColumnDrift, unrepairableReason, type ColumnDrift } from './drift.js'
@@ -42,10 +45,14 @@ import { detectColumnDrift, recordColumn, repairColumnDrift, unrepairableReason,
  */
 export const DDL_VERSION = 1
 
-export function fingerprint(streams: TableDef[], schema: string): string {
+export function fingerprint(streams: TableDef[], ref: SchemaRef): string {
+  const { schema, prefix } = target(ref)
   const canonical = JSON.stringify({
     ddl: DDL_VERSION,
     schema,
+    // Only when there is one, so a mirror without a prefix keeps the
+    // fingerprint it recorded before prefixes existed and runs no DDL.
+    ...(prefix ? { prefix } : {}),
     streams: streams
       .map((s) => ({
         n: s.name,
@@ -91,30 +98,38 @@ export interface MigrateResult {
   repaired: ColumnDrift[]
 }
 
-/** `GET_LOCK` names are limited to 64 characters. */
-export function lockName(schema: string): string {
-  const name = `workos-sync-mysql:migrate:${schema}`
+/**
+ * `GET_LOCK` names are limited to 64 characters. The prefix is part of the
+ * name when there is one: two prefixes in a database are two mirrors with
+ * no table in common, and one need not wait for the other's setup.
+ */
+export function lockName(ref: SchemaRef): string {
+  const { schema, prefix } = target(ref)
+  const scope = prefix ? `${schema}:${prefix}` : schema
+  const name = `workos-sync-mysql:migrate:${scope}`
   if (name.length <= 64) return name
-  return `workos-sync-mysql:migrate:${createHash('sha256').update(schema).digest('hex').slice(0, 32)}`
+  return `workos-sync-mysql:migrate:${createHash('sha256').update(scope).digest('hex').slice(0, 32)}`
 }
 
 export async function migrate(
   db: SqlClient,
   streams: TableDef[],
-  schema: string,
+  ref: SchemaRef,
   logger?: Logger,
   options: MigrateOptions = {},
 ): Promise<MigrateResult> {
   return db.pinned(async (conn) => {
-    const lock = lockName(schema)
+    const lock = lockName(ref)
     // Read the value by position, not by alias: Vitess (PlanetScale) answers a
     // lock function itself and names the column after the expression, so `l`
     // would be undefined there even though the lock was granted.
     const got = await conn.query<Record<string, number | null>>(`select get_lock(?, 60) as l`, [lock])
     const taken = Object.values(got.rows[0] ?? {})[0]
-    if (Number(taken) !== 1) throw new Error(`could not take the migration lock for ${schema} within 60s`)
+    if (Number(taken) !== 1) {
+      throw new Error(`could not take the migration lock for ${target(ref).schema} within 60s`)
+    }
     try {
-      return await applySchema(conn, streams, schema, logger, options)
+      return await applySchema(conn, streams, ref, logger, options)
     } finally {
       await conn.query(`select release_lock(?)`, [lock])
     }
@@ -129,42 +144,46 @@ export async function migrate(
  * ask whether the fingerprint is current: a mirror with a column still to
  * add reads fine, and `init` is what reports that.
  */
-export async function schemaReady(db: SqlClient, streams: TableDef[], schema: string): Promise<boolean> {
+export async function schemaReady(db: SqlClient, streams: TableDef[], ref: SchemaRef): Promise<boolean> {
   const r = await db.query<{ table_name: string }>(
     `select table_name as table_name from information_schema.tables where table_schema = ?`,
-    [schema],
+    [target(ref).schema],
   )
   const have = new Set(r.rows.map((row) => row.table_name))
-  const need = [...bookkeepingSql(schema).map(([name]) => name), ...streams.map((s) => safeIdentifier(s.name))]
+  const need = [...bookkeepingSql(ref).map(([name]) => name), ...streams.map((s) => objectName(ref, s.name))]
   return need.every((name) => have.has(name))
 }
 
 async function applySchema(
   db: SqlClient,
   streams: TableDef[],
-  schema: string,
+  ref: SchemaRef,
   logger: Logger | undefined,
   options: MigrateOptions,
 ): Promise<MigrateResult> {
-  const fp = fingerprint(streams, schema)
+  const { schema } = target(ref)
+  const fp = fingerprint(streams, ref)
+  const migrations = qualified(ref, '_migrations')
 
   // `CREATE DATABASE IF NOT EXISTS` still needs the CREATE privilege when
   // the database is already there, so only ask when it is not.
   const exists = await db.query(`select 1 from information_schema.schemata where schema_name = ?`, [schema])
-  if (exists.rows.length === 0) await db.exec(createSchemaSql(schema))
+  if (exists.rows.length === 0) await db.exec(createSchemaSql(ref))
   // The bookkeeping tables must exist before we can check whether they say
   // this fingerprint is already applied. Only the missing ones are created:
   // a host that gates DDL (PlanetScale's safe migrations) refuses even
   // `CREATE TABLE IF NOT EXISTS`, and once the schema is in place `init`
-  // must get by on DML alone.
+  // must get by on DML alone. They are asked for by name: a pattern for
+  // "starts with an underscore" finds nothing once the names carry a prefix.
+  const wanted = bookkeepingSql(ref)
   const bookkeeping = await db.query<{ table_name: string }>(
-    `select table_name as table_name from information_schema.tables where table_schema = ? and table_name like '\\_%'`,
-    [schema],
+    `select table_name as table_name from information_schema.tables where table_schema = ? and table_name in (${wanted.map(() => '?').join(', ')})`,
+    [schema, ...wanted.map(([name]) => name)],
   )
   const have = new Set(bookkeeping.rows.map((r) => r.table_name))
-  for (const [name, sql] of bookkeepingSql(schema)) if (!have.has(name)) await db.exec(sql)
+  for (const [name, sql] of wanted) if (!have.has(name)) await db.exec(sql)
 
-  const existing = await db.query(`select 1 from ${quoteIdent(schema)}.\`_migrations\` where fingerprint = ?`, [fp])
+  const existing = await db.query(`select 1 from ${migrations} where fingerprint = ?`, [fp])
   if (existing.rows.length > 0 && !options.force) {
     logger?.debug('schema up to date', { fingerprint: fp })
     return { applied: false, fingerprint: fp, statements: 0, drift: [], repaired: [] }
@@ -172,24 +191,24 @@ async function applySchema(
 
   let statements = 0
   for (const stream of streams) {
-    const table = safeIdentifier(stream.name)
+    const table = objectName(ref, stream.name)
     const live = await db.query<{ column_name: string }>(
       `select column_name as column_name from information_schema.columns where table_schema = ? and table_name = ?`,
       [schema, table],
     )
     if (live.rows.length === 0) {
-      await db.exec(createTableSql(stream, schema))
+      await db.exec(createTableSql(stream, ref))
       statements++
       for (const col of stream.columns) {
-        await recordColumn(db, schema, table, safeIdentifier(col.name), generatedColumnSql(col, stream))
+        await recordColumn(db, ref, table, safeIdentifier(col.name), generatedColumnSql(col, stream))
       }
     } else {
       const present = new Set(live.rows.map((r) => r.column_name))
       for (const col of stream.columns) {
         if (present.has(safeIdentifier(col.name))) continue
         // Computed from the rows already present. No backfill, no downtime.
-        await db.exec(addColumnSql(stream, col, schema))
-        await recordColumn(db, schema, table, safeIdentifier(col.name), generatedColumnSql(col, stream))
+        await db.exec(addColumnSql(stream, col, ref))
+        await recordColumn(db, ref, table, safeIdentifier(col.name), generatedColumnSql(col, stream))
         statements++
       }
       const indexes = await db.query<{ index_name: string }>(
@@ -199,17 +218,17 @@ async function applySchema(
       const have = new Set(indexes.rows.map((r) => r.index_name))
       for (const idx of indexSpecs(stream)) {
         if (have.has(idx.name)) continue
-        await db.exec(addIndexSql(stream, idx, schema))
+        await db.exec(addIndexSql(stream, idx, ref))
         statements++
       }
     }
     // Last, so the view's `select *` is expanded after any column was added.
-    if (await applyLiveView(db, stream, schema, logger, options)) statements++
+    if (await applyLiveView(db, stream, ref, logger, options)) statements++
   }
 
   // Detection runs only on this path — once per catalog change, not on every
   // restart — because a recorded fingerprint means it already came back clean.
-  let drift = await detectColumnDrift(db, streams, schema)
+  let drift = await detectColumnDrift(db, streams, ref)
   let repaired: ColumnDrift[] = []
   const failures = new Map<ColumnDrift, string>()
   if (options.repair && drift.some((d) => unrepairableReason(d) === null)) {
@@ -221,8 +240,8 @@ async function applySchema(
     // repair that dies between dropping a column and adding it back has
     // already changed the table, and an older fingerprint must not vouch
     // for what is left.
-    await db.query(`delete from ${quoteIdent(schema)}.\`_migrations\` where fingerprint <> ?`, [fp])
-    const r = await repairColumnDrift(db, drift, streams, schema, logger)
+    await db.query(`delete from ${migrations} where fingerprint <> ?`, [fp])
+    const r = await repairColumnDrift(db, drift, streams, ref, logger)
     repaired = r.repaired
     for (const f of r.failed) failures.set(f.drift, f.error)
     drift = drift.filter((d) => !repaired.includes(d))
@@ -243,7 +262,7 @@ async function applySchema(
     // A forced pass can find drift under a fingerprint an earlier run
     // recorded. It comes off, or the next plain `init` would be the silent
     // no-op the withheld fingerprint exists to prevent.
-    await db.query(`delete from ${quoteIdent(schema)}.\`_migrations\` where fingerprint = ?`, [fp])
+    await db.query(`delete from ${migrations} where fingerprint = ?`, [fp])
     logger?.error('schema fingerprint not recorded: generated columns have drifted', {
       fingerprint: fp,
       columns: unresolved.length,
@@ -251,10 +270,10 @@ async function applySchema(
     return { applied: true, fingerprint: fp, statements, drift, repaired }
   }
 
-  await db.query(
-    `insert ignore into ${quoteIdent(schema)}.\`_migrations\` (fingerprint, detail) values (?, cast(? as json))`,
-    [fp, JSON.stringify({ streams: streams.map((s) => s.name), statements })],
-  )
+  await db.query(`insert ignore into ${migrations} (fingerprint, detail) values (?, cast(? as json))`, [
+    fp,
+    JSON.stringify({ streams: streams.map((s) => s.name), statements }),
+  ])
 
   logger?.info('schema applied', { fingerprint: fp, statements, repaired: repaired.length })
   return { applied: true, fingerprint: fp, statements, drift, repaired }

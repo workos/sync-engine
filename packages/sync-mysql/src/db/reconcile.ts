@@ -24,7 +24,7 @@
 import { encodeKey, type IdDiff, type TableDef, chunk, keyValues } from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
 import type { WriteOptions } from './upsert.js'
-import { quoteIdent, safeIdentifier, KEY_LENGTH } from '../schema/ddl.js'
+import { qualified, quoteIdent, safeIdentifier, KEY_LENGTH } from '../schema/ddl.js'
 
 /** Live keys read per statement while capturing the local side. */
 const CAPTURE_PAGE = 5000
@@ -42,11 +42,10 @@ export async function diffIdsInSql(
   remote: AsyncIterable<Record<string, unknown>[]>,
 ): Promise<SqlDiff> {
   return db.pinned(async (conn) => {
-    const s = quoteIdent(opts.schema)
     // Qualified with the schema, so the session needs no default database.
-    const LOCAL = `${s}.\`_reconcile_local\``
-    const STAGING = `${s}.\`_reconcile_remote\``
-    const table = `${s}.${quoteIdent(safeIdentifier(stream.name))}`
+    const LOCAL = qualified(opts.schema, '_reconcile_local')
+    const STAGING = qualified(opts.schema, '_reconcile_remote')
+    const table = qualified(opts.schema, stream.name)
     const kcols = stream.key.map((_, i) => `k${i}`)
     const keyList = kcols.join(', ')
     const keyDefs = kcols.map((k) => `${k} varchar(${KEY_LENGTH}) not null`).join(', ')

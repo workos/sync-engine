@@ -24,7 +24,15 @@ import { acquireLease, releaseLease, getLease, setStateIfHeld, iso } from './db/
 import { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
 import { isTransientMysqlError } from './db/errors.js'
 import { migrate, schemaReady, type MigrateResult } from './schema/migrate.js'
-import { jsonPath, quoteIdent, safeIdentifier, KEY_LENGTH } from './schema/ddl.js'
+import {
+  jsonPath,
+  parseTablePrefix,
+  qualified,
+  quoteIdent,
+  safeIdentifier,
+  KEY_LENGTH,
+  type Target,
+} from './schema/ddl.js'
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
 
@@ -51,6 +59,20 @@ export interface MysqlDestinationOptions {
    * mirror can sit beside the application's own database on one server.
    */
   schema?: string
+  /**
+   * A prefix on the name of every table and view the engine creates in
+   * `schema`, its own bookkeeping included: with `workos_`, `users` becomes
+   * `workos_users`, its view `workos_users_live`, and the cursor table
+   * `workos__sync_state`. For a database the mirror shares with the
+   * application's tables, which on PlanetScale is the only kind there is: a
+   * branch is one database, and without a prefix an application's own
+   * `users` table is taken for the mirror's. Lowercase letters, digits and
+   * underscores, at most 24 characters; none by default. Nothing is renamed
+   * when it changes, so a different prefix is a different, empty mirror
+   * beside the old one. `--table-prefix` or `WORKOS_SYNC_TABLE_PREFIX` on
+   * the CLI.
+   */
+  tablePrefix?: string
   /** Identifier when several syncs share one database. Defaults to `default`. */
   syncId?: string
   /** Rows per statement. Defaults to 500. */
@@ -74,6 +96,10 @@ export interface MysqlDestinationOptions {
 
 export class MysqlDestination implements Destination {
   readonly schema: string
+  /** The checked table prefix; empty when there is none. */
+  readonly tablePrefix: string
+  /** The two together, which is what every statement names its tables from. */
+  private readonly target: Target
   private db: SqlClient | undefined
   private ownsDb = false
   private readonly syncId: string
@@ -96,6 +122,8 @@ export class MysqlDestination implements Destination {
     if (this.schema.length === 0 || this.schema.length > 64) {
       throw new Error('schema must be between 1 and 64 characters')
     }
+    this.tablePrefix = parseTablePrefix(options.tablePrefix)
+    this.target = { schema: this.schema, prefix: this.tablePrefix }
     this.syncId = options.syncId ?? 'default'
     this.batchSize = options.batchSize
     this.db = options.db
@@ -107,15 +135,15 @@ export class MysqlDestination implements Destination {
   }
 
   private get writeOpts() {
-    return { schema: this.schema, batchSize: this.batchSize }
+    return { schema: this.target, batchSize: this.batchSize }
   }
 
   private get bookkeepingOpts() {
-    return { schema: this.schema, syncId: this.syncId }
+    return { schema: this.target, syncId: this.syncId }
   }
 
   private table(stream: TableDef): string {
-    return `${quoteIdent(this.schema)}.${ident(stream.name)}`
+    return qualified(this.target, stream.name)
   }
 
   private async connected(logger?: Logger): Promise<SqlClient> {
@@ -134,7 +162,7 @@ export class MysqlDestination implements Destination {
     // engine calls `init()` before every operation and a long-lived process
     // must not pay for the full pass on each.
     const repairing = Boolean(this.options.repairColumns || this.options.repairViews)
-    this.lastMigration = await migrate(db, streams, this.schema, logger, {
+    this.lastMigration = await migrate(db, streams, this.target, logger, {
       repair: this.options.repairColumns,
       repairViews: this.options.repairViews,
       force: repairing && !this.rechecked,
@@ -144,7 +172,7 @@ export class MysqlDestination implements Destination {
 
   /** Whether the mirror's tables are there, without creating any; see `schemaReady`. */
   async ready(streams: TableDef[], logger?: Logger): Promise<boolean> {
-    return schemaReady(await this.connected(logger), streams, this.schema)
+    return schemaReady(await this.connected(logger), streams, this.target)
   }
 
   async close(): Promise<void> {
@@ -244,7 +272,7 @@ export class MysqlDestination implements Destination {
     const named = paths.map(() => userId)
     // Archived events embed the payload, so they must be scrubbed too.
     const ev = await this.client.query(
-      `delete from ${quoteIdent(this.schema)}.\`events\`
+      `delete from ${qualified(this.target, 'events')}
        where \`_env\` = ? and (\`object_id\` = ?${namedInData})`,
       [env, userId, ...named],
     )
@@ -253,7 +281,7 @@ export class MysqlDestination implements Destination {
     // of it: an event rejected before its archive write succeeded is nowhere
     // in `events`.
     const rj = await this.client.query(
-      `delete from ${quoteIdent(this.schema)}.\`_rejected\`
+      `delete from ${qualified(this.target, '_rejected')}
        where sync_id = ? and env = ? and (object_id = ?${namedInData})`,
       [this.syncId, env, userId, ...named],
     )
@@ -283,7 +311,7 @@ export class MysqlDestination implements Destination {
 
   async getState<T>(env: string, stream: string): Promise<T | null> {
     const r = await this.client.query<{ state: T }>(
-      `select state from ${quoteIdent(this.schema)}.\`_sync_state\` where sync_id = ? and env = ? and stream = ?`,
+      `select state from ${qualified(this.target, '_sync_state')} where sync_id = ? and env = ? and stream = ?`,
       [this.syncId, env, stream],
     )
     return r.rows[0]?.state ?? null
@@ -291,7 +319,7 @@ export class MysqlDestination implements Destination {
 
   async setState(env: string, stream: string, state: unknown): Promise<void> {
     await this.client.query(
-      `insert into ${quoteIdent(this.schema)}.\`_sync_state\` (sync_id, env, stream, state, updated_at)
+      `insert into ${qualified(this.target, '_sync_state')} (sync_id, env, stream, state, updated_at)
        values (?, ?, ?, cast(? as json), now(6)) as new
        on duplicate key update state = new.state, updated_at = now(6)`,
       [this.syncId, env, stream, JSON.stringify(state)],
@@ -299,18 +327,18 @@ export class MysqlDestination implements Destination {
   }
 
   setStateIfHeld(env: string, stream: string, state: unknown, holder: string, expected: unknown): Promise<boolean> {
-    return setStateIfHeld(this.client, this.schema, this.syncId, env, stream, state, holder, expected)
+    return setStateIfHeld(this.client, this.target, this.syncId, env, stream, state, holder, expected)
   }
 
   acquireLease(env: string, holder: string, ttlMs: number): Promise<LeaseResult> {
-    return acquireLease(this.client, this.schema, this.syncId, env, holder, ttlMs)
+    return acquireLease(this.client, this.target, this.syncId, env, holder, ttlMs)
   }
 
   releaseLease(env: string, holder: string): Promise<void> {
-    return releaseLease(this.client, this.schema, this.syncId, env, holder)
+    return releaseLease(this.client, this.target, this.syncId, env, holder)
   }
 
   getLease(env: string): Promise<Lease | null> {
-    return getLease(this.client, this.schema, this.syncId, env)
+    return getLease(this.client, this.target, this.syncId, env)
   }
 }
