@@ -307,7 +307,8 @@ Three cadences, cheapest first:
 | Weekly, and after any incident | `reconcile --repair` | The same, and fixes them   |
 
 ```bash
-# Report only. Exits 2 when drift is found, so it works as a scheduled check.
+# Report only. Exits 2 when drift is found and 1 when a stream could not be
+# compared, so it works as a scheduled check.
 npx workos-sync-postgres reconcile
 
 # Fix what it finds.
