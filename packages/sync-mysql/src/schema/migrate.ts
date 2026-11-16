@@ -65,6 +65,14 @@ export interface MigrateOptions extends ApplyViewOptions {
    * on them, and orphans are still only reported; see `repairColumnDrift`.
    */
   repair?: boolean
+  /**
+   * Run the whole pass even though the fingerprint is recorded. A recorded
+   * fingerprint normally ends the run after one query, which is what keeps a
+   * restart cheap, and also what made `init --repair` a no-op on a database
+   * whose view or column had been dropped since: it never looked. A repair
+   * is a request to look again.
+   */
+  force?: boolean
 }
 
 export interface MigrateResult {
@@ -113,6 +121,24 @@ export async function migrate(
   })
 }
 
+/**
+ * Whether every table the engine reads is already there: the bookkeeping
+ * tables and one table per stream. One query against `information_schema`,
+ * and nothing created or changed, so `status` can ask before it reads and a
+ * status check never becomes the thing that creates the mirror. It does not
+ * ask whether the fingerprint is current: a mirror with a column still to
+ * add reads fine, and `init` is what reports that.
+ */
+export async function schemaReady(db: SqlClient, streams: TableDef[], schema: string): Promise<boolean> {
+  const r = await db.query<{ table_name: string }>(
+    `select table_name as table_name from information_schema.tables where table_schema = ?`,
+    [schema],
+  )
+  const have = new Set(r.rows.map((row) => row.table_name))
+  const need = [...bookkeepingSql(schema).map(([name]) => name), ...streams.map((s) => safeIdentifier(s.name))]
+  return need.every((name) => have.has(name))
+}
+
 async function applySchema(
   db: SqlClient,
   streams: TableDef[],
@@ -139,7 +165,7 @@ async function applySchema(
   for (const [name, sql] of bookkeepingSql(schema)) if (!have.has(name)) await db.exec(sql)
 
   const existing = await db.query(`select 1 from ${quoteIdent(schema)}.\`_migrations\` where fingerprint = ?`, [fp])
-  if (existing.rows.length > 0) {
+  if (existing.rows.length > 0 && !options.force) {
     logger?.debug('schema up to date', { fingerprint: fp })
     return { applied: false, fingerprint: fp, statements: 0, drift: [], repaired: [] }
   }
@@ -214,6 +240,10 @@ async function applySchema(
 
   const unresolved = drift.filter((d) => d.kind !== 'orphan')
   if (unresolved.length > 0) {
+    // A forced pass can find drift under a fingerprint an earlier run
+    // recorded. It comes off, or the next plain `init` would be the silent
+    // no-op the withheld fingerprint exists to prevent.
+    await db.query(`delete from ${quoteIdent(schema)}.\`_migrations\` where fingerprint = ?`, [fp])
     logger?.error('schema fingerprint not recorded: generated columns have drifted', {
       fingerprint: fp,
       columns: unresolved.length,

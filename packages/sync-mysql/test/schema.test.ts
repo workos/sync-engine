@@ -14,6 +14,7 @@ import {
   generatedColumnSql,
 } from '../src/schema/ddl.js'
 import { liveViewName, liveViewSql, isGeneratedDefinition } from '../src/schema/views.js'
+import { MysqlDestination } from '../src/destination.js'
 import { STREAMS, streamByName, type Logger } from '@workos/sync-engine'
 
 const users = streamByName('users')!
@@ -206,6 +207,22 @@ describeDb('migrations against real MySQL', () => {
     expect(second.statements).toBe(0)
   })
 
+  it('says whether the mirror is there without creating anything', async () => {
+    const destination = new MysqlDestination({ db, schema: db.schema })
+    const databases = () => db.query(`select 1 from information_schema.schemata where schema_name = ?`, [db.schema])
+
+    // `status` asks this first. Before it could, a status check against an
+    // empty database created every table and view on its way to reporting
+    // that nothing had started.
+    expect(await destination.ready([users])).toBe(false)
+    expect((await databases()).rows).toEqual([])
+
+    await destination.init([users])
+    expect(await destination.ready([users])).toBe(true)
+    // Not for a stream whose table has yet to be created.
+    expect(await destination.ready([users, streamByName('organizations')!])).toBe(false)
+  })
+
   it('creates the database when it is missing and leaves it alone when it is not', async () => {
     await db.exec(`create database \`${db.schema}\` character set utf8mb4 collate utf8mb4_bin`)
     await db.exec(`create table \`${db.schema}\`.keep (id int primary key)`)
@@ -380,6 +397,75 @@ describeDb('live views against real MySQL', () => {
     await db.query(`delete from \`${db.schema}\`.\`_migrations\``)
     await migrate(db, [users], db.schema)
     expect(await views()).toContain('users_live')
+  })
+
+  it('trusts a recorded fingerprint, and looks again when a repair forces it to', async () => {
+    const columns = async () => {
+      const r = await db.query<{ column_name: string }>(
+        `select column_name as column_name from information_schema.columns where table_schema = ? and table_name = 'users'`,
+        [db.schema],
+      )
+      return r.rows.map((x) => x.column_name)
+    }
+    await migrate(db, [users], db.schema)
+    await db.exec(`drop view \`${db.schema}\`.users_live`)
+    await db.exec(`alter table \`${db.schema}\`.users drop column last_sign_in_at`)
+
+    // The cheap path every restart takes: one query, nothing looked at.
+    expect((await migrate(db, [users], db.schema)).applied).toBe(false)
+    // A repair that stopped there too was a no-op: `init --repair` printed
+    // `schema ready` over a missing view and a missing column.
+    expect((await migrate(db, [users], db.schema, undefined, { repair: true, repairViews: true })).applied).toBe(false)
+    expect(await views()).not.toContain('users_live')
+
+    const forced = await migrate(db, [users], db.schema, undefined, { repair: true, repairViews: true, force: true })
+    expect(forced).toMatchObject({ applied: true, drift: [] })
+    expect(await views()).toContain('users_live')
+    expect(await columns()).toContain('last_sign_in_at')
+    // The view is made after the column is back, so it exposes it.
+    const viewColumns = await db.query<{ column_name: string }>(
+      `select column_name as column_name from information_schema.columns where table_schema = ? and table_name = 'users_live'`,
+      [db.schema],
+    )
+    expect(viewColumns.rows.map((x) => x.column_name)).toContain('last_sign_in_at')
+  })
+
+  it('forces that pass once per destination when a repair is asked for', async () => {
+    const repairing = () => new MysqlDestination({ db, schema: db.schema, repairColumns: true, repairViews: true })
+    await repairing().init([users])
+    await db.exec(`drop view \`${db.schema}\`.users_live`)
+
+    // A destination that was not asked to repair takes the cheap path.
+    const plain = new MysqlDestination({ db, schema: db.schema })
+    await plain.init([users])
+    expect(plain.lastMigration!.applied).toBe(false)
+    expect(await views()).not.toContain('users_live')
+
+    // `init --repair` is a new process, so a new destination: it looks.
+    const destination = repairing()
+    await destination.init([users])
+    expect(destination.lastMigration!.applied).toBe(true)
+    expect(await views()).toContain('users_live')
+    // The engine calls init() before every operation; only the first pays.
+    await destination.init([users])
+    expect(destination.lastMigration!.applied).toBe(false)
+  })
+
+  it('takes the fingerprint back when a forced pass finds drift it cannot repair', async () => {
+    await migrate(db, [users], db.schema)
+    await db.exec(`alter table \`${db.schema}\`.users drop column locale`)
+    await db.exec(`alter table \`${db.schema}\`.users add column locale varchar(8) default 'en'`)
+    const recorded = async () => {
+      const r = await db.query<{ n: number }>(`select count(*) as n from \`${db.schema}\`.\`_migrations\``)
+      return Number(r.rows[0]!.n)
+    }
+    expect(await recorded()).toBe(1)
+    const forced = await migrate(db, [users], db.schema, undefined, { repair: true, force: true })
+    expect(forced.drift).toHaveLength(1)
+    expect(forced.drift[0]).toMatchObject({ column: 'locale', kind: 'not_generated' })
+    // Left recorded, the next plain init would have said nothing was wrong.
+    expect(await recorded()).toBe(0)
+    expect((await migrate(db, [users], db.schema)).drift).toHaveLength(1)
   })
 
   it('refuses to replace a view under its name that it did not generate, until repairViews', async () => {

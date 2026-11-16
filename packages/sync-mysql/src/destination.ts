@@ -23,7 +23,7 @@ import { diffIdsInSql } from './db/reconcile.js'
 import { acquireLease, releaseLease, getLease, setStateIfHeld, iso } from './db/lease.js'
 import { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
 import { isTransientMysqlError } from './db/errors.js'
-import { migrate, type MigrateResult } from './schema/migrate.js'
+import { migrate, schemaReady, type MigrateResult } from './schema/migrate.js'
 import { jsonPath, quoteIdent, safeIdentifier, KEY_LENGTH } from './schema/ddl.js'
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
@@ -35,8 +35,10 @@ export interface MysqlDestinationOptions {
    * PEM-encoded CA certificate(s) the server's certificate must chain to,
    * for a database whose certificate a public CA did not issue. TLS is then
    * required and the certificate verified against this CA and the host
-   * name. Only with `databaseUrl`: a pre-built `db` brings its own TLS
-   * settings. `WORKOS_SYNC_MYSQL_SSL_CA` on the CLI.
+   * name in `databaseUrl`. Only with `databaseUrl`: a pre-built `db` brings
+   * its own TLS settings, which is also the way to reach a server through a
+   * tunnel, where the host name is not the server's.
+   * `WORKOS_SYNC_MYSQL_SSL_CA` on the CLI.
    */
   sslCa?: string
   /** A pre-built client, e.g. `fromPool(pool)` to share the app's pool. Not closed by `close()`. */
@@ -82,6 +84,8 @@ export class MysqlDestination implements Destination {
    * `init` command — gets the drift report back.
    */
   lastMigration: MigrateResult | undefined
+  /** Whether the forced pass a repair asks for has run; see `init`. */
+  private rechecked = false
 
   constructor(private options: MysqlDestinationOptions) {
     if (!options.db && !options.databaseUrl) throw new Error('databaseUrl or db is required')
@@ -114,15 +118,33 @@ export class MysqlDestination implements Destination {
     return `${quoteIdent(this.schema)}.${ident(stream.name)}`
   }
 
-  async init(streams: TableDef[], logger?: Logger): Promise<void> {
+  private async connected(logger?: Logger): Promise<SqlClient> {
     if (!this.db) {
       this.db = await connect(this.options.databaseUrl!, { sslCa: this.options.sslCa, logger })
       this.ownsDb = true
     }
-    this.lastMigration = await migrate(this.db, streams, this.schema, logger, {
+    return this.db
+  }
+
+  async init(streams: TableDef[], logger?: Logger): Promise<void> {
+    const db = await this.connected(logger)
+    // A repair is a request to look again, so its first `init()` runs the
+    // whole pass whatever the fingerprint says: a view or a column dropped
+    // since the fingerprint was recorded is put back. Once only, because the
+    // engine calls `init()` before every operation and a long-lived process
+    // must not pay for the full pass on each.
+    const repairing = Boolean(this.options.repairColumns || this.options.repairViews)
+    this.lastMigration = await migrate(db, streams, this.schema, logger, {
       repair: this.options.repairColumns,
       repairViews: this.options.repairViews,
+      force: repairing && !this.rechecked,
     })
+    if (repairing) this.rechecked = true
+  }
+
+  /** Whether the mirror's tables are there, without creating any; see `schemaReady`. */
+  async ready(streams: TableDef[], logger?: Logger): Promise<boolean> {
+    return schemaReady(await this.connected(logger), streams, this.schema)
   }
 
   async close(): Promise<void> {

@@ -23,7 +23,7 @@ import { diffIdsInSql } from './db/reconcile.js'
 import { acquireLease, releaseLease, getLease, setStateIfHeld } from './db/lease.js'
 import { rejectEvents, listRejected, countRejected, clearRejected } from './db/rejected.js'
 import { isTransientPgError } from './db/errors.js'
-import { migrate, type MigrateResult } from './schema/migrate.js'
+import { migrate, schemaReady, type MigrateResult } from './schema/migrate.js'
 import { quoteIdent, safeIdentifier } from './schema/ddl.js'
 
 const ident = (name: string) => quoteIdent(safeIdentifier(name))
@@ -83,6 +83,8 @@ export class PostgresDestination implements Destination {
    * `init` command — gets the drift report back.
    */
   lastMigration: MigrateResult | undefined
+  /** Whether the forced pass a repair asks for has run; see `init`. */
+  private rechecked = false
 
   constructor(private options: PostgresDestinationOptions) {
     if (!options.db && !options.databaseUrl) throw new Error('databaseUrl or db is required')
@@ -114,15 +116,33 @@ export class PostgresDestination implements Destination {
     return `${quoteIdent(this.schema)}.${ident(stream.name)}`
   }
 
-  async init(streams: TableDef[], logger?: Logger): Promise<void> {
+  private async connected(logger?: Logger): Promise<SqlClient> {
     if (!this.db) {
       this.db = await connect(this.options.databaseUrl!, { sslCa: this.options.sslCa, logger })
       this.ownsDb = true
     }
-    this.lastMigration = await migrate(this.db, streams, this.schema, logger, {
+    return this.db
+  }
+
+  async init(streams: TableDef[], logger?: Logger): Promise<void> {
+    const db = await this.connected(logger)
+    // A repair is a request to look again, so its first `init()` runs the
+    // whole pass whatever the fingerprint says: a view or a column dropped
+    // since the fingerprint was recorded is put back. Once only, because the
+    // engine calls `init()` before every operation and a long-lived process
+    // must not pay for the full pass on each.
+    const repairing = Boolean(this.options.repairColumns || this.options.repairViews)
+    this.lastMigration = await migrate(db, streams, this.schema, logger, {
       repair: this.options.repairColumns,
       repairViews: this.options.repairViews,
+      force: repairing && !this.rechecked,
     })
+    if (repairing) this.rechecked = true
+  }
+
+  /** Whether the mirror's tables are there, without creating any; see `schemaReady`. */
+  async ready(streams: TableDef[], logger?: Logger): Promise<boolean> {
+    return schemaReady(await this.connected(logger), streams, this.schema)
   }
 
   async close(): Promise<void> {
