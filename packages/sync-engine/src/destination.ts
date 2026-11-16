@@ -126,6 +126,15 @@ export interface Destination {
    * the schema is current.
    */
   init(streams: TableDef[], logger?: Logger): Promise<void>
+  /**
+   * Whether every table the engine reads for `streams`, bookkeeping included,
+   * is already there. Connects if needed; creates and changes nothing.
+   * `status` asks this instead of calling `init`, so that a status check on
+   * an empty database reports that the mirror is missing rather than creating
+   * it. Optional: without it `status` applies the schema first, like every
+   * other operation.
+   */
+  ready?(streams: TableDef[], logger?: Logger): Promise<boolean>
   close(): Promise<void>
 
   upsert(stream: TableDef, env: string, rows: Row[], mode: WriteMode): Promise<WriteStats>

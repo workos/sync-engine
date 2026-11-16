@@ -64,6 +64,14 @@ export interface DiffResult {
    */
   complete: boolean
   /**
+   * True when the stream's diff threw: a refused statement, a dropped
+   * connection, a timeout. `complete` is false and `skippedReason` carries
+   * the error. A stream a page budget left for later was merely not reached;
+   * this one was tried and nothing about it is known, so a run with a failed
+   * stream cannot vouch for the mirror, and the command exits 1.
+   */
+  failed?: boolean
+  /**
    * True when the stream's own listing needs more pages than `maxPages`, so
    * it was abandoned, or skipped on `resume` because an earlier call
    * abandoned it. `complete` is false. A call with `resume` comes back to it

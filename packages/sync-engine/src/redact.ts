@@ -158,7 +158,15 @@ function redactArchiveRows(rows: Row[]): Row[] {
  * satisfies `Destination`.
  */
 export class RedactingDestination implements Destination {
-  constructor(private readonly inner: Destination) {}
+  /**
+   * Optional on a destination, and `status` decides what to do by whether it
+   * is there, so it is passed through only when the wrapped one has it.
+   */
+  readonly ready?: (streams: StreamDef[], logger?: Logger) => Promise<boolean>
+
+  constructor(private readonly inner: Destination) {
+    if (inner.ready) this.ready = (streams, logger) => inner.ready!(streams, logger)
+  }
 
   init(streams: StreamDef[], logger?: Logger): Promise<void> {
     return this.inner.init(streams, logger)

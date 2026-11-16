@@ -115,3 +115,83 @@ describe('listen() and stop()', () => {
     expect(await outcome(second, 2_000)).toBe('ended')
   })
 })
+
+describe('status()', () => {
+  const empty = {
+    initialized: false,
+    cursor: null,
+    rangeStart: null,
+    started: false,
+    cursorAgeDays: null,
+    lastPolledAt: null,
+    pollAgeSeconds: null,
+    lease: null,
+    rejected: 0,
+    oversized: [],
+    streams: [],
+  }
+
+  it('creates nothing when the destination says the mirror is not there', async () => {
+    let inits = 0
+    const destination: Destination = {
+      ...fakeDestination(Promise.resolve()),
+      init: async () => {
+        inits++
+      },
+      ready: async () => false,
+    }
+    // Before this, `status` against an empty database created every table
+    // and view, then reported that nothing had started.
+    expect(await makeEngine(destination, { n: 0 }).status()).toEqual({ prod: empty })
+    expect(inits).toBe(0)
+  })
+
+  it('reads a mirror that is there without applying the schema', async () => {
+    let inits = 0
+    const destination: Destination = {
+      ...fakeDestination(Promise.resolve()),
+      init: async () => {
+        inits++
+      },
+      ready: async () => true,
+    }
+    const status = await makeEngine(destination, { n: 0 }).status()
+    expect(status['prod']).toMatchObject({ initialized: true, started: false })
+    expect(status['prod']!.streams.map((s) => s.stream)).toContain('users')
+    expect(inits).toBe(0)
+  })
+
+  it('applies the schema first for a destination that cannot say', async () => {
+    let inits = 0
+    const destination: Destination = {
+      ...fakeDestination(Promise.resolve()),
+      init: async () => {
+        inits++
+      },
+    }
+    expect((await makeEngine(destination, { n: 0 }).status())['prod']!.initialized).toBe(true)
+    expect(inits).toBe(1)
+  })
+})
+
+describe('reconcile()', () => {
+  it('marks a stream whose diff threw as failed, and still reports the others', async () => {
+    const destination: Destination = {
+      ...fakeDestination(Promise.resolve()),
+      diffIds: async () => {
+        throw new Error('DDL command denied')
+      },
+    }
+    const { diffs } = await makeEngine(destination, { n: 0 }).reconcile()
+    const users = diffs['prod']!.find((d) => d.stream === 'users')!
+    expect(users).toMatchObject({
+      complete: false,
+      failed: true,
+      skippedReason: 'failed: Error: DDL command denied',
+    })
+    // An append-only stream has nothing to diff: complete, and not a failure.
+    const events = diffs['prod']!.find((d) => d.stream === 'events')!
+    expect(events.complete).toBe(true)
+    expect(events.failed).toBeUndefined()
+  })
+})

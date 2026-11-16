@@ -205,10 +205,14 @@ async function runCommand<TClient, TDestination extends Destination>(
           excludeStreams: parseExcludeStreams(flags['exclude-streams']),
         })
         out(r)
+        const diffs = Object.values(r.diffs).flat()
+        // A stream whose diff threw was not checked at all, so the run cannot
+        // vouch for the mirror whatever the other streams found. Without
+        // this, a scheduled check passed while every stream was refused. A
+        // stream a page budget left for a later slice is not a failure.
+        if (diffs.some((d) => d.failed)) return 1
         // A non-zero exit makes this usable as a scheduled check.
-        const drift = Object.values(r.diffs)
-          .flat()
-          .some((d) => d.localOnly.length > 0 || d.remoteOnly.length > 0)
+        const drift = diffs.some((d) => d.localOnly.length > 0 || d.remoteOnly.length > 0)
         return drift && !flags['repair'] ? 2 : 0
       }
       case 'refresh': {
@@ -216,7 +220,12 @@ async function runCommand<TClient, TDestination extends Destination>(
         return 0
       }
       case 'status': {
-        out(await engine.status())
+        const status = await engine.status()
+        out(status)
+        // Said on stderr so the JSON stays the whole of stdout.
+        if (Object.values(status).some((s) => !s.initialized)) {
+          process.stderr.write('the mirror is not there, or not for every selected stream: run init\n')
+        }
         return 0
       }
       case 'redact': {
@@ -249,13 +258,46 @@ async function runCommand<TClient, TDestination extends Destination>(
   }
 }
 
-/** The exit of a command run as the process entrypoint: the code, or the error's message and 1. */
-export function exitWith(run: Promise<number>): void {
-  run.then(
-    (code) => process.exit(code),
-    (err) => {
-      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`)
-      process.exit(1)
-    },
-  )
+/**
+ * Resolves once everything already written to `stream` has left the process.
+ *
+ * A pipe is written asynchronously on macOS and Windows, and `process.exit`
+ * does not wait for it. A command that printed more than the pipe holds
+ * (64 KB on macOS) and exited at once was cut off mid-output with exit 0:
+ * `init --print-sql | mysql` applied half a schema. An empty write queues
+ * behind whatever is pending, so its callback is the signal. A reader that
+ * went away (`| head`) ends the wait too, and its EPIPE is taken here rather
+ * than left to crash the process on the way out.
+ */
+export function flushed(stream: NodeJS.WritableStream): Promise<void> {
+  return new Promise((resolve) => {
+    stream.on('error', () => resolve())
+    stream.write('', () => resolve())
+  })
+}
+
+/** What `exitWith` exits through, replaceable so a test can watch the order. */
+export interface ExitDeps {
+  exit?: (code: number) => void
+  stdout?: NodeJS.WritableStream
+  stderr?: NodeJS.WritableStream
+}
+
+/**
+ * The exit of a command run as the process entrypoint: the code, or the
+ * error's message and 1, in both cases only after its output has been
+ * flushed (see `flushed`).
+ */
+export function exitWith(run: Promise<number>, deps: ExitDeps = {}): Promise<void> {
+  const exit = deps.exit ?? ((code: number) => process.exit(code))
+  const stdout = deps.stdout ?? process.stdout
+  const stderr = deps.stderr ?? process.stderr
+  const leave = async (code: number) => {
+    await Promise.all([flushed(stdout), flushed(stderr)])
+    exit(code)
+  }
+  return run.then(leave, (err) => {
+    stderr.write(`${err instanceof Error ? err.message : String(err)}\n`)
+    return leave(1)
+  })
 }

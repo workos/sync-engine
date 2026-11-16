@@ -8,8 +8,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough, Writable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import type { Destination } from '../src/destination.js'
+import type { SyncEngine } from '../src/engine.js'
+import type { DiffResult } from '../src/sync/reconcile.js'
 import {
   invokedDirectly,
   parseArgs,
@@ -22,7 +25,7 @@ import {
   streamsFromFlags,
 } from '../src/cli/flags.js'
 import { renderHelp } from '../src/cli/help.js'
-import { runCli, type CliSpec } from '../src/cli/run.js'
+import { exitWith, runCli, type CliSpec } from '../src/cli/run.js'
 import { TEST_CA_PEM } from './helpers/ca.js'
 
 const spec: CliSpec<unknown, Destination> = {
@@ -173,10 +176,17 @@ describe('the CA certificate', () => {
   const pem = TEST_CA_PEM
   const parse = (value: string | undefined) => parseSslCa(value, 'WORKOS_SYNC_TEST_TLS_CA')
 
-  it('leaves the driver defaults in place when unset or empty', () => {
+  it('leaves the driver defaults in place when unset', () => {
     expect(parse(undefined)).toBeUndefined()
-    expect(parse('')).toBeUndefined()
-    expect(parse('  ')).toBeUndefined()
+  })
+
+  it('refuses a value that is set but empty, which is what a mistyped path leaves behind', () => {
+    // `VAR="$(cat /wrong/path)"`. Read as unset, the verification that was
+    // asked for is dropped without a word, and with a driver that only uses
+    // TLS when given a CA, so is the encryption.
+    for (const empty of ['', '  ', '\n']) {
+      expect(() => parse(empty)).toThrow(/invalid WORKOS_SYNC_TEST_TLS_CA: set but empty/)
+    }
   })
 
   it('accepts PEM as is, and a bundle of several certificates', () => {
@@ -261,5 +271,125 @@ describe('commands that need no database', () => {
   it('prints the DDL for init --print-sql through the spec, with the flags', async () => {
     expect(await runCli(spec, ['init', '--print-sql', '--streams', 'users', '--schema', 'mirror'])).toBe(0)
     expect(out.join('')).toBe('-- users into mirror\n')
+  })
+})
+
+describe('commands run against an engine', () => {
+  let out: string[]
+  let err: string[]
+  beforeEach(() => {
+    out = []
+    err = []
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      out.push(String(chunk))
+      return true
+    }) as typeof process.stdout.write)
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      err.push(String(chunk))
+      return true
+    }) as typeof process.stderr.write)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const diff = (over: Partial<DiffResult> = {}): DiffResult => ({
+    stream: 'users',
+    matched: 0,
+    localOnly: [],
+    remoteOnly: [],
+    pages: 1,
+    complete: true,
+    ...over,
+  })
+  const reconciling = (...diffs: DiffResult[]) =>
+    ({
+      reconcile: async () => ({ freshness: {}, diffs: { prod: diffs } }),
+      close: async () => {},
+    }) as unknown as SyncEngine
+
+  it('exits 0 for a clean reconcile and 2 for drift, unless the drift was repaired', async () => {
+    expect(await runCli(spec, ['reconcile'], { engine: reconciling(diff()) })).toBe(0)
+    const drifted = diff({ localOnly: ['user_01'] })
+    expect(await runCli(spec, ['reconcile'], { engine: reconciling(drifted) })).toBe(2)
+    expect(await runCli(spec, ['reconcile', '--repair'], { engine: reconciling(drifted) })).toBe(0)
+  })
+
+  it('exits 1 when a stream failed: nothing about it was checked', async () => {
+    // Before this, a run in which every stream was refused by the database
+    // exited 0, and a scheduled check read that as a clean mirror.
+    const failed = diff({ complete: false, failed: true, skippedReason: 'failed: Error: DDL command denied' })
+    expect(await runCli(spec, ['reconcile'], { engine: reconciling(failed) })).toBe(1)
+    // Whatever the other streams found, and whether or not it was repaired.
+    const drifted = diff({ stream: 'organizations', localOnly: ['org_01'] })
+    expect(await runCli(spec, ['reconcile'], { engine: reconciling(drifted, failed) })).toBe(1)
+    expect(await runCli(spec, ['reconcile', '--repair'], { engine: reconciling(failed) })).toBe(1)
+  })
+
+  it('still exits 0 for a stream a page budget left for a later slice', async () => {
+    const waiting = diff({ complete: false, pages: 0, skippedReason: 'page budget spent before this stream' })
+    const oversized = diff({ complete: false, oversized: true })
+    expect(await runCli(spec, ['reconcile', '--max-pages', '1'], { engine: reconciling(waiting, oversized) })).toBe(0)
+  })
+
+  it('says on stderr when status found no mirror, and keeps stdout to the JSON', async () => {
+    const reporting = (initialized: boolean) =>
+      ({ status: async () => ({ prod: { initialized } }), close: async () => {} }) as unknown as SyncEngine
+
+    expect(await runCli(spec, ['status'], { engine: reporting(false) })).toBe(0)
+    expect(JSON.parse(out.join(''))).toEqual({ prod: { initialized: false } })
+    expect(err.join('')).toContain('run init')
+
+    out.length = 0
+    err.length = 0
+    expect(await runCli(spec, ['status'], { engine: reporting(true) })).toBe(0)
+    expect(err.join('')).toBe('')
+  })
+})
+
+describe('the exit', () => {
+  it('waits for output already written before it exits', async () => {
+    // A pipe is written asynchronously on macOS: `process.exit` straight
+    // after a large write cut `init --print-sql | cat` off at 64 KB.
+    const order: string[] = []
+    const slow = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        setTimeout(() => {
+          if (chunk.length > 0) order.push('written')
+          callback()
+        }, 20)
+      },
+    })
+    slow.write('x'.repeat(100_000))
+    await exitWith(Promise.resolve(0), {
+      exit: (code) => order.push(`exit ${code}`),
+      stdout: slow,
+      stderr: new PassThrough(),
+    })
+    expect(order).toEqual(['written', 'exit 0'])
+  })
+
+  it('prints a failure and exits 1, without waiting on a reader that went away', async () => {
+    const order: string[] = []
+    const printed: string[] = []
+    // `| head`: the reader closed, and every write now fails with EPIPE.
+    const gone = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))
+      },
+    })
+    const stderr = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        printed.push(String(chunk))
+        callback()
+      },
+    })
+    await exitWith(Promise.reject(new Error('boom')), {
+      exit: (code) => order.push(`exit ${code}`),
+      stdout: gone,
+      stderr,
+    })
+    expect(printed.join('')).toBe('boom\n')
+    expect(order).toEqual(['exit 1'])
   })
 })
