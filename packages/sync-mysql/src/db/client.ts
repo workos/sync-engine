@@ -17,6 +17,7 @@
  *   lock under this level, so a competing writer cannot slip a newer row in
  *   between the read and the write. See `db/upsert.ts`.
  */
+import { isIP } from 'node:net'
 import type { Logger } from '@workos/sync-engine'
 
 /**
@@ -184,7 +185,8 @@ export interface ConnectOptions {
   /**
    * PEM-encoded CA certificate(s) the server's certificate must chain to.
    * TLS is then required and the certificate verified against this CA and
-   * the host name in the connection string.
+   * the DNS host name in the connection string. IP-address URLs are refused
+   * because mysql2 does not verify their identity correctly.
    */
   sslCa?: string
   /** Where a connection the server closed while idle is reported, at warn level. */
@@ -231,6 +233,26 @@ export function poolConfig(databaseUrl: string, options: ConnectOptions = {}): R
 }
 
 /**
+ * mysql2 3.24.6 omits both `host` and `servername` from its TLS options for
+ * an IP literal. Node then verifies `localhost`: a matching IP SAN fails,
+ * while a certificate for localhost passes for any IP. Until the driver
+ * verifies the actual address, refuse these URLs before opening a socket.
+ * A DNS hostname is verified normally; an explicit verification opt-out
+ * remains the caller's choice. Match mysql2's decoding of IPv6 URL hosts.
+ */
+function requireTlsHostname(databaseUrl: string, ssl: Record<string, unknown>): void {
+  if (ssl['rejectUnauthorized'] === false || !ssl['verifyIdentity']) return
+  const hostname = new URL(databaseUrl).hostname
+  const host = decodeURIComponent(hostname.startsWith('[') ? hostname.slice(1, -1) : hostname)
+  if (isIP(host)) {
+    throw new Error(
+      'verified MySQL TLS requires a DNS hostname: mysql2 cannot verify IP-address hosts correctly; ' +
+        "use the server certificate's DNS hostname in databaseUrl",
+    )
+  }
+}
+
+/**
  * The TLS settings to hand mysql2 beside the connection string, or
  * undefined to leave what the string itself says alone.
  *
@@ -252,7 +274,11 @@ export function poolConfig(databaseUrl: string, options: ConnectOptions = {}): R
  * mysql2 profile) is the driver's business and is left alone.
  */
 export function sslConfig(databaseUrl: string, options: ConnectOptions = {}): Record<string, unknown> | undefined {
-  if (options.sslCa !== undefined) return { ca: options.sslCa, rejectUnauthorized: true, verifyIdentity: true }
+  if (options.sslCa !== undefined) {
+    const ssl = { ca: options.sslCa, rejectUnauthorized: true, verifyIdentity: true }
+    requireTlsHostname(databaseUrl, ssl)
+    return ssl
+  }
   const raw = new URL(databaseUrl).searchParams.get('ssl')
   if (raw === null) return undefined
   let parsed: unknown
@@ -263,8 +289,13 @@ export function sslConfig(databaseUrl: string, options: ConnectOptions = {}): Re
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
   const fromUrl = parsed as Record<string, unknown>
-  if (fromUrl['rejectUnauthorized'] === false || fromUrl['verifyIdentity'] !== undefined) return undefined
-  return { ...fromUrl, verifyIdentity: true }
+  if (fromUrl['rejectUnauthorized'] === false || fromUrl['verifyIdentity'] !== undefined) {
+    requireTlsHostname(databaseUrl, fromUrl)
+    return undefined
+  }
+  const ssl = { ...fromUrl, verifyIdentity: true }
+  requireTlsHostname(databaseUrl, ssl)
+  return ssl
 }
 
 export async function connect(databaseUrl: string, options: ConnectOptions = {}): Promise<SqlClient> {

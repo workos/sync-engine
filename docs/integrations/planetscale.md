@@ -269,9 +269,17 @@ not only chain to a trusted root. `mysql2` checks the chain but not the
 host name unless it is told to, and 0.1.0 did not tell it: with the
 operating system's bundle as the CA, any publicly trusted certificate
 passed, for any host. Later releases turn the check on for both settings.
+Use the DNS hostname PlanetScale issued. Verified connections refuse IP
+addresses (IPv4 or IPv6) before connecting: mysql2 checks `localhost`
+instead of the requested IP, so even a certificate with a matching IP
+address cannot be verified correctly.
+
 To reach a server through a tunnel, where the host name is not the
-server's, say so in the connection string with
-`ssl={"rejectUnauthorized":true,"verifyIdentity":false}`.
+server's, an explicit opt-out is
+`ssl={"rejectUnauthorized":true,"verifyIdentity":false}`. That retains the
+chain check but disables identity verification. It applies only when
+`WORKOS_SYNC_MYSQL_SSL_CA` is unset; the CA variable always requires
+verification and takes precedence over the URL.
 
 ### Verify the endpoint
 

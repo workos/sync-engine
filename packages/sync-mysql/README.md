@@ -101,6 +101,15 @@ the same setting, the flag wins.
 | `WORKOS_SYNC_MYSQL_SSL_CA`           | none                                | CA certificate the database's certificate must chain to, as PEM or base64 of it. TLS is then required, and the certificate verified against it and the host name. Without it the connection uses TLS only when the connection string has an `ssl` parameter. Set but empty is refused. |
 | `LOG_LEVEL`                          | `info`                              | `debug`, `info`, `warn`, `error` or `silent`. Logs are JSON lines on stdout.                                                                                                                                                                                                           |
 
+Verified TLS requires a DNS hostname in `DATABASE_URL`. IP-address URLs
+(IPv4 or IPv6) are refused before connecting: mysql2 currently checks
+`localhost` instead of the requested IP, even when the certificate has a
+matching IP address. Use the server certificate's DNS hostname. This applies
+to both `WORKOS_SYNC_MYSQL_SSL_CA` and verified TLS in the URL's `ssl`
+parameter. Plaintext connections and an explicit `"verifyIdentity":false`
+in that parameter remain available; the CA variable always requires
+verification and takes precedence over the URL.
+
 The user the sync connects as needs `CREATE` on the server the first time (to
 create the database), and `CREATE`, `ALTER`, `INDEX`, `CREATE VIEW`,
 `CREATE TEMPORARY TABLES`, `SELECT`, `INSERT`, `UPDATE` and `DELETE` on the

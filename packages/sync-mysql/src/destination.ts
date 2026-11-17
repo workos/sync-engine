@@ -42,10 +42,11 @@ export interface MysqlDestinationOptions {
   /**
    * PEM-encoded CA certificate(s) the server's certificate must chain to,
    * for a database whose certificate a public CA did not issue. TLS is then
-   * required and the certificate verified against this CA and the host
-   * name in `databaseUrl`. Only with `databaseUrl`: a pre-built `db` brings
-   * its own TLS settings, which is also the way to reach a server through a
-   * tunnel, where the host name is not the server's.
+   * required and the certificate verified against this CA and the DNS host
+   * name in `databaseUrl`. IP-address URLs are refused because mysql2 does
+   * not verify their identity correctly. Only with `databaseUrl`: a
+   * pre-built `db` brings its own TLS settings, which is also the way to
+   * reach a server through a tunnel, where the host name is not the server's.
    * `WORKOS_SYNC_MYSQL_SSL_CA` on the CLI.
    */
   sslCa?: string
