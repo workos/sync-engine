@@ -28,6 +28,12 @@ export interface HelpSpec {
    * says so here, so the help does not promise verification it will not do.
    */
   tlsCaDefault?: string
+  /**
+   * True when `status` only reads: the destination implements `ready()`, so
+   * the engine asks whether the mirror is there instead of running `init`.
+   * Without it `status` sets the mirror up first, and the help says that.
+   */
+  statusReadsOnly?: boolean
   /** The `init` command: its usage and the lines describing it. */
   init: HelpRow
   /** The flags that say where the mirror lives: `--schema`, or `--database` and `--prefix`. */
@@ -89,7 +95,12 @@ ${command('refresh [--resume] [--max-pages <n>]', [
   '--max-pages and --resume slice it like backfill, with',
   'which it shares checkpoints',
 ])}
-${command('status', ['Cursor position, poll age, and per-stream freshness;', 'reads only, and says so when the mirror is not there'])}
+${command('status', [
+  'Cursor position, poll age, and per-stream freshness;',
+  spec.statusReadsOnly
+    ? 'reads only, and says so when the mirror is not there'
+    : 'sets the mirror up first, as init does, if it is not there',
+])}
 ${command('redact --user <id>', ['Delete one subject from the mirror and event archive'])}
 ${command('rejected', ['Show events quarantined by the tail; exits 2 if there are any'])}
 ${command('         --replay', ['Re-apply them all (or one with --id <event_id>) once the cause is fixed'])}

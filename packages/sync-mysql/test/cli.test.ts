@@ -24,6 +24,8 @@ describe('init --repair', () => {
     expect(help).toContain('reconcile [--repair] [--resume] [--max-pages <n>] [--exclude-streams <a,b>]')
     expect(help).toContain('WORKOS_SYNC_MYSQL_SSL_CA')
     expect(help).not.toContain('Postgres')
+    // True here because `MysqlDestination` implements `ready()`.
+    expect(help).toContain('reads only, and says so when the mirror is not there')
   })
 })
 

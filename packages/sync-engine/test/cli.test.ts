@@ -240,6 +240,17 @@ describe('help', () => {
     expect(help).toContain('replacing each row')
     expect(help).toContain('WORKOS_SYNC_MAX_EVENTS_PER_TICK\n                               Events to apply per poll')
   })
+
+  it('promises a read-only status only for a destination that says it has one', () => {
+    // Without `ready()` the engine runs `init` before it reads, so the
+    // shared text must not tell every destination's user that it will not.
+    const plain = renderHelp(spec)
+    expect(plain).toContain('sets the mirror up first, as init does, if it is not there')
+    expect(plain).not.toContain('reads only')
+    const readOnly = renderHelp({ ...spec, statusReadsOnly: true })
+    expect(readOnly).toContain('reads only, and says so when the mirror is not there')
+    expect(readOnly).not.toContain('sets the mirror up first')
+  })
 })
 
 describe('commands that need no database', () => {

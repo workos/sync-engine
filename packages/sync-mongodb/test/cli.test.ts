@@ -26,6 +26,9 @@ describe('init --repair', () => {
     expect(help).toContain('WORKOS_SYNC_MONGODB_TLS_CA')
     expect(help).not.toContain('--print-sql')
     expect(help).not.toContain('Postgres')
+    // `status` runs `init` first here: this destination has no `ready()`.
+    expect(help).not.toContain('reads only')
+    expect(help).toContain('sets the mirror up first')
   })
 })
 
