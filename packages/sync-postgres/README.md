@@ -25,6 +25,8 @@ command, and re-exports the engine from
 [`@workos/sync-engine`](https://www.npmjs.com/package/@workos/sync-engine),
 so it is the only package you need for Postgres.
 
+The container image, `ghcr.io/workos/sync-postgres`, runs Node.js 24.22.3.
+
 ## Command line
 
 ```bash
