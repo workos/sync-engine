@@ -37,7 +37,7 @@ import {
   jsonEqual,
 } from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
-import { quoteIdent, safeIdentifier, ENV, RAW } from '../schema/ddl.js'
+import { qualified, quoteIdent, safeIdentifier, ENV, RAW, type SchemaRef } from '../schema/ddl.js'
 
 /** Shallow merge: the jsonb `||` of the Postgres destination. */
 const merge = (stored: Record<string, unknown>, incoming: Record<string, unknown>): Record<string, unknown> => ({
@@ -48,7 +48,8 @@ const merge = (stored: Record<string, unknown>, incoming: Record<string, unknown
 const later = (a: Date | null, b: Date): Date => (a !== null && a.getTime() > b.getTime() ? a : b)
 
 export interface WriteOptions {
-  schema: string
+  /** The database, or the database and the table prefix; see `Target`. */
+  schema: SchemaRef
   batchSize?: number
 }
 
@@ -65,8 +66,7 @@ interface Pending {
   deletedAt: Date | null
 }
 
-const tableRef = (opts: WriteOptions, stream: TableDef) =>
-  `${quoteIdent(opts.schema)}.${quoteIdent(safeIdentifier(stream.name))}`
+const tableRef = (opts: WriteOptions, stream: TableDef) => qualified(opts.schema, stream.name)
 
 /**
  * The stored rows for `keys`, locked for the rest of the transaction, by

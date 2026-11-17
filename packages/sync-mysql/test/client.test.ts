@@ -9,6 +9,7 @@ import {
   type PoolLike,
 } from '../src/db/client.js'
 import { describeDb, TEST_MYSQL_URL } from './helpers/mysql.js'
+import { TEST_CA_PEM } from './helpers/ca.js'
 
 describe('poolConfig', () => {
   it('hands the connection string to mysql2 with the driver reading and writing UTC', () => {
@@ -38,8 +39,87 @@ describe('poolConfig', () => {
     expect(APPLICATION_NAME).toBe('workos-sync-engine')
   })
 
-  it('requires TLS and verifies against the CA when one is given', () => {
-    expect(poolConfig('mysql://h/db', { sslCa: 'pem' })['ssl']).toEqual({ ca: 'pem', rejectUnauthorized: true })
+  it('requires TLS and verifies the chain and the host name when a CA is given', () => {
+    // mysql2 checks the host name only when `verifyIdentity` is on. Without
+    // it, any certificate the CA ever issued passed, for any host.
+    expect(poolConfig('mysql://h/db', { sslCa: 'pem' })['ssl']).toEqual({
+      ca: 'pem',
+      rejectUnauthorized: true,
+      verifyIdentity: true,
+    })
+  })
+
+  it('adds the host name check to an ssl object in the connection string', () => {
+    const ssl = (query: string) => poolConfig(`mysql://u:p@h/db?ssl=${query}`)['ssl']
+    // What PlanetScale's connection strings end with.
+    expect(ssl('{"rejectUnauthorized":true}')).toEqual({ rejectUnauthorized: true, verifyIdentity: true })
+    expect(ssl('{}')).toEqual({ verifyIdentity: true })
+    expect(ssl('{"minVersion":"TLSv1.3"}')).toEqual({ minVersion: 'TLSv1.3', verifyIdentity: true })
+  })
+
+  it('leaves the connection string alone when it says what it wants, or is not an object', () => {
+    const ssl = (query: string) => poolConfig(`mysql://u:p@h/db?ssl=${query}`)['ssl']
+    // Verification turned off, or the host name check declined (a tunnel).
+    expect(ssl('{"rejectUnauthorized":false}')).toBeUndefined()
+    expect(ssl('{"rejectUnauthorized":true,"verifyIdentity":false}')).toBeUndefined()
+    // A named mysql2 profile, a bare boolean, and something unparseable.
+    expect(ssl('Amazon%20RDS')).toBeUndefined()
+    expect(ssl('true')).toBeUndefined()
+    expect(ssl('{oops')).toBeUndefined()
+    // And the string itself is still handed over unchanged.
+    expect(poolConfig('mysql://u:p@h/db?ssl={"rejectUnauthorized":false}')['uri']).toContain('rejectUnauthorized')
+  })
+
+  it('lets the CA win when the connection string has an ssl parameter too', () => {
+    expect(poolConfig('mysql://h/db?ssl={"rejectUnauthorized":false}', { sslCa: 'pem' })['ssl']).toEqual({
+      ca: 'pem',
+      rejectUnauthorized: true,
+      verifyIdentity: true,
+    })
+  })
+
+  it.each(['127.0.0.1', '[::1]', '[::ffff:127.0.0.1]'])('refuses verified TLS to the IP host %s', (host) => {
+    const url = `mysql://u:p@${host}/db`
+    const error = /verified MySQL TLS requires a DNS hostname/
+    expect(() => poolConfig(url, { sslCa: TEST_CA_PEM })).toThrow(error)
+    for (const ssl of [{}, { rejectUnauthorized: true }, { verifyIdentity: true }]) {
+      expect(() => poolConfig(`${url}?ssl=${JSON.stringify(ssl)}`)).toThrow(error)
+    }
+    // A URL opt-out cannot override the verification the explicit CA asks for.
+    expect(() => poolConfig(`${url}?ssl={"verifyIdentity":false}`, { sslCa: TEST_CA_PEM })).toThrow(error)
+  })
+
+  it('recognises a percent-encoded IP host the same way mysql2 does', () => {
+    expect(() => poolConfig('mysql://%31%32%37.0.0.1/db?ssl={}')).toThrow(/requires a DNS hostname/)
+  })
+
+  it.each(['127.0.0.1', '[::1]'])('keeps plaintext and explicit verification opt-outs for %s', (host) => {
+    const url = `mysql://u:p@${host}/db`
+    expect(poolConfig(url)['ssl']).toBeUndefined()
+    for (const ssl of [
+      { verifyIdentity: false },
+      { rejectUnauthorized: true, verifyIdentity: false },
+      { rejectUnauthorized: false, verifyIdentity: true },
+    ]) {
+      const uri = `${url}?ssl=${JSON.stringify(ssl)}`
+      // mysql2 receives the caller's settings unchanged.
+      expect(poolConfig(uri)).toMatchObject({ uri: withoutDatabase(uri) })
+      expect(poolConfig(uri)['ssl']).toBeUndefined()
+    }
+  })
+
+  it('keeps identity verification enabled for DNS hosts', () => {
+    expect(poolConfig('mysql://localhost/db', { sslCa: TEST_CA_PEM })['ssl']).toMatchObject({
+      rejectUnauthorized: true,
+      verifyIdentity: true,
+    })
+    expect(poolConfig('mysql://db.example.com/db?ssl={}')['ssl']).toEqual({ verifyIdentity: true })
+  })
+
+  it('refuses an IP before connect returns a pool that could send credentials', async () => {
+    await expect(connect('mysql://u:p@127.0.0.1/db', { sslCa: TEST_CA_PEM })).rejects.toThrow(
+      /use the server certificate's DNS hostname in databaseUrl/,
+    )
   })
 
   it('puts every new session in UTC', () => {
@@ -128,6 +208,41 @@ describe('fromPool', () => {
       'rollback to savepoint workos_sync_tx_1',
       'release savepoint workos_sync_tx_1',
       'commit',
+      'release',
+    ])
+  })
+
+  it('begins its own transaction on a pinned connection that has none open', async () => {
+    const { pool, log } = fakePool()
+    const db = fromPool(pool)
+    await db.pinned(async (conn) => {
+      await conn.exec('create temporary table t (x int)')
+      // A savepoint here would be outside any transaction and protect
+      // nothing, so the pinned connection begins and commits one itself.
+      await conn.transaction(async (tx) => {
+        await tx.query('select 1')
+        await tx.transaction(async (inner) => {
+          await inner.query('update t set x = 2')
+        })
+      })
+      await expect(
+        conn.transaction(async () => {
+          throw new Error('boom')
+        }),
+      ).rejects.toThrow('boom')
+      await conn.exec('drop temporary table t')
+    })
+    expect(log).toEqual([
+      'create temporary table t (x int)',
+      'begin',
+      'select 1',
+      'savepoint workos_sync_tx_1',
+      'update t set x = 2',
+      'release savepoint workos_sync_tx_1',
+      'commit',
+      'begin',
+      'rollback',
+      'drop temporary table t',
       'release',
     ])
   })

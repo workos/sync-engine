@@ -103,9 +103,9 @@ timing assumptions in the tests rather than anything Atlas does.
 export DATABASE_URL='mongodb+srv://USER:PASSWORD@CLUSTER.xxxxx.mongodb.net/'
 export WORKOS_API_KEY=sk_...
 
-npx workos-sync-mongodb init
-npx workos-sync-mongodb backfill
-npx workos-sync-mongodb listen
+npx @workos/sync-mongodb init
+npx @workos/sync-mongodb backfill
+npx @workos/sync-mongodb listen
 ```
 
 The [container image](../../README.md#against-a-real-environment) and the

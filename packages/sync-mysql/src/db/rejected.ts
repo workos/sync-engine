@@ -8,15 +8,16 @@
  */
 import type { RejectedEvent, WorkOSEvent } from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
-import { quoteIdent } from '../schema/ddl.js'
+import { qualified, type SchemaRef } from '../schema/ddl.js'
 import { iso } from './lease.js'
 
 export interface RejectedOptions {
-  schema: string
+  /** The database, or the database and the table prefix; see `Target`. */
+  schema: SchemaRef
   syncId: string
 }
 
-const table = (schema: string) => `${quoteIdent(schema)}.\`_rejected\``
+const table = (schema: SchemaRef) => qualified(schema, '_rejected')
 
 /** The event's `created_at` as a `Date`, or null: a quarantine write must never fail on the data it is quarantining. */
 function createdAt(value: unknown): Date | null {

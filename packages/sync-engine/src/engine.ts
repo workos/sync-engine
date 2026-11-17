@@ -50,6 +50,13 @@ import type {
 import { addStats, emptyStats, DEFAULT_HYDRATE } from './types.js'
 
 export interface EnvironmentStatus {
+  /**
+   * Whether the mirror's tables are there to read. False means `init` has not
+   * run against this database, or not for every selected stream: `status`
+   * read nothing and created nothing, and every other field is empty. Always
+   * true for a destination that cannot tell without applying the schema.
+   */
+  initialized: boolean
   /** Last processed event id. Null until the first event is applied. */
   cursor: string | null
   /** Bootstrap position recorded by captureCursor, used until a cursor exists. */
@@ -922,6 +929,7 @@ export class SyncEngine {
             remoteOnly: [],
             pages: progress.pages,
             complete: false,
+            failed: true,
             skippedReason: `failed: ${String(cause)}`,
           }
         }
@@ -1069,13 +1077,43 @@ export class SyncEngine {
     return out
   }
 
+  /**
+   * A report, so it changes nothing. A destination that can say whether the
+   * mirror is there (`ready`) is asked, and when it is not, every environment
+   * comes back `initialized: false` with nothing read: a status check against
+   * an empty database must not be what creates the mirror, and one run with
+   * a read-only credential must not fail on DDL. A destination without
+   * `ready` gets the schema applied first, as every other command does.
+   */
   async status(): Promise<Record<string, EnvironmentStatus>> {
-    await this.init()
     const out: Record<string, EnvironmentStatus> = {}
+    if (this.destination.ready) {
+      if (!(await this.destination.ready(this.streams, this.logger))) {
+        for (const env of this.config.environments) {
+          out[env.name] = {
+            initialized: false,
+            cursor: null,
+            rangeStart: null,
+            started: false,
+            cursorAgeDays: null,
+            lastPolledAt: null,
+            pollAgeSeconds: null,
+            lease: null,
+            rejected: 0,
+            oversized: [],
+            streams: [],
+          }
+        }
+        return out
+      }
+    } else {
+      await this.init()
+    }
     for (const env of this.config.environments) {
       const tail = await this.state.getTail(env.name)
       const polled = tail?.lastPolledAt ? Date.parse(tail.lastPolledAt) : NaN
       out[env.name] = {
+        initialized: true,
         cursor: tail?.cursor ?? null,
         // Set before the first event arrives; the tail bootstraps from here.
         rangeStart: tail?.rangeStart ?? null,

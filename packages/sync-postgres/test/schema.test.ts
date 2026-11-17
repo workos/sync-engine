@@ -7,6 +7,7 @@ import { GENERATED_BY, isViewStatement, liveViewName, liveViewSql } from '../src
 import { STREAMS, streamByName } from '@workos/sync-engine'
 import type { Logger, StreamDef } from '@workos/sync-engine'
 import type { SqlClient } from '../src/db/client.js'
+import { PostgresDestination } from '../src/destination.js'
 
 /**
  * The fingerprint formula from before `DDL_VERSION` existed, verbatim. A
@@ -308,6 +309,67 @@ describe('live views against real Postgres', () => {
     expect(r.applied).toBe(true)
     expect(await viewNames()).toContain('users_live')
     expect(await viewNames()).toContain('organizations_live')
+  })
+
+  it('trusts a recorded fingerprint, and looks again when a repair forces it to', async () => {
+    const users = streamByName('users')!
+    const has = async (relation: string, column: string) =>
+      (await columnsOf(relation)).some((c) => c.startsWith(`${column}:`))
+    await migrate(db, [users], 'workos')
+    await db.exec(`drop view workos.users_live`)
+    await db.exec(`alter table workos.users drop column last_sign_in_at`)
+
+    // The cheap path every restart takes: one query, nothing looked at.
+    expect((await migrate(db, [users], 'workos')).applied).toBe(false)
+    // A repair that stopped there too was a no-op: `init --repair` printed
+    // `schema ready` over a missing view and a missing column.
+    expect((await migrate(db, [users], 'workos', undefined, { repair: true, repairViews: true })).applied).toBe(false)
+    expect(await viewNames()).not.toContain('users_live')
+
+    const forced = await migrate(db, [users], 'workos', undefined, { repair: true, repairViews: true, force: true })
+    expect(forced).toMatchObject({ applied: true, drift: [] })
+    expect(await viewNames()).toContain('users_live')
+    expect(await has('users', 'last_sign_in_at')).toBe(true)
+    // The view is made after the column is back, so it exposes it.
+    expect(await has('users_live', 'last_sign_in_at')).toBe(true)
+  })
+
+  it('forces that pass once per destination when a repair is asked for', async () => {
+    const users = streamByName('users')!
+    const repairing = () => new PostgresDestination({ db, schema: 'workos', repairColumns: true, repairViews: true })
+    await repairing().init([users])
+    await db.exec(`drop view workos.users_live`)
+
+    // A destination that was not asked to repair takes the cheap path.
+    const plain = new PostgresDestination({ db, schema: 'workos' })
+    await plain.init([users])
+    expect(plain.lastMigration!.applied).toBe(false)
+    expect(await viewNames()).not.toContain('users_live')
+
+    // `init --repair` is a new process, so a new destination: it looks.
+    const destination = repairing()
+    await destination.init([users])
+    expect(destination.lastMigration!.applied).toBe(true)
+    expect(await viewNames()).toContain('users_live')
+    // The engine calls init() before every operation; only the first pays.
+    await destination.init([users])
+    expect(destination.lastMigration!.applied).toBe(false)
+  })
+
+  it('says whether the mirror is there without creating anything', async () => {
+    const users = streamByName('users')!
+    const destination = new PostgresDestination({ db, schema: 'workos' })
+    const schemas = () => db.query(`select 1 from information_schema.schemata where schema_name = 'workos'`)
+
+    // `status` asks this first, so a status check against an empty database
+    // does not create the mirror on its way to reporting there is none.
+    expect(await destination.ready([users])).toBe(false)
+    expect((await schemas()).rows).toEqual([])
+
+    await destination.init([users])
+    expect(await destination.ready([users])).toBe(true)
+    // Not for a stream whose table has yet to be created.
+    expect(await destination.ready([users, streamByName('organizations')!])).toBe(false)
   })
 
   it('reaches a database that was migrated before live views existed', async () => {

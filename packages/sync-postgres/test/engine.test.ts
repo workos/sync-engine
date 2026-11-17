@@ -81,6 +81,19 @@ describe('sync engine', () => {
     return Number(r.rows[0]!.n)
   }
 
+  it('reports an empty database as not initialized, and creates nothing in it', async () => {
+    const engine = makeEngine(db, fake)
+    const before = await engine.status()
+    expect(before['prod']).toMatchObject({ initialized: false, started: false, cursor: null, streams: [] })
+    const schemas = await db.query(`select 1 from information_schema.schemata where schema_name = 'workos'`)
+    expect(schemas.rows).toEqual([])
+
+    await engine.init()
+    const after = await engine.status()
+    expect(after['prod']!.initialized).toBe(true)
+    expect(after['prod']!.streams.map((s) => s.stream)).toContain('users')
+  })
+
   it('backfills existing state, including the field events omit', async () => {
     const org = fake.createOrganization({ name: 'Acme' })
     const user = fake.createUser({ email: 'ada@acme.com' })

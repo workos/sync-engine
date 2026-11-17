@@ -5,13 +5,14 @@
  * in as pages. The engine half — pagination, repair — is covered by the
  * drift and repair cases in engine.test.ts.
  */
-import { it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { diffIdsInMemory, diffStream, streamByName, WorkOSClient } from '@workos/sync-engine'
 import { createTestDb, describeDb, type TestDb } from './helpers/mysql.js'
 import { migrate } from '../src/schema/migrate.js'
 import { upsertRows, deleteRows } from '../src/db/upsert.js'
 import { diffIdsInSql } from '../src/db/reconcile.js'
 import { MysqlDestination } from '../src/destination.js'
+import { fromPool, type PoolLike } from '../src/db/client.js'
 
 const users = streamByName('users')!
 const STREAMS = ['users', 'organizations', 'organization_roles'].map((n) => streamByName(n)!)
@@ -253,5 +254,46 @@ describeDb('diff in sql', () => {
     await expect(destination.diffIds(users, 'prod', failing())).rejects.toThrow('upstream went away')
     const again = await destination.diffIds(users, 'prod', pages([user(1)]))
     expect(again).toMatchObject({ matched: 1, localOnly: [], remoteOnly: [] })
+  })
+})
+
+describe('the reconcile transaction', () => {
+  it('is committed before the first page is asked for, and none is open during the listing', async () => {
+    // PlanetScale ends a transaction 20 seconds after it opens. With one open
+    // for the whole listing, a stream that lists for longer than that could
+    // never be reconciled there. Only the capture of the live ids needs it.
+    const log: string[] = []
+    const answer = async (sql: string): Promise<[unknown, unknown]> => {
+      log.push(sql.trim().split(/\s+/).slice(0, 3).join(' '))
+      if (sql.trim().startsWith('select count(*)')) return [[{ n: 0 }], []]
+      if (sql.trim().startsWith('select')) return [[], []]
+      return [{ affectedRows: 0 }, undefined]
+    }
+    const pool: PoolLike = {
+      query: answer,
+      getConnection: async () => ({ query: answer, release: () => log.push('release') }),
+      end: async () => {},
+    }
+    async function* remote() {
+      log.push('first page requested')
+      yield [user(1)]
+      log.push('second page requested')
+      yield [user(2)]
+    }
+
+    const diff = await diffIdsInSql(fromPool(pool), { schema: 'workos' }, users, 'prod', remote())
+    expect(diff).toMatchObject({ matched: 0, localOnly: [], skipped: 0 })
+
+    const begin = log.indexOf('begin')
+    const commit = log.indexOf('commit')
+    const firstPage = log.indexOf('first page requested')
+    expect(begin).toBeGreaterThan(-1)
+    expect(commit).toBeGreaterThan(begin)
+    expect(firstPage).toBeGreaterThan(commit)
+    // Nothing reopens one afterwards, and the staging tables are still made
+    // and dropped on the one pinned connection.
+    expect(log.slice(commit + 1).filter((l) => l === 'begin' || l.startsWith('savepoint'))).toEqual([])
+    expect(log.filter((l) => l === 'release')).toHaveLength(1)
+    expect(log[log.length - 1]).toBe('release')
   })
 })

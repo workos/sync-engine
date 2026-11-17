@@ -22,6 +22,8 @@ describe('init --repair', () => {
       spy.mockRestore()
     }
     expect(out.join('')).toContain('init [--repair]')
+    // True here because `PostgresDestination` implements `ready()`.
+    expect(out.join('')).toContain('reads only, and says so when the mirror is not there')
   })
 })
 

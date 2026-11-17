@@ -152,9 +152,9 @@ idempotent, and the second pass completes what the first could not.
 export DATABASE_URL='https://default:PASSWORD@abc123.us-east1.gcp.clickhouse.cloud:8443'
 export WORKOS_API_KEY=sk_...
 
-npx workos-sync-clickhouse init
-npx workos-sync-clickhouse backfill
-npx workos-sync-clickhouse listen
+npx @workos/sync-clickhouse init
+npx @workos/sync-clickhouse backfill
+npx @workos/sync-clickhouse listen
 ```
 
 The [container image](../../README.md#against-a-real-environment) and the

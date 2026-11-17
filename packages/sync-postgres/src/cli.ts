@@ -61,6 +61,8 @@ export const spec: CliSpec<SqlClient, PostgresDestination> = {
   rowNoun: 'row',
   connection: 'Postgres connection string',
   tlsCaVar: 'WORKOS_SYNC_PG_SSL_CA',
+  // `PostgresDestination.ready()` answers without applying anything.
+  statusReadsOnly: true,
   serviceName: 'workos-sync-postgres',
   init: {
     name: 'init [--repair] [--print-sql]',

@@ -117,14 +117,21 @@ function isCertificateBundle(text: string): boolean {
  * variable `name` (`WORKOS_SYNC_PG_SSL_CA`, say): PEM, or the PEM encoded as
  * base64 for a secret store that cannot hold a multi-line value. A PEM whose
  * newlines arrived as the two characters `\n` is straightened out, since
- * that is how some hosts hand back a pasted certificate. Unset or empty
- * means the driver's own defaults. Every certificate in the value is parsed,
- * so a truncated or damaged one is refused here rather than handed to the
- * driver, where it would surface as a handshake failure against the server
- * and read as the server's fault rather than the configuration's.
+ * that is how some hosts hand back a pasted certificate. Unset means the
+ * driver's own defaults. Set but empty is refused: it is what a mistyped
+ * path leaves behind (`VAR="$(cat /wrong/path)"`), and treating it as unset
+ * would drop the verification that was asked for, and with a driver that
+ * only uses TLS when given a CA, the encryption too, without a word. Every
+ * certificate in the value is parsed, so a truncated or damaged one is
+ * refused here rather than handed to the driver, where it would surface as
+ * a handshake failure against the server and read as the server's fault
+ * rather than the configuration's.
  */
 export function parseSslCa(value: string | undefined, name = 'the CA certificate'): string | undefined {
-  if (!value || !value.trim()) return undefined
+  if (value === undefined) return undefined
+  if (!value.trim()) {
+    throw new Error(`invalid ${name}: set but empty; unset it, or give it one or more PEM certificates`)
+  }
   const v = value.trim().replace(/\\n/g, '\n')
   if (isCertificateBundle(v)) return v
   const decoded = Buffer.from(v, 'base64').toString('utf8')

@@ -259,7 +259,8 @@ column keeps the old projection, and nothing fails, because the engine only
 ever writes `_raw`. That is **column drift**: a generated column that no longer
 matches the catalog.
 
-`init` (and every engine method, since each applies the schema first) checks
+`init` (and every engine method but `status`, since each applies the schema
+first) checks
 for it whenever the catalog fingerprint is new. It builds the catalog's columns
 on a temp table, reads that and the live table back through `pg_get_expr`, and
 compares. Three kinds are reported:
@@ -276,8 +277,8 @@ fingerprint**, so every start keeps reporting it until it is fixed. Ingest
 carries on meanwhile: `_raw` is still right, only the projection is stale.
 
 ```bash
-npx workos-sync-postgres init            # report; exits 2 on drift
-npx workos-sync-postgres init --repair   # rebuild drifted columns from _raw
+npx @workos/sync-postgres init            # report; exits 2 on drift
+npx @workos/sync-postgres init --repair   # rebuild drifted columns from _raw
 ```
 
 The same flag also rebuilds a generated `_live` view that can no longer be

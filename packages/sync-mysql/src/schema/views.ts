@@ -16,13 +16,17 @@
  */
 import type { Logger, TableDef } from '@workos/sync-engine'
 import type { SqlClient } from '../db/client.js'
-import { quoteIdent, safeIdentifier } from './identifiers.js'
+import { objectName, qualified, quoteIdent, safeIdentifier, target, type SchemaRef } from './identifiers.js'
 
 export const LIVE_VIEW_SUFFIX = '_live'
 
-/** `<stream>_live`, shortened the same way table names are. */
-export function liveViewName(stream: TableDef): string {
-  return safeIdentifier(`${stream.name}${LIVE_VIEW_SUFFIX}`)
+/**
+ * `<stream>_live`, shortened the same way table names are, and prefixed the
+ * same way when it is asked for the name in a prefixed mirror.
+ */
+export function liveViewName(stream: TableDef, ref?: SchemaRef): string {
+  const name = `${stream.name}${LIVE_VIEW_SUFFIX}`
+  return ref === undefined ? safeIdentifier(name) : objectName(ref, name)
 }
 
 /**
@@ -30,12 +34,12 @@ export function liveViewName(stream: TableDef): string {
  * no `_deleted_at` column, so there is nothing to filter and a view would
  * only suggest there was.
  */
-export function liveViewSql(stream: TableDef, schema: string): string[] {
+export function liveViewSql(stream: TableDef, ref: SchemaRef): string[] {
   if (stream.mode === 'append') return []
-  const s = quoteIdent(schema)
-  const table = quoteIdent(safeIdentifier(stream.name))
-  const view = quoteIdent(liveViewName(stream))
-  return [`create or replace view ${s}.${view} as select * from ${s}.${table} where \`_deleted_at\` is null`]
+  const view = `${quoteIdent(target(ref).schema)}.${quoteIdent(liveViewName(stream, ref))}`
+  return [
+    `create or replace view ${view} as select * from ${qualified(ref, stream.name)} where \`_deleted_at\` is null`,
+  ]
 }
 
 export interface ApplyViewOptions {
@@ -94,18 +98,20 @@ async function columnsOf(db: SqlClient, schema: string, name: string): Promise<s
 export async function applyLiveView(
   db: SqlClient,
   stream: TableDef,
-  schema: string,
+  ref: SchemaRef,
   logger: Logger | undefined,
   options: ApplyViewOptions = {},
 ): Promise<boolean> {
-  const [sql] = liveViewSql(stream, schema)
+  const [sql] = liveViewSql(stream, ref)
   if (!sql) return false
-  const name = liveViewName(stream)
-  const table = safeIdentifier(stream.name)
+  // The names as `information_schema` and the stored definition have them.
+  const { schema } = target(ref)
+  const name = liveViewName(stream, ref)
+  const table = objectName(ref, stream.name)
   const existing = await describe(db, schema, name)
   if (existing.type === 'table') {
     throw new Error(
-      `${schema}.${name} is a table, where the engine generates a view over ${stream.name}: rename or drop it, or exclude the stream`,
+      `${schema}.${name} is a table, where the engine generates a view over ${table}: rename or drop it, or exclude the stream`,
     )
   }
   if (existing.type === 'view') {

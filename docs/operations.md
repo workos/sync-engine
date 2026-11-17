@@ -13,7 +13,7 @@ history and a cursor older than that cannot be replayed.
 So, the single most important alert is **poll age**, not error rate.
 
 ```bash
-npx workos-sync-postgres status
+npx @workos/sync-postgres status
 ```
 
 ```json
@@ -243,7 +243,7 @@ reads the standard `OTEL_*` variables:
 WORKOS_SYNC_OTEL=1 \
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
 OTEL_TRACES_EXPORTER=none OTEL_LOGS_EXPORTER=none \
-npx workos-sync-postgres listen
+npx @workos/sync-postgres listen
 ```
 
 Metrics go out as OTLP over HTTP unless `OTEL_METRICS_EXPORTER` says
@@ -307,11 +307,12 @@ Three cadences, cheapest first:
 | Weekly, and after any incident | `reconcile --repair` | The same, and fixes them   |
 
 ```bash
-# Report only. Exits 2 when drift is found, so it works as a scheduled check.
-npx workos-sync-postgres reconcile
+# Report only. Exits 2 when drift is found and 1 when a stream could not be
+# compared, so it works as a scheduled check.
+npx @workos/sync-postgres reconcile
 
 # Fix what it finds.
-npx workos-sync-postgres reconcile --repair
+npx @workos/sync-postgres reconcile --repair
 ```
 
 Reconciliation reports two numbers per stream, and they mean different things:
@@ -369,8 +370,8 @@ each row, which also repairs anything a future event payload leaves out:
   per-parent streams, and replaces each row. This is the complete refresh.
 
 ```bash
-npx workos-sync-postgres refresh     # top-level streams
-npx workos-sync-postgres backfill    # everything
+npx @workos/sync-postgres refresh     # top-level streams
+npx @workos/sync-postgres backfill    # everything
 ```
 
 Hydration re-fetches an object by id when its event arrives and writes the
@@ -399,7 +400,7 @@ directory takes as long as it takes: roughly 400 users per second at best.
 Backfill checkpoints after every page, so an interrupted run resumes:
 
 ```bash
-npx workos-sync-postgres backfill --resume
+npx @workos/sync-postgres backfill --resume
 ```
 
 Nothing in a request exempts the sync from these limits. The global one is
@@ -447,8 +448,8 @@ for a large directory. A host with a time limit — a cron job, a serverless
 function, a workflow activity — runs it in slices instead:
 
 ```bash
-npx workos-sync-postgres backfill --max-pages 50             # first slice
-npx workos-sync-postgres backfill --resume --max-pages 50    # every later slice
+npx @workos/sync-postgres backfill --max-pages 50             # first slice
+npx @workos/sync-postgres backfill --resume --max-pages 50    # every later slice
 ```
 
 Each slice fetches at most 50 pages across all streams, checkpoints after
@@ -481,8 +482,8 @@ the natural shape for a scheduled host.
 `reconcile` takes the same two flags, at stream granularity:
 
 ```bash
-npx workos-sync-postgres reconcile --max-pages 50             # first slice
-npx workos-sync-postgres reconcile --resume --max-pages 50    # every later slice
+npx @workos/sync-postgres reconcile --max-pages 50             # first slice
+npx @workos/sync-postgres reconcile --resume --max-pages 50    # every later slice
 ```
 
 A diff is taken against a stream's whole listing, so a listing cannot stop
@@ -503,8 +504,8 @@ it out of the bounded slices with `--exclude-streams`, so neither the resumed
 slices nor a fresh one spend their budget on it:
 
 ```bash
-npx workos-sync-postgres reconcile --resume --max-pages 50 --exclude-streams directory_users
-npx workos-sync-postgres reconcile --repair --streams directory_users   # from a host without a limit
+npx @workos/sync-postgres reconcile --resume --max-pages 50 --exclude-streams directory_users
+npx @workos/sync-postgres reconcile --repair --streams directory_users   # from a host without a limit
 ```
 
 `refresh` takes the same two flags and shares backfill's checkpoints. For the
@@ -533,7 +534,7 @@ and a non-zero exit from `rejected`, so it can run as a scheduled check next to
 `reconcile`.
 
 ```bash
-npx workos-sync-postgres rejected
+npx @workos/sync-postgres rejected
 ```
 
 ```json
@@ -566,8 +567,8 @@ Then, in order:
 3. **Replay.** Everything, or one event by id:
 
    ```bash
-   npx workos-sync-postgres rejected --replay
-   npx workos-sync-postgres rejected --replay --id event_01H...
+   npx @workos/sync-postgres rejected --replay
+   npx @workos/sync-postgres rejected --replay --id event_01H...
    ```
 
    Each event goes back through the normal write path, oldest first. Those
@@ -623,7 +624,7 @@ scrubs it along with the `events` archive.
   Or:
 
   ```bash
-  npx workos-sync-postgres backfill --streams users
+  npx @workos/sync-postgres backfill --streams users
   ```
 
 * **A bad deploy wrote wrong data.** The event archive is a local, ordered log,
@@ -653,7 +654,7 @@ The mirror inherits the deletion obligations of any other copy of the data.
 Archived event payloads embed personal data too, so both have to go:
 
 ```bash
-npx workos-sync-postgres redact --user user_01H...
+npx @workos/sync-postgres redact --user user_01H...
 ```
 
 This hard-deletes, rather than tombstones, the user's row in `users` and every

@@ -31,6 +31,7 @@ export {
   jsonPath,
 } from './schema/ddl.js'
 export { liveViewSql, liveViewName } from './schema/views.js'
+export type { SchemaRef, Target } from './schema/identifiers.js'
 
 export { upsertRows, deleteRows, relinkRows, unlinkRows } from './db/upsert.js'
 export { diffIdsInSql } from './db/reconcile.js'

@@ -36,8 +36,12 @@ import {
   columnType,
   generatedColumnSql,
   indexSpecs,
+  objectName,
+  qualified,
   quoteIdent,
   safeIdentifier,
+  target,
+  type SchemaRef,
 } from './ddl.js'
 
 export type DriftKind = 'expression' | 'type' | 'orphan' | 'not_generated'
@@ -85,17 +89,18 @@ async function liveColumns(db: SqlClient, schema: string, table: string): Promis
   )
 }
 
-async function recordedColumns(db: SqlClient, schema: string, table: string): Promise<Map<string, string>> {
+async function recordedColumns(db: SqlClient, ref: SchemaRef, table: string): Promise<Map<string, string>> {
   const r = await db.query<{ column_name: string; ddl: string }>(
-    `select column_name, ddl from ${quoteIdent(schema)}.\`_columns\` where table_name = ?`,
+    `select column_name, ddl from ${qualified(ref, '_columns')} where table_name = ?`,
     [table],
   )
   return new Map(r.rows.map((row) => [row.column_name, row.ddl]))
 }
 
-export async function recordColumn(db: SqlClient, schema: string, table: string, column: string, ddl: string) {
+/** `table` is the table's name as it was created, prefix included: what `information_schema` calls it. */
+export async function recordColumn(db: SqlClient, ref: SchemaRef, table: string, column: string, ddl: string) {
   await db.query(
-    `insert into ${quoteIdent(schema)}.\`_columns\` (table_name, column_name, ddl) values (?, ?, ?) as new
+    `insert into ${qualified(ref, '_columns')} (table_name, column_name, ddl) values (?, ?, ?) as new
      on duplicate key update ddl = new.ddl, recorded_at = now(6)`,
     [table, column, ddl],
   )
@@ -118,25 +123,26 @@ async function createdExpressions(db: SqlClient, ref: string): Promise<Map<strin
  * live table is. On one pinned connection, since a temporary table lives in
  * its session.
  */
-async function canonicalExpressions(db: SqlClient, schema: string, stream: TableDef): Promise<Map<string, string>> {
-  const ref = `${quoteIdent(schema)}.${quoteIdent(`_probe_${randomBytes(4).toString('hex')}`)}`
+async function canonicalExpressions(db: SqlClient, ref: SchemaRef, stream: TableDef): Promise<Map<string, string>> {
+  const probe = qualified(ref, `_probe_${randomBytes(4).toString('hex')}`)
   const clauses = stream.columns.map((c) => generatedColumnSql(c, stream))
   return db.pinned(async (conn) => {
-    await conn.exec(`create temporary table ${ref} (\`_raw\` json, ${clauses.join(', ')})`)
+    await conn.exec(`create temporary table ${probe} (\`_raw\` json, ${clauses.join(', ')})`)
     try {
-      return await createdExpressions(conn, ref)
+      return await createdExpressions(conn, probe)
     } finally {
-      await conn.exec(`drop temporary table if exists ${ref}`)
+      await conn.exec(`drop temporary table if exists ${probe}`)
     }
   })
 }
 
-export async function detectColumnDrift(db: SqlClient, streams: TableDef[], schema: string): Promise<ColumnDrift[]> {
+export async function detectColumnDrift(db: SqlClient, streams: TableDef[], ref: SchemaRef): Promise<ColumnDrift[]> {
+  const { schema } = target(ref)
   const out: ColumnDrift[] = []
   for (const stream of streams) {
-    const table = safeIdentifier(stream.name)
+    const table = objectName(ref, stream.name)
     const live = await liveColumns(db, schema, table)
-    const recorded = await recordedColumns(db, schema, table)
+    const recorded = await recordedColumns(db, ref, table)
     let created: Map<string, string> | undefined
     let canonical: Map<string, string> | undefined
     const catalog = new Set<string>()
@@ -171,11 +177,11 @@ export async function detectColumnDrift(db: SqlClient, streams: TableDef[], sche
       if (record === undefined) {
         // Nothing says what this column was created with, so the table is
         // asked, in its own spelling of the clause the catalog would write.
-        created ??= await createdExpressions(db, `${quoteIdent(schema)}.${quoteIdent(table)}`)
-        canonical ??= await canonicalExpressions(db, schema, stream)
+        created ??= await createdExpressions(db, qualified(ref, stream.name))
+        canonical ??= await canonicalExpressions(db, ref, stream)
         const spelled = canonical.get(name)
         if (spelled !== undefined && spelled === created.get(name)) {
-          await recordColumn(db, schema, table, name, expected)
+          await recordColumn(db, ref, table, name, expected)
           continue
         }
         out.push({
@@ -196,7 +202,7 @@ export async function detectColumnDrift(db: SqlClient, streams: TableDef[], sche
       if (catalog.has(name)) continue
       if (!live.has(name)) {
         // Dropped by hand: nothing to report, and the record would only mislead.
-        await db.query(`delete from ${quoteIdent(schema)}.\`_columns\` where table_name = ? and column_name = ?`, [
+        await db.query(`delete from ${qualified(ref, '_columns')} where table_name = ? and column_name = ?`, [
           table,
           name,
         ])
@@ -228,9 +234,10 @@ export async function repairColumnDrift(
   db: SqlClient,
   drift: ColumnDrift[],
   streams: TableDef[],
-  schema: string,
+  ref: SchemaRef,
   logger?: Logger,
 ): Promise<RepairResult> {
+  const { schema } = target(ref)
   const repaired: ColumnDrift[] = []
   const failed: RepairResult['failed'] = []
   for (const d of drift) {
@@ -238,7 +245,7 @@ export async function repairColumnDrift(
     const stream = streams.find((s) => s.name === d.stream)
     const col = stream?.columns.find((c) => safeIdentifier(c.name) === d.column)
     if (!stream || !col) continue
-    const table = safeIdentifier(stream.name)
+    const table = objectName(ref, stream.name)
     const ours = new Set(indexSpecs(stream).map((i) => i.name))
     try {
       const idx = await db.query<{ index_name: string }>(
@@ -250,12 +257,11 @@ export async function repairColumnDrift(
       if (foreign.length > 0) {
         throw new Error(`index ${foreign.join(', ')} on it is not the engine's and would be dropped by the rebuild`)
       }
-      const ref = `${quoteIdent(schema)}.${quoteIdent(table)}`
-      await db.exec(`alter table ${ref} drop column ${quoteIdent(d.column)}`)
-      await db.exec(addColumnSql(stream, col, schema))
+      await db.exec(`alter table ${qualified(ref, stream.name)} drop column ${quoteIdent(d.column)}`)
+      await db.exec(addColumnSql(stream, col, ref))
       const spec = indexSpecs(stream).find((i) => i.column === d.column)
-      if (spec) await db.exec(addIndexSql(stream, spec, schema))
-      await recordColumn(db, schema, table, d.column, generatedColumnSql(col, stream))
+      if (spec) await db.exec(addIndexSql(stream, spec, ref))
+      await recordColumn(db, ref, table, d.column, generatedColumnSql(col, stream))
       repaired.push(d)
       logger?.info('rebuilt drifted column from _raw', { stream: d.stream, column: d.column, kind: d.kind })
     } catch (err) {

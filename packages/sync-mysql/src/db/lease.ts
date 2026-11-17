@@ -24,7 +24,7 @@
  */
 import type { Lease, LeaseResult } from '@workos/sync-engine'
 import type { SqlClient } from './client.js'
-import { quoteIdent } from '../schema/ddl.js'
+import { objectName, qualified, quoteIdent, type SchemaRef } from '../schema/ddl.js'
 
 /**
  * ISO-8601 in UTC with millisecond precision, built in SQL so the result is
@@ -41,23 +41,25 @@ interface LeaseRow {
 
 export async function acquireLease(
   db: SqlClient,
-  schema: string,
+  schema: SchemaRef,
   syncId: string,
   env: string,
   holder: string,
   ttlMs: number,
 ): Promise<LeaseResult> {
-  const table = `${quoteIdent(schema)}.\`_sync_lease\``
+  const table = qualified(schema, '_sync_lease')
   // The target table cannot be aliased, so the stored row is referred to by
   // its unqualified name next to the `new` row alias; a bare column name
-  // would be ambiguous between the two.
+  // would be ambiguous between the two. That name carries the prefix, like
+  // the table it names.
+  const stored = quoteIdent(objectName(schema, '_sync_lease'))
   await db.query(
     `insert into ${table} (sync_id, env, holder, acquired_at, expires_at)
      values (?, ?, ?, now(6), timestampadd(microsecond, ?, now(6))) as new
      on duplicate key update
-       acquired_at = if(\`_sync_lease\`.holder = new.holder, \`_sync_lease\`.acquired_at, if(\`_sync_lease\`.expires_at <= now(6), new.acquired_at, \`_sync_lease\`.acquired_at)),
-       holder = if(\`_sync_lease\`.holder = new.holder or \`_sync_lease\`.expires_at <= now(6), new.holder, \`_sync_lease\`.holder),
-       expires_at = if(\`_sync_lease\`.holder = new.holder, new.expires_at, \`_sync_lease\`.expires_at)`,
+       acquired_at = if(${stored}.holder = new.holder, ${stored}.acquired_at, if(${stored}.expires_at <= now(6), new.acquired_at, ${stored}.acquired_at)),
+       holder = if(${stored}.holder = new.holder or ${stored}.expires_at <= now(6), new.holder, ${stored}.holder),
+       expires_at = if(${stored}.holder = new.holder, new.expires_at, ${stored}.expires_at)`,
     [syncId, env, holder, Math.max(0, Math.floor(ttlMs)) * 1000],
   )
   // Whoever the row names now is the holder: us if the lease was free,
@@ -75,14 +77,14 @@ export async function acquireLease(
 
 export async function releaseLease(
   db: SqlClient,
-  schema: string,
+  schema: SchemaRef,
   syncId: string,
   env: string,
   holder: string,
 ): Promise<void> {
   // Deleting rather than expiring keeps `status` honest: a released lease
   // reads as free, not as a stale row with a past date.
-  await db.query(`delete from ${quoteIdent(schema)}.\`_sync_lease\` where sync_id = ? and env = ? and holder = ?`, [
+  await db.query(`delete from ${qualified(schema, '_sync_lease')} where sync_id = ? and env = ? and holder = ?`, [
     syncId,
     env,
     holder,
@@ -102,7 +104,7 @@ export async function releaseLease(
  */
 export async function setStateIfHeld(
   db: SqlClient,
-  schema: string,
+  schema: SchemaRef,
   syncId: string,
   env: string,
   stream: string,
@@ -110,19 +112,20 @@ export async function setStateIfHeld(
   holder: string,
   expected: unknown,
 ): Promise<boolean> {
-  const s = quoteIdent(schema)
+  const stateTable = qualified(schema, '_sync_state')
+  const leaseTable = qualified(schema, '_sync_lease')
   return db.transaction(async (tx) => {
     await tx.exec('savepoint workos_sync_checkpoint')
     const written =
       expected == null
         ? // `INSERT IGNORE` inserts nothing, and counts nothing, when the row exists.
           await tx.query(
-            `insert ignore into ${s}.\`_sync_state\` (sync_id, env, stream, state, updated_at)
+            `insert ignore into ${stateTable} (sync_id, env, stream, state, updated_at)
              values (?, ?, ?, cast(? as json), now(6))`,
             [syncId, env, stream, JSON.stringify(state)],
           )
         : await tx.query(
-            `update ${s}.\`_sync_state\` set state = cast(? as json), updated_at = now(6)
+            `update ${stateTable} set state = cast(? as json), updated_at = now(6)
              where sync_id = ? and env = ? and stream = ? and state = cast(? as json)`,
             [JSON.stringify(state), syncId, env, stream, JSON.stringify(expected)],
           )
@@ -138,9 +141,9 @@ export async function setStateIfHeld(
       // earlier in the same transaction fixed before any takeover; a locking
       // read sees what is committed now, and waits for nothing since the
       // lock is already held.
-      await tx.query(`select 1 from ${s}.\`_sync_lease\` where sync_id = ? and env = ? for update`, [syncId, env])
+      await tx.query(`select 1 from ${leaseTable} where sync_id = ? and env = ? for update`, [syncId, env])
       const lease = await tx.query(
-        `select 1 as held from ${s}.\`_sync_lease\`
+        `select 1 as held from ${leaseTable}
          where sync_id = ? and env = ? and holder = ? and expires_at > now(6)
          for update`,
         [syncId, env, holder],
@@ -153,10 +156,10 @@ export async function setStateIfHeld(
   })
 }
 
-export async function getLease(db: SqlClient, schema: string, syncId: string, env: string): Promise<Lease | null> {
+export async function getLease(db: SqlClient, schema: SchemaRef, syncId: string, env: string): Promise<Lease | null> {
   const r = await db.query<LeaseRow>(
     `select holder, ${iso('expires_at')} as expires_at
-     from ${quoteIdent(schema)}.\`_sync_lease\`
+     from ${qualified(schema, '_sync_lease')}
      where sync_id = ? and env = ? and expires_at > now(6)`,
     [syncId, env],
   )

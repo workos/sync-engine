@@ -17,6 +17,7 @@
  *   lock under this level, so a competing writer cannot slip a newer row in
  *   between the read and the write. See `db/upsert.ts`.
  */
+import { isIP } from 'node:net'
 import type { Logger } from '@workos/sync-engine'
 
 /**
@@ -44,7 +45,9 @@ export interface SqlClient {
   exec(sql: string): Promise<void>
   /**
    * Run `fn` on one pinned connection inside `BEGIN ... COMMIT`, rolled back
-   * on a throw. Nested calls reuse the connection under a savepoint.
+   * on a throw. A call made inside a transaction reuses the connection under
+   * a savepoint; one made on a pinned connection that has no transaction
+   * open begins and commits its own.
    */
   transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T>
   /**
@@ -79,10 +82,36 @@ function toResult<T>(res: [unknown, unknown]): QueryResult<T> {
 }
 
 /**
- * Wrap one borrowed connection. `depth` counts nested transactions: the
- * outermost owns `BEGIN`/`COMMIT`, inner ones get a savepoint, which is how
- * `setStateIfHeld` can roll back a refused checkpoint without ending the
- * caller's transaction.
+ * `fn` inside `BEGIN ... COMMIT` on `conn`, rolled back on a throw. The
+ * transaction the pool starts and the one a pinned connection starts for
+ * itself are this same thing.
+ */
+async function inTransaction<T>(conn: ConnectionLike, fn: (tx: SqlClient) => Promise<T>): Promise<T> {
+  try {
+    await conn.query('begin')
+    const result = await fn(wrapConnection(conn, 1))
+    await conn.query('commit')
+    return result
+  } catch (err) {
+    try {
+      await conn.query('rollback')
+    } catch {
+      /* the connection is already broken; the original error matters more */
+    }
+    throw err
+  }
+}
+
+/**
+ * Wrap one borrowed connection. `depth` is how many transactions are open on
+ * it: none for a connection that is only pinned, one inside `BEGIN`, more
+ * under savepoints. The outermost owns `BEGIN`/`COMMIT` and inner ones get a
+ * savepoint, which is how `setStateIfHeld` can roll back a refused
+ * checkpoint without ending the caller's transaction. A pinned connection
+ * with nothing open begins its own: a savepoint outside a transaction would
+ * be released by the next autocommit and protect nothing, and it is what
+ * lets `diffIdsInSql` keep its session for a whole listing while holding a
+ * transaction only for the moment it needs one.
  */
 function wrapConnection(conn: ConnectionLike, depth: number): SqlClient {
   const run = async (sql: string, params?: unknown[]) => toResult(await conn.query(sql, params))
@@ -94,7 +123,8 @@ function wrapConnection(conn: ConnectionLike, depth: number): SqlClient {
       await conn.query(sql)
     },
     async transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
-      const name = `workos_sync_tx_${depth + 1}`
+      if (depth === 0) return inTransaction(conn, fn)
+      const name = `workos_sync_tx_${depth}`
       await conn.query(`savepoint ${name}`)
       try {
         const out = await fn(wrapConnection(conn, depth + 1))
@@ -132,17 +162,7 @@ export function fromPool(pool: PoolLike): SqlClient {
     async transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
       const conn = await pool.getConnection()
       try {
-        await conn.query('begin')
-        const result = await fn(wrapConnection(conn, 0))
-        await conn.query('commit')
-        return result
-      } catch (err) {
-        try {
-          await conn.query('rollback')
-        } catch {
-          /* the connection is already broken; the original error matters more */
-        }
-        throw err
+        return await inTransaction(conn, fn)
       } finally {
         conn.release()
       }
@@ -165,7 +185,8 @@ export interface ConnectOptions {
   /**
    * PEM-encoded CA certificate(s) the server's certificate must chain to.
    * TLS is then required and the certificate verified against this CA and
-   * the host name.
+   * the DNS host name in the connection string. IP-address URLs are refused
+   * because mysql2 does not verify their identity correctly.
    */
   sslCa?: string
   /** Where a connection the server closed while idle is reported, at warn level. */
@@ -206,8 +227,75 @@ export function poolConfig(databaseUrl: string, options: ConnectOptions = {}): R
     // Multi-statement strings are never sent; every DDL statement goes alone.
     multipleStatements: false,
   }
-  if (options.sslCa !== undefined) config['ssl'] = { ca: options.sslCa, rejectUnauthorized: true }
+  const ssl = sslConfig(databaseUrl, options)
+  if (ssl !== undefined) config['ssl'] = ssl
   return config
+}
+
+/**
+ * mysql2 3.24.6 omits both `host` and `servername` from its TLS options for
+ * an IP literal. Node then verifies `localhost`: a matching IP SAN fails,
+ * while a certificate for localhost passes for any IP. Until the driver
+ * verifies the actual address, refuse these URLs before opening a socket.
+ * A DNS hostname is verified normally; an explicit verification opt-out
+ * remains the caller's choice. Match mysql2's decoding of IPv6 URL hosts.
+ */
+function requireTlsHostname(databaseUrl: string, ssl: Record<string, unknown>): void {
+  if (ssl['rejectUnauthorized'] === false || !ssl['verifyIdentity']) return
+  const hostname = new URL(databaseUrl).hostname
+  const host = decodeURIComponent(hostname.startsWith('[') ? hostname.slice(1, -1) : hostname)
+  if (isIP(host)) {
+    throw new Error(
+      'verified MySQL TLS requires a DNS hostname: mysql2 cannot verify IP-address hosts correctly; ' +
+        "use the server certificate's DNS hostname in databaseUrl",
+    )
+  }
+}
+
+/**
+ * The TLS settings to hand mysql2 beside the connection string, or
+ * undefined to leave what the string itself says alone.
+ *
+ * mysql2 verifies the certificate chain when `rejectUnauthorized` is on but
+ * checks the host name only when `verifyIdentity` is on as well, and that
+ * one is off by default. A chain check alone accepts any certificate the CA
+ * ever issued, for any host; with the operating system's bundle as the CA,
+ * that is every publicly trusted certificate there is. So both ways of
+ * asking for verified TLS get the host name check added:
+ *
+ * - `sslCa` (`WORKOS_SYNC_MYSQL_SSL_CA`): always.
+ * - an `ssl={...}` object in the connection string, which mysql2 reads
+ *   itself: unless it turns verification off (`"rejectUnauthorized":false`)
+ *   or already says what it wants (`"verifyIdentity":false`, for a tunnel
+ *   whose host name is not the server's).
+ *
+ * A value given here overrides the one in the string, and `sslCa` wins when
+ * both are present. An `ssl` parameter that is not an object (a named
+ * mysql2 profile) is the driver's business and is left alone.
+ */
+export function sslConfig(databaseUrl: string, options: ConnectOptions = {}): Record<string, unknown> | undefined {
+  if (options.sslCa !== undefined) {
+    const ssl = { ca: options.sslCa, rejectUnauthorized: true, verifyIdentity: true }
+    requireTlsHostname(databaseUrl, ssl)
+    return ssl
+  }
+  const raw = new URL(databaseUrl).searchParams.get('ssl')
+  if (raw === null) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  const fromUrl = parsed as Record<string, unknown>
+  if (fromUrl['rejectUnauthorized'] === false || fromUrl['verifyIdentity'] !== undefined) {
+    requireTlsHostname(databaseUrl, fromUrl)
+    return undefined
+  }
+  const ssl = { ...fromUrl, verifyIdentity: true }
+  requireTlsHostname(databaseUrl, ssl)
+  return ssl
 }
 
 export async function connect(databaseUrl: string, options: ConnectOptions = {}): Promise<SqlClient> {

@@ -24,6 +24,8 @@ describe('init --repair', () => {
     expect(help).toContain('reconcile [--repair] [--resume] [--max-pages <n>] [--exclude-streams <a,b>]')
     expect(help).toContain('WORKOS_SYNC_MYSQL_SSL_CA')
     expect(help).not.toContain('Postgres')
+    // True here because `MysqlDestination` implements `ready()`.
+    expect(help).toContain('reads only, and says so when the mirror is not there')
   })
 })
 
@@ -220,6 +222,45 @@ describeDb('commands against a database', () => {
     expect(await main(['streams'])).toBe(0)
     const streams = JSON.parse(out.join('')) as { stream: string }[]
     expect(streams.some((s) => s.stream === 'users')).toBe(true)
+  })
+
+  it('exits 1 from reconcile when a stream could not be compared', async () => {
+    fake.createUser()
+    const destination = new FaultyDestination({ db, schema: db.schema })
+    const engine = makeEngine(destination)
+    await engine.backfill()
+    // What a password without the DDL privilege does on PlanetScale: the
+    // staging tables are refused, for every stream.
+    destination.diffIds = async () => {
+      throw new Error("DDL command denied to user 'writer' for table '_reconcile_local'")
+    }
+    expect(await main(['reconcile'], { engine })).toBe(1)
+    const users = (
+      lastJson() as { diffs: Record<string, { stream: string; complete: boolean; failed?: boolean }[]> }
+    ).diffs['prod']!.find((d) => d.stream === 'users')
+    expect(users).toMatchObject({ complete: false, failed: true })
+  })
+
+  it('puts back a dropped view with init --repair, which plain init leaves to the fingerprint', async () => {
+    vi.stubEnv('WORKOS_API_KEY', 'sk_test_1')
+    const views = async () => {
+      const r = await db.query<{ table_name: string }>(
+        `select table_name as table_name from information_schema.views where table_schema = ?`,
+        [db.schema],
+      )
+      return r.rows.map((x) => x.table_name)
+    }
+    const init = (...flags: string[]) => main(['init', '--schema', db.schema, '--streams', 'users', ...flags], { db })
+    try {
+      expect(await init()).toBe(0)
+      await db.exec(`drop view \`${db.schema}\`.users_live`)
+      expect(await init()).toBe(0)
+      expect(await views()).not.toContain('users_live')
+      expect(await init('--repair')).toBe(0)
+      expect(await views()).toContain('users_live')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('leaves out --exclude-streams on reconcile, and refuses a name the catalog does not know', async () => {
