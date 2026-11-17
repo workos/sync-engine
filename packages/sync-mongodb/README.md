@@ -45,6 +45,8 @@ later: update pipelines with `$$NOW`, `$expr` in update filters, and `.` and
 attributes carry both) all arrived in 5.0. Atlas, a replica set and a
 standalone `mongod` are all fine; nothing here needs a transaction.
 
+The container image, `ghcr.io/workos/sync-mongodb`, runs Node.js 24.22.3.
+
 ## Command line
 
 ```bash
