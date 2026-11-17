@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTestDb, describeDb, type TestDb } from './helpers/mysql.js'
 import { migrate, fingerprint } from '../src/schema/migrate.js'
 import { detectColumnDrift, unrepairableReason } from '../src/schema/drift.js'
+import type { QueryResult, SqlClient } from '../src/db/client.js'
 import { main } from '../src/cli.js'
 import { STREAMS, streamByName, type ColumnDef, type Logger, type StreamDef } from '@workos/sync-engine'
 
@@ -21,6 +22,31 @@ const withColumn = (stream: StreamDef, col: ColumnDef): StreamDef => ({
 
 /** `email` projected from a different key: the classic path change. */
 const usersMovedEmail = withColumn(users, { name: 'email', type: 'text', path: 'primary_email', index: true })
+
+/**
+ * `db` as a process that loses its connection sees it: the statement `last`
+ * matches still runs, and every one after it fails. `release_lock` is let
+ * through, the way the server frees a session's locks when the session ends.
+ */
+const losingItsConnectionAfter = (db: SqlClient, last: RegExp): SqlClient => {
+  let lost = false
+  const gone = () =>
+    Object.assign(new Error('Connection lost: The server closed the connection.'), { code: 'PROTOCOL_CONNECTION_LOST' })
+  const wrap = (c: SqlClient): SqlClient => ({
+    query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<QueryResult<T>> {
+      return lost && !sql.includes('release_lock') ? Promise.reject(gone()) : c.query<T>(sql, params)
+    },
+    async exec(sql: string): Promise<void> {
+      if (lost) throw gone()
+      await c.exec(sql)
+      if (last.test(sql)) lost = true
+    },
+    transaction: (fn) => c.transaction((tx) => fn(wrap(tx))),
+    pinned: (fn) => c.pinned((conn) => fn(wrap(conn))),
+    close: () => c.close(),
+  })
+  return wrap(db)
+}
 
 const capture = () => {
   const lines: { level: string; msg: string; fields?: Record<string, unknown> }[] = []
@@ -280,6 +306,30 @@ describeDb('column drift detection', () => {
     expect(r.drift).toHaveLength(1)
     expect(await recorded([users])).toBe(false)
     expect(await recorded([changed])).toBe(false)
+  })
+
+  it('forgets its own fingerprint too, so a forced repair that dies mid-rebuild is looked at again', async () => {
+    // `init --repair` runs the pass with this catalog's fingerprint already
+    // recorded. A process that drops a column and never adds it back must
+    // not leave that fingerprint behind: the next plain `init` would trust
+    // it and leave the column missing.
+    await migrate(db, [users], db.schema)
+    await db.exec(
+      `alter table \`${db.schema}\`.users modify column locale varchar(8) generated always as (json_value(\`_raw\`, '$."locale"' returning char(8) null on error)) stored`,
+    )
+    expect(await recorded([users])).toBe(true)
+
+    const dying = losingItsConnectionAfter(db, /drop column/)
+    await expect(migrate(dying, [users], db.schema, undefined, { repair: true, force: true })).rejects.toThrow(
+      /Connection lost/,
+    )
+    expect(await columnExists('locale')).toBe(false)
+    expect(await recorded([users])).toBe(false)
+
+    const next = await migrate(db, [users], db.schema)
+    expect(next).toMatchObject({ applied: true, drift: [] })
+    expect(await columnExists('locale')).toBe(true)
+    expect(await recorded([users])).toBe(true)
   })
 
   it('forgets earlier fingerprints when a repair changes columns, so a rollback re-checks', async () => {

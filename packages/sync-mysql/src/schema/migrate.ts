@@ -234,13 +234,15 @@ async function applySchema(
   if (options.repair && drift.some((d) => unrepairableReason(d) === null)) {
     // A recorded fingerprint means "the live columns were checked against
     // this catalog". Rebuilding a column breaks that promise for every
-    // catalog recorded before now, so every other fingerprint is forgotten
-    // and a rollback re-runs detection. Forgotten *before* the first DDL,
-    // not after the last: MySQL commits each statement on its own, so a
-    // repair that dies between dropping a column and adding it back has
-    // already changed the table, and an older fingerprint must not vouch
-    // for what is left.
-    await db.query(`delete from ${migrations} where fingerprint <> ?`, [fp])
+    // catalog recorded before now, so every fingerprint is forgotten and a
+    // rollback re-runs detection. Forgotten *before* the first DDL, not
+    // after the last: MySQL commits each statement on its own, so a repair
+    // that dies between dropping a column and adding it back has already
+    // changed the table, and no fingerprint may vouch for what is left.
+    // That includes this catalog's own, which a forced pass finds recorded:
+    // left in place, the next plain `init` would trust it over a missing
+    // column. It is recorded again below once the pass comes back clean.
+    await db.query(`delete from ${migrations}`)
     const r = await repairColumnDrift(db, drift, streams, ref, logger)
     repaired = r.repaired
     for (const f of r.failed) failures.set(f.drift, f.error)
