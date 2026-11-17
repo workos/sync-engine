@@ -42,7 +42,7 @@ package you install.
 export DATABASE_URL="postgres://localhost:5432/app"
 export WORKOS_API_KEY="sk_live_..."
 
-npx workos-sync-postgres init
+npx @workos/sync-postgres init
 ```
 
 This creates a `workos` schema, one table per synced object, a `_live` view
@@ -72,7 +72,7 @@ label is part of every primary key and must not change once you have data.
 ## Load what already exists
 
 ```bash
-npx workos-sync-postgres backfill
+npx @workos/sync-postgres backfill
 ```
 
 Backfill pages the REST list endpoints and writes everything it finds. Before
@@ -95,7 +95,7 @@ are complete; repeat with `--resume` until all of them are. See
 ## Start syncing
 
 ```bash
-npx workos-sync-postgres listen
+npx @workos/sync-postgres listen
 ```
 
 The engine now polls the Events API from its stored cursor and applies each
@@ -166,8 +166,8 @@ On the command line, run one process per environment into the same database.
 Each process keeps its own cursor under its label, so they never collide:
 
 ```bash
-WORKOS_API_KEY=sk_live_... WORKOS_ENVIRONMENT_NAME=production npx workos-sync-postgres listen
-WORKOS_API_KEY=sk_test_... WORKOS_ENVIRONMENT_NAME=staging    npx workos-sync-postgres listen
+WORKOS_API_KEY=sk_live_... WORKOS_ENVIRONMENT_NAME=production npx @workos/sync-postgres listen
+WORKOS_API_KEY=sk_test_... WORKOS_ENVIRONMENT_NAME=staging    npx @workos/sync-postgres listen
 ```
 
 In the library, one engine can hold several:
@@ -188,8 +188,8 @@ primary key.
 Schedule a reconciliation:
 
 ```bash
-npx workos-sync-postgres reconcile            # report drift, exit 2 if any is found
-npx workos-sync-postgres reconcile --repair   # fix it
+npx @workos/sync-postgres reconcile            # report drift, exit 2 if any is found
+npx @workos/sync-postgres reconcile --repair   # fix it
 ```
 
 Reconciliation compares the set of ids in the mirror against the API and

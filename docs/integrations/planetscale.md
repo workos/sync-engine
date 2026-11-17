@@ -109,9 +109,9 @@ single-node PS-5 in November 2026.
 
 ### Run the sync
 
-Install the package first. `npx workos-sync-postgres` runs the command
-the package installs; with nothing installed, npm looks for a package by
-the command's name, and there is none.
+`npx @workos/sync-postgres` runs the package's `workos-sync-postgres`
+command. With the package installed, it runs the version in your project;
+without it, npx fetches the latest release each time.
 
 ```sh
 npm install @workos/sync-postgres
@@ -120,9 +120,9 @@ export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/postgres?sslmode=verif
 export WORKOS_API_KEY=sk_...
 export WORKOS_ENVIRONMENT_NAME=production   # the environment the key belongs to
 
-npx workos-sync-postgres init
-npx workos-sync-postgres backfill
-npx workos-sync-postgres listen
+npx @workos/sync-postgres init
+npx @workos/sync-postgres backfill
+npx @workos/sync-postgres listen
 ```
 
 `WORKOS_ENVIRONMENT_NAME` is the label written to every row as `_env`. It
@@ -281,19 +281,19 @@ command instead, against a development branch or a `main` with safe
 migrations off, and a throwaway WorkOS environment:
 
 ```sh
-npm install @workos/sync-mysql      # npx runs the command this installs
+npm install @workos/sync-mysql       # the version npx runs; without it, the latest release
 
 export DATABASE_URL='mysql://USER:PASSWORD@HOST:3306/DATABASE?ssl={"rejectUnauthorized":true}'
 export WORKOS_SYNC_SCHEMA=DATABASE
 export WORKOS_API_KEY=sk_test_...
 export WORKOS_ENVIRONMENT_NAME=staging   # the environment the key belongs to
 
-npx workos-sync-mysql init          # creates the tables and views inside the branch database
-npx workos-sync-mysql init          # second run: nothing to apply
-npx workos-sync-mysql backfill
-npx workos-sync-mysql tick
-npx workos-sync-mysql reconcile     # exit 0: every stream compared, nothing drifted
-npx workos-sync-mysql status
+npx @workos/sync-mysql init          # creates the tables and views inside the branch database
+npx @workos/sync-mysql init          # second run: nothing to apply
+npx @workos/sync-mysql backfill
+npx @workos/sync-mysql tick
+npx @workos/sync-mysql reconcile     # exit 0: every stream compared, nothing drifted
+npx @workos/sync-mysql status
 ```
 
 `WORKOS_ENVIRONMENT_NAME` is the label written to every row as `_env`. It
@@ -322,9 +322,9 @@ export WORKOS_SYNC_SCHEMA=DATABASE
 export WORKOS_API_KEY=sk_...
 export WORKOS_ENVIRONMENT_NAME=production   # the environment the key belongs to
 
-npx workos-sync-mysql init
-npx workos-sync-mysql backfill
-npx workos-sync-mysql listen
+npx @workos/sync-mysql init
+npx @workos/sync-mysql backfill
+npx @workos/sync-mysql listen
 ```
 
 If the production branch has safe migrations on, follow the next section
@@ -406,7 +406,7 @@ not yet been run against PlanetScale. On 0.1.0, or if a stream still
 fails, leave it out with `--exclude-streams`:
 
 ```sh
-npx workos-sync-mysql reconcile --exclude-streams sessions
+npx @workos/sync-mysql reconcile --exclude-streams sessions
 ```
 
 An excluded stream is still backfilled and tailed; it is only left

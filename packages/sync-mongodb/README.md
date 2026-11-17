@@ -51,9 +51,9 @@ standalone `mongod` are all fine; nothing here needs a transaction.
 export DATABASE_URL=mongodb://localhost:27017/app
 export WORKOS_API_KEY=sk_live_...
 
-npx workos-sync-mongodb init       # create the collections, indexes and views
-npx workos-sync-mongodb backfill   # load everything that already exists
-npx workos-sync-mongodb listen     # tail the Events API, forever
+npx @workos/sync-mongodb init       # create the collections, indexes and views
+npx @workos/sync-mongodb backfill   # load everything that already exists
+npx @workos/sync-mongodb listen     # tail the Events API, forever
 ```
 
 | Command                                                                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |

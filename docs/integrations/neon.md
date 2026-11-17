@@ -99,9 +99,9 @@ Point the command at Neon as you would at any Postgres:
 export DATABASE_URL='postgresql://USER:PASSWORD@ep-<id>-pooler.<region>.aws.neon.tech/neondb?sslmode=verify-full&channel_binding=require'
 export WORKOS_API_KEY=sk_...
 
-npx workos-sync-postgres init
-npx workos-sync-postgres backfill
-npx workos-sync-postgres listen
+npx @workos/sync-postgres init
+npx @workos/sync-postgres backfill
+npx @workos/sync-postgres listen
 ```
 
 The [container image](../../README.md#against-a-real-environment) and the
@@ -244,7 +244,7 @@ curl -H "Authorization: Bearer $WORKOS_SYNC_STATUS_TOKEN" <invocation_url>/statu
 
   ```sh
   # Weekly, with the function's DATABASE_URL and WORKOS_ENVIRONMENT_NAME set to its ENVIRONMENT.
-  npx workos-sync-postgres reconcile --repair --streams directory_users
+  npx @workos/sync-postgres reconcile --repair --streams directory_users
   ```
 
   `directory_users` is the usual case, at four requests per second per

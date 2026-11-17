@@ -33,9 +33,9 @@ it is the only package you need for MySQL.
 export DATABASE_URL=mysql://root@localhost:3306/app
 export WORKOS_API_KEY=sk_live_...
 
-npx workos-sync-mysql init       # create the database and bookkeeping tables
-npx workos-sync-mysql backfill   # load everything that already exists
-npx workos-sync-mysql listen     # tail the Events API, forever
+npx @workos/sync-mysql init       # create the database and bookkeeping tables
+npx @workos/sync-mysql backfill   # load everything that already exists
+npx @workos/sync-mysql listen     # tail the Events API, forever
 ```
 
 | Command                                                                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -111,9 +111,9 @@ On a host that gates DDL, apply the schema through the host's own change
 process and let `init` find it:
 
 ```bash
-npx workos-sync-mysql init --print-sql --schema <database> > schema.sql
+npx @workos/sync-mysql init --print-sql --schema <database> > schema.sql
 # apply schema.sql through the host's change process (drop its first statement if the database already exists), then:
-npx workos-sync-mysql init --schema <database>
+npx @workos/sync-mysql init --schema <database>
 ```
 
 Once the tables and views are in place, `init` changes no schema: it checks

@@ -62,9 +62,9 @@ tailed, joins answered, and drift detected and repaired.
 export DATABASE_URL=postgres://localhost/app
 export WORKOS_API_KEY=sk_live_...
 
-npx workos-sync-postgres init       # create the schema
-npx workos-sync-postgres backfill   # load what already exists
-npx workos-sync-postgres listen     # tail the Events API
+npx @workos/sync-postgres init       # create the schema
+npx @workos/sync-postgres backfill   # load what already exists
+npx @workos/sync-postgres listen     # tail the Events API
 ```
 
 The same command ships as a container image, one per destination, for

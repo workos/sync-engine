@@ -59,9 +59,9 @@ so it is the only package you need for ClickHouse.
 export DATABASE_URL=https://default:password@abc123.us-east-1.aws.clickhouse.cloud:8443
 export WORKOS_API_KEY=sk_live_...
 
-npx workos-sync-clickhouse init                              # create the database, tables and views
-npx workos-sync-clickhouse backfill --streams auth_attempts  # nothing to list for logs; sets the cursor
-npx workos-sync-clickhouse listen --streams auth_attempts    # tail the Events API, forever
+npx @workos/sync-clickhouse init                              # create the database, tables and views
+npx @workos/sync-clickhouse backfill --streams auth_attempts  # nothing to list for logs; sets the cursor
+npx @workos/sync-clickhouse listen --streams auth_attempts    # tail the Events API, forever
 ```
 
 Auth history begins the day you turn the tail on: there is no endpoint to

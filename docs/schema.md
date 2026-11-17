@@ -277,8 +277,8 @@ fingerprint**, so every start keeps reporting it until it is fixed. Ingest
 carries on meanwhile: `_raw` is still right, only the projection is stale.
 
 ```bash
-npx workos-sync-postgres init            # report; exits 2 on drift
-npx workos-sync-postgres init --repair   # rebuild drifted columns from _raw
+npx @workos/sync-postgres init            # report; exits 2 on drift
+npx @workos/sync-postgres init --repair   # rebuild drifted columns from _raw
 ```
 
 The same flag also rebuilds a generated `_live` view that can no longer be

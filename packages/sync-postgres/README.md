@@ -31,9 +31,9 @@ so it is the only package you need for Postgres.
 export DATABASE_URL=postgres://localhost/app
 export WORKOS_API_KEY=sk_live_...
 
-npx workos-sync-postgres init       # create the schema and bookkeeping tables
-npx workos-sync-postgres backfill   # load everything that already exists
-npx workos-sync-postgres listen     # tail the Events API, forever
+npx @workos/sync-postgres init       # create the schema and bookkeeping tables
+npx @workos/sync-postgres backfill   # load everything that already exists
+npx @workos/sync-postgres listen     # tail the Events API, forever
 ```
 
 | Command                                                                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
