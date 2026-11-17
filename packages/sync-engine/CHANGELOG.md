@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/workos/sync-engine/compare/sync-engine-v0.2.0...sync-engine-v0.3.0) (2026-11-17)
+
+
+### Features
+
+* Add a MySQL table prefix and fix PlanetScale's findings ([#60](https://github.com/workos/sync-engine/issues/60)) ([b0a2428](https://github.com/workos/sync-engine/commit/b0a242819c6736eae812518b28024048e4dda3a2))
+
 ## [0.2.0](https://github.com/workos/sync-engine/compare/sync-engine-v0.1.0...sync-engine-v0.2.0) (2026-11-06)
 
 
