@@ -1,4 +1,4 @@
-# WorkOS Postgres Sync
+# WorkOS Sync Engine
 
 Mirror WorkOS data into your own Postgres, and query it with SQL.
 
