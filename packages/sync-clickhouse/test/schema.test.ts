@@ -196,6 +196,33 @@ describeDb('migrations against real ClickHouse', () => {
     expect(idx.map((i) => i.name)).toContain('users_email_idx')
   })
 
+  it('reads no system table that grants on the mirror database leave out', async () => {
+    // With `select_from_system_db_requires_grant` on, which is how the server
+    // ships, a user granted only this database can still read these three
+    // system tables and no other. A fourth would make `init` fail for that
+    // user as soon as the tables exist.
+    const readable = ['columns', 'databases', 'tables']
+    const read: string[] = []
+    const spy: TestDb = {
+      ...db,
+      query: (sql, params, settings) => {
+        read.push(sql)
+        return db.query(sql, params, settings)
+      },
+    }
+    await migrate(spy, [users], db.schema)
+    // A wider catalog, so the second run is a full pass over a table that exists.
+    const extended = {
+      ...users,
+      columns: [...users.columns, { name: 'nickname', type: 'text' as const, path: 'nickname' }],
+    }
+    const second = await migrate(spy, [extended], db.schema, undefined, { repair: true })
+    expect(second.applied).toBe(true)
+    const systemTables = new Set(read.flatMap((sql) => [...sql.matchAll(/\bsystem\.(\w+)/g)].map((m) => m[1]!)))
+    expect([...systemTables].filter((t) => !readable.includes(t))).toEqual([])
+    expect(systemTables.size).toBeGreaterThan(0)
+  })
+
   it('parses the ISO-8601 formats WorkOS emits, and nulls anything else', async () => {
     await migrate(db, [users], db.schema)
     const cases: [string | null, string | null][] = [

@@ -20,13 +20,12 @@ import { KEEPER_SETTINGS, type ChClient } from '../db/client.js'
 import { isKeeperConflict } from '../db/errors.js'
 import {
   addColumnSql,
-  addIndexSql,
+  addIndexesSql,
   materializeColumnSql,
   bookkeepingSql,
   createSchemaSql,
   createTableSql,
   generatedColumnSql,
-  indexSpecs,
   quoteIdent,
   safeIdentifier,
 } from './ddl.js'
@@ -70,6 +69,10 @@ export interface MigrateResult {
   /** DDL was run. `false` means the fingerprint was already recorded. */
   applied: boolean
   fingerprint: string
+  /**
+   * Tables, columns and views this run created or replaced. The index
+   * statement run against a table that already exists is not counted.
+   */
   statements: number
   /**
    * Columns that still disagree with the catalog after this run. Any
@@ -171,16 +174,11 @@ export async function migrate(
         await recordColumn(db, schema, table, safeIdentifier(col.name), generatedColumnSql(col, stream))
         statements++
       }
-      const indexes = await names(
-        db,
-        `SELECT name FROM system.data_skipping_indices WHERE database = {schema:String} AND table = {table:String}`,
-        { schema, table },
-      )
-      for (const idx of indexSpecs(stream)) {
-        if (indexes.has(idx.name)) continue
-        await db.command(addIndexSql(stream, idx, schema))
-        statements++
-      }
+      // Run without asking which indexes exist: every clause is `IF NOT
+      // EXISTS`, and the list of them is a system table that grants on this
+      // database do not cover. Not counted, since the server does not say
+      // whether a clause added anything.
+      await db.command(addIndexesSql(stream, schema))
     }
     // Last, so the view carries every column, including any added above. A
     // view that is the generated shape and already does is left alone:
