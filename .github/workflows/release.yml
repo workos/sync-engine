@@ -111,11 +111,12 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # No test step: the tag is the merge commit of a release PR, and ci.yml
+      # runs every package's job on a release-please--* branch before it can
+      # merge. A `pnpm test` here had no database to talk to, so it repeated
+      # only the suites that run without one.
       - name: Build
         run: pnpm build
-
-      - name: Test
-        run: pnpm test
 
       # The firewall is a download control, not a publish target: restore the
       # public registry before anything below talks to npmjs.org.
