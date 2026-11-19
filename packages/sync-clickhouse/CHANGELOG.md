@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/workos/sync-engine/compare/sync-clickhouse-v0.2.0...sync-clickhouse-v0.2.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **clickhouse:** Run init without a system-table grant ([#63](https://github.com/workos/sync-engine/issues/63)) ([54ff356](https://github.com/workos/sync-engine/commit/54ff3561e729c763768b1eee0fae8354dd6eeda8))
+
 ## [0.2.0](https://github.com/workos/sync-engine/compare/sync-clickhouse-v0.1.0...sync-clickhouse-v0.2.0) (2026-11-17)
 
 
