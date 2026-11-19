@@ -208,7 +208,7 @@ export interface IndexSpec {
   granularity: number
 }
 
-/** The data-skipping indexes a stream's table carries, by name, so `migrate` can tell which are missing. */
+/** The data-skipping indexes a stream's table carries. */
 export function indexSpecs(stream: TableDef): IndexSpec[] {
   const tableName = safeIdentifier(stream.name)
   const out: IndexSpec[] = []
@@ -270,9 +270,22 @@ export function materializeColumnSql(stream: TableDef, col: ColumnDef, schema: s
   return `ALTER TABLE ${table} MATERIALIZE COLUMN ${quoteIdent(safeIdentifier(col.name))}`
 }
 
+const addIndexClause = (idx: IndexSpec) => `ADD ${indexClause(idx).replace('INDEX ', 'INDEX IF NOT EXISTS ')}`
+
 export function addIndexSql(stream: TableDef, idx: IndexSpec, schema: string): string {
   const table = `${quoteIdent(schema)}.${quoteIdent(safeIdentifier(stream.name))}`
-  return `ALTER TABLE ${table} ADD ${indexClause(idx).replace('INDEX ', 'INDEX IF NOT EXISTS ')}`
+  return `ALTER TABLE ${table} ${addIndexClause(idx)}`
+}
+
+/**
+ * Every index of a stream's table in one statement. Each clause is a no-op
+ * where the index exists, so `migrate` runs this without first listing the
+ * table's indexes: that list is `system.data_skipping_indices`, which a user
+ * granted this database alone may not read.
+ */
+export function addIndexesSql(stream: TableDef, schema: string): string {
+  const table = `${quoteIdent(schema)}.${quoteIdent(safeIdentifier(stream.name))}`
+  return `ALTER TABLE ${table} ${indexSpecs(stream).map(addIndexClause).join(', ')}`
 }
 
 /**
